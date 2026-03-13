@@ -5,8 +5,6 @@ export interface Config {
   apiKey: string;
   userId: string;
   apiBaseUrl: string;
-  callbackToken: string;
-  remoteHostname: string;
   workspaceDir: string;
   port: number;
   sandboxToken: string;
@@ -29,8 +27,6 @@ export function loadConfig(): Config {
     apiKey: required('API_KEY'),
     userId: required('USER_ID'),
     apiBaseUrl: process.env['API_BASE_URL'] || 'https://api.mindstudio.ai',
-    callbackToken: process.env['CALLBACK_TOKEN'] || '',
-    remoteHostname: process.env['REMOTE_HOSTNAME'] || '',
     workspaceDir: path.resolve(process.env['WORKSPACE_DIR'] || '/workspace'),
     port: parseInt(process.env['PORT'] || '4387', 10),
     sandboxToken: process.env['SANDBOX_TOKEN'] || '',

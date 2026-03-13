@@ -35,8 +35,8 @@ export async function installTunnel(progress: ProgressFn): Promise<void> {
   }
 
   progress('installTunnel', 'Installing mindstudio-local tunnel...');
-  run('npm install -g @mindstudio-ai/local-model-tunnel', {
-    label: 'npm install -g @mindstudio-ai/local-model-tunnel',
+  run('npm install -g mindstudio-ai/mindstudio-local-model-tunnel#seant/appsv2', {
+    label: 'npm install -g mindstudio-local-model-tunnel#seant/appsv2',
   });
 }
 

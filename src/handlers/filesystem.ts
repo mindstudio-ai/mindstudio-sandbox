@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { DirEntry } from '../types.js';
+import type { DirEntry, TreeEntry } from '../types.js';
 import { suppressPath } from '../file-watcher.js';
 
 let workspaceDir: string;
@@ -102,4 +102,59 @@ export async function renameFile(params: {
   suppressPath(newFilePath);
   await fs.rename(oldFilePath, newFilePath);
   return {};
+}
+
+const TREE_IGNORE = new Set(['node_modules', '.git', '.vite']);
+
+/**
+ * Build a recursive file tree up to `depth` levels deep.
+ * Directories beyond the depth limit are included but without children.
+ */
+export async function buildTree(
+  dirPath: string = workspaceDir,
+  relativeTo: string = workspaceDir,
+  depth: number = 3,
+): Promise<TreeEntry[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const results: TreeEntry[] = [];
+
+  for (const entry of entries) {
+    if (TREE_IGNORE.has(entry.name)) continue;
+
+    const fullPath = path.join(dirPath, entry.name);
+    const relPath = path.relative(relativeTo, fullPath);
+
+    try {
+      const stat = await fs.stat(fullPath);
+      const node: TreeEntry = {
+        name: entry.name,
+        path: relPath,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        size: stat.size,
+        modified: stat.mtime.toISOString(),
+      };
+
+      if (entry.isDirectory() && depth > 1) {
+        node.children = await buildTree(fullPath, relativeTo, depth - 1);
+      }
+
+      results.push(node);
+    } catch {
+      // Skip entries we can't stat
+    }
+  }
+
+  // Sort: directories first, then alphabetical
+  results.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return results;
 }

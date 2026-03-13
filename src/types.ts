@@ -27,6 +27,11 @@ export interface DirEntry {
   modified: string;
 }
 
+export interface TreeEntry extends DirEntry {
+  path: string;
+  children?: TreeEntry[];
+}
+
 export interface SearchResult {
   file: string;
   line: number;

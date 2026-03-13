@@ -13,6 +13,8 @@ import {
   broadcast,
   stopServer,
   setStatus,
+  setProxyTarget,
+  setAppConfig,
 } from './ws-server.js';
 import { initFilesystem } from './handlers/filesystem.js';
 import { initSearch } from './handlers/search.js';
@@ -65,6 +67,7 @@ async function main(): Promise<void> {
     // 6. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
     const webConfig = await readWebConfig(config.workspaceDir, appConfig);
+    setAppConfig(appConfig);
     console.log(`[cnc] App: ${appConfig.name} (${appConfig.appId})`);
 
     const devPort = webConfig?.web.devPort ?? 5173;
@@ -129,6 +132,13 @@ async function main(): Promise<void> {
         if (tunnelEvent) {
           broadcast('tunnelEvent', tunnelEvent);
           console.log(`[tunnel] ${tunnelEvent.event}`);
+          // Capture the tunnel proxy port for reverse proxying
+          if (
+            tunnelEvent.event === 'session-started' &&
+            typeof tunnelEvent.proxyPort === 'number'
+          ) {
+            setProxyTarget(tunnelEvent.proxyPort);
+          }
         } else {
           broadcast('processOutput', {
             process: 'tunnel',
