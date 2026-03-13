@@ -38,7 +38,7 @@ export function loadConfig(): Config {
     apiKey: required('API_KEY'),
     userId: required('USER_ID'),
     apiBaseUrl: optional('API_BASE_URL', 'https://api.mindstudio.ai'),
-    workspaceDir: path.resolve(optional('WORKSPACE_DIR', '/workspace')),
+    workspaceDir: path.resolve(optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace')),
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken: process.env['SANDBOX_TOKEN']
       ? (console.log(`[config]   SANDBOX_TOKEN = ${process.env['SANDBOX_TOKEN']!.slice(0, 8)}...`), process.env['SANDBOX_TOKEN']!)
