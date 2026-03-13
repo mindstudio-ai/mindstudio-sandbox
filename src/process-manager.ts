@@ -99,6 +99,10 @@ export class ProcessManager {
         }, delay);
       } else if (proc.restartCount >= config.maxRestarts) {
         console.error(`[process-manager] "${config.name}" exceeded max restarts (${config.maxRestarts}), giving up`);
+        if (config.critical) {
+          console.error(`[process-manager] "${config.name}" is critical — exiting`);
+          process.exit(1);
+        }
       }
     });
 

@@ -51,6 +51,7 @@ export interface ManagedProcessConfig {
   env?: Record<string, string>;
   restartOnCrash: boolean;
   maxRestarts: number;
+  critical?: boolean;
   onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
 }

@@ -170,6 +170,7 @@ async function main(): Promise<void> {
       cwd: config.workspaceDir,
       restartOnCrash: true,
       maxRestarts: 5,
+      critical: true,
       onStdout: (line) => {
         const tunnelEvent = parseTunnelLine(line);
         if (tunnelEvent) {
