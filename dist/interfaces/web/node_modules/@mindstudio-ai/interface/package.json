@@ -1,0 +1,49 @@
+{
+  "name": "@mindstudio-ai/interface",
+  "version": "0.1.0",
+  "description": "Frontend SDK for MindStudio v2 app interfaces",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepare": "tsup",
+    "prepublishOnly": "tsup"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mindstudio",
+    "interface",
+    "frontend",
+    "sdk"
+  ],
+  "homepage": "https://github.com/mindstudio-ai/mindstudio-interface#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mindstudio-ai/mindstudio-interface.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mindstudio-ai/mindstudio-interface/issues"
+  },
+  "author": "MindStudio <support@mindstudio.ai> (https://mindstudio.ai)",
+  "license": "MIT",
+  "sideEffects": false,
+  "devDependencies": {
+    "tsup": "^8",
+    "typescript": "^5.5"
+  }
+}

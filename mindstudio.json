@@ -1,0 +1,37 @@
+{
+  "appId": "7c4d99f7-2824-4adb-b47d-a0c20b2465d6",
+  "name": "Haiku Generator",
+  "description": "Generate haikus about any topic using AI. A simple starter app demonstrating tables, methods, and AI text generation.",
+
+  "roles": [],
+
+  "tables": [
+    { "path": "dist/methods/src/tables/haikus.ts", "export": "Haikus" }
+  ],
+
+  "methods": [
+    {
+      "id": "generate-haiku",
+      "name": "Generate Haiku",
+      "description": "Generate a haiku about a given topic using AI.",
+      "path": "dist/methods/src/generateHaiku.ts",
+      "export": "generateHaiku"
+    },
+    {
+      "id": "list-haikus",
+      "name": "List Haikus",
+      "description": "Get all previously generated haikus, newest first.",
+      "path": "dist/methods/src/listHaikus.ts",
+      "export": "listHaikus"
+    },
+    {
+      "id": "delete-haiku",
+      "name": "Delete Haiku",
+      "description": "Delete a haiku by ID.",
+      "path": "dist/methods/src/deleteHaiku.ts",
+      "export": "deleteHaiku"
+    }
+  ],
+
+  "interfaces": [{ "type": "web", "path": "dist/interfaces/web/web.json" }]
+}

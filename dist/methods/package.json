@@ -1,0 +1,17 @@
+{
+  "name": "haiku-starter",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mindstudio-ai/agent": "^0.1.14"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.0",
+    "typescript": "^5.9.3"
+  }
+}
