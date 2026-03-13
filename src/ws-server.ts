@@ -43,6 +43,7 @@ export function getStatus(): ServerStatus {
 }
 
 export function setStatus(s: ServerStatus): void {
+  console.log(`[ws-server] Status: ${status} → ${s}`);
   status = s;
 }
 
@@ -79,6 +80,9 @@ export function startServer(port: number, token?: string): Promise<void> {
   sandboxToken = token || '';
 
   return new Promise((resolve) => {
+    console.log(`[ws-server] Creating HTTP server on port ${port}`);
+    console.log(`[ws-server] Auth: ${sandboxToken ? 'token required' : 'disabled (no SANDBOX_TOKEN)'}`);
+
     httpServer = http.createServer((req, res) => {
       // Health endpoint — always served by C&C
       if (req.url === '/health' || req.url?.startsWith('/health')) {
@@ -106,6 +110,12 @@ export function startServer(port: number, token?: string): Promise<void> {
     wss = new WebSocketServer({ noServer: true });
 
     wss.on('connection', async (ws) => {
+      console.log(`[ws-server] C&C WebSocket client connected (total: ${wss.clients.size})`);
+
+      ws.on('close', (code, reason) => {
+        console.log(`[ws-server] C&C WebSocket client disconnected (code=${code}, reason=${reason.toString() || 'none'}, remaining: ${wss.clients.size})`);
+      });
+
       // Send initial frame with everything the client needs to bootstrap
       try {
         const tree = await buildTree();
@@ -177,24 +187,32 @@ export function startServer(port: number, token?: string): Promise<void> {
 
     // Handle all WebSocket upgrades — route by path
     httpServer.on('upgrade', (req, socket: net.Socket, head) => {
+      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      console.log(`[ws-server] WebSocket upgrade: ${pathname}`);
+
       if (isCncPath(req.url)) {
         // C&C WebSocket — auth required
         if (!verifyToken(req.url)) {
+          console.log(`[ws-server] Rejected: invalid token on ${pathname}`);
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;
         }
+        console.log(`[ws-server] Upgrading C&C WebSocket on ${pathname}`);
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit('connection', ws, req);
         });
       } else {
         // HMR / dev server WebSocket — proxy to tunnel
         if (!proxy) {
+          console.log(`[ws-server] HMR proxy not ready, returning 503 for ${pathname}`);
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
           return;
         }
+        console.log(`[ws-server] Proxying HMR WebSocket: ${pathname} → localhost:${proxyTarget}`);
         proxy.ws(req, socket, head, {}, (err) => {
+          console.error(`[ws-server] HMR proxy error: ${err?.message}`);
           socket.destroy();
         });
       }

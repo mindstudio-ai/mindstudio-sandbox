@@ -12,36 +12,86 @@ function run(
   opts?: ExecSyncOptions & { label?: string },
 ): string {
   const label = opts?.label ?? cmd;
-  console.log(`[bootstrap] ${label}`);
-  return execSync(cmd, {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 300000, // 5 minutes
-    ...opts,
-  }) as string;
+  console.log(`[bootstrap] Running: ${label}`);
+  const startTime = Date.now();
+  try {
+    const result = execSync(cmd, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 300000, // 5 minutes
+      ...opts,
+    }) as string;
+    const elapsed = Date.now() - startTime;
+    console.log(`[bootstrap] Completed in ${elapsed}ms: ${label}`);
+    if (result.trim()) {
+      // Log first few lines of output for visibility
+      const lines = result.trim().split('\n');
+      const preview = lines.slice(0, 5).join('\n');
+      console.log(`[bootstrap] Output (${lines.length} lines):\n${preview}${lines.length > 5 ? '\n  ...' : ''}`);
+    }
+    return result;
+  } catch (err: unknown) {
+    const elapsed = Date.now() - startTime;
+    const execErr = err as { stderr?: string; stdout?: string; status?: number; message?: string };
+    console.error(`[bootstrap] FAILED after ${elapsed}ms: ${label}`);
+    console.error(`[bootstrap]   Exit code: ${execErr.status}`);
+    if (execErr.stderr) {
+      console.error(`[bootstrap]   stderr: ${execErr.stderr.trim().slice(0, 2000)}`);
+    }
+    if (execErr.stdout) {
+      console.error(`[bootstrap]   stdout: ${execErr.stdout.trim().slice(0, 2000)}`);
+    }
+    throw err;
+  }
 }
 
 export async function installTunnel(progress: ProgressFn): Promise<void> {
+  console.log('[bootstrap] Checking if mindstudio-local is in PATH...');
   // Check if already available
   try {
-    execSync('which mindstudio-local', {
+    const whichResult = execSync('which mindstudio-local', {
       encoding: 'utf-8',
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
-    console.log('[bootstrap] mindstudio-local already in PATH, skipping install');
+    console.log(`[bootstrap] mindstudio-local found at: ${whichResult.trim()}`);
+
+    // Also check version
+    try {
+      const version = execSync('mindstudio-local --version', {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      console.log(`[bootstrap] mindstudio-local version: ${version.trim()}`);
+    } catch {
+      console.log('[bootstrap] mindstudio-local found but --version failed (ok)');
+    }
     return;
   } catch {
-    // Not found, install it
+    console.log('[bootstrap] mindstudio-local not found in PATH');
   }
 
   progress('installTunnel', 'Installing mindstudio-local tunnel...');
   run('npm install -g mindstudio-ai/mindstudio-local-model-tunnel#seant/appsv2', {
     label: 'npm install -g mindstudio-local-model-tunnel#seant/appsv2',
   });
+
+  // Verify it installed
+  try {
+    const whichResult = execSync('which mindstudio-local', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    console.log(`[bootstrap] Tunnel installed successfully at: ${whichResult.trim()}`);
+  } catch {
+    console.error('[bootstrap] WARNING: mindstudio-local still not found after install');
+  }
 }
 
 export async function writeTunnelConfig(config: Config): Promise<void> {
   const configDir = path.join(os.homedir(), '.mindstudio-local-tunnel');
+  const configPath = path.join(configDir, 'config.json');
+  console.log(`[bootstrap] Writing tunnel config to ${configPath}`);
+
   await fs.mkdir(configDir, { recursive: true });
 
   const configData = {
@@ -61,42 +111,65 @@ export async function writeTunnelConfig(config: Config): Promise<void> {
     localInterfaces: {},
   };
 
-  await fs.writeFile(
-    path.join(configDir, 'config.json'),
-    JSON.stringify(configData, null, 2),
-    'utf-8',
-  );
-  console.log('[bootstrap] Wrote tunnel config');
+  await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
+  console.log(`[bootstrap] Tunnel config written (apiBaseUrl=${config.apiBaseUrl}, userId=${config.userId})`);
 }
 
 export async function cloneAppRepo(
   config: Config,
   progress: ProgressFn,
 ): Promise<void> {
+  const manifestPath = path.join(config.workspaceDir, 'mindstudio.json');
+  console.log(`[bootstrap] Checking for ${manifestPath}...`);
+
   // Skip if workspace already has a mindstudio.json
   try {
-    await fs.access(path.join(config.workspaceDir, 'mindstudio.json'));
-    console.log('[bootstrap] Workspace already has mindstudio.json, skipping clone');
+    await fs.access(manifestPath);
+    console.log('[bootstrap] mindstudio.json exists, skipping clone');
     return;
   } catch {
-    // File doesn't exist, proceed with clone
+    console.log('[bootstrap] mindstudio.json not found, will clone');
   }
 
   progress('cloneApp', `Cloning app repo...`);
+  console.log(`[bootstrap] Creating workspace dir: ${config.workspaceDir}`);
   await fs.mkdir(config.workspaceDir, { recursive: true });
+  console.log(`[bootstrap] Cloning ${config.gitRepoUrl} → ${config.workspaceDir}`);
   run(`git clone --depth 1 ${config.gitRepoUrl} ${config.workspaceDir}`, {
     label: `git clone → ${config.workspaceDir}`,
   });
+
+  // Verify clone succeeded
+  try {
+    await fs.access(manifestPath);
+    console.log('[bootstrap] Clone successful — mindstudio.json found');
+  } catch {
+    console.error('[bootstrap] WARNING: Clone completed but mindstudio.json not found');
+    // List what we got
+    try {
+      const files = await fs.readdir(config.workspaceDir);
+      console.log(`[bootstrap] Workspace contents: ${files.join(', ')}`);
+    } catch (e) {
+      console.error(`[bootstrap] Cannot list workspace: ${e}`);
+    }
+  }
 }
 
 export async function readAppConfig(
   workspaceDir: string,
 ): Promise<AppConfig> {
-  const raw = await fs.readFile(
-    path.join(workspaceDir, 'mindstudio.json'),
-    'utf-8',
-  );
-  return JSON.parse(raw) as AppConfig;
+  const manifestPath = path.join(workspaceDir, 'mindstudio.json');
+  console.log(`[bootstrap] Reading app config from ${manifestPath}`);
+
+  const raw = await fs.readFile(manifestPath, 'utf-8');
+  const config = JSON.parse(raw) as AppConfig;
+
+  console.log(`[bootstrap] App: "${config.name}" (${config.appId})`);
+  console.log(`[bootstrap]   Methods: ${config.methods?.length ?? 0} (${config.methods?.map(m => m.id).join(', ') || 'none'})`);
+  console.log(`[bootstrap]   Tables: ${config.tables?.length ?? 0} (${config.tables?.map(t => t.export).join(', ') || 'none'})`);
+  console.log(`[bootstrap]   Interfaces: ${config.interfaces?.length ?? 0} (${config.interfaces?.map(i => i.type).join(', ') || 'none'})`);
+
+  return config;
 }
 
 export async function readWebConfig(
@@ -104,13 +177,21 @@ export async function readWebConfig(
   appConfig: AppConfig,
 ): Promise<WebConfig | null> {
   const webInterface = appConfig.interfaces.find((i) => i.type === 'web');
-  if (!webInterface) return null;
+  if (!webInterface) {
+    console.log('[bootstrap] No web interface defined in mindstudio.json');
+    return null;
+  }
 
   const webJsonPath = path.join(workspaceDir, webInterface.path);
+  console.log(`[bootstrap] Reading web config from ${webJsonPath}`);
+
   try {
     const raw = await fs.readFile(webJsonPath, 'utf-8');
-    return JSON.parse(raw) as WebConfig;
-  } catch {
+    const config = JSON.parse(raw) as WebConfig;
+    console.log(`[bootstrap] Web config: devPort=${config.web?.devPort}, devCommand="${config.web?.devCommand}"`);
+    return config;
+  } catch (err) {
+    console.error(`[bootstrap] Failed to read web config: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 }
@@ -124,14 +205,18 @@ export async function installDependencies(
     path.join(workspaceDir, 'dist', 'interfaces', 'web'),
   ];
 
+  console.log('[bootstrap] Scanning for package.json files...');
+
   // Filter to only dirs that have a package.json
   const installDirs: string[] = [];
   for (const dir of packageDirs) {
+    const pkgPath = path.join(dir, 'package.json');
     try {
-      await fs.access(path.join(dir, 'package.json'));
+      await fs.access(pkgPath);
+      console.log(`[bootstrap]   Found: ${pkgPath}`);
       installDirs.push(dir);
     } catch {
-      // No package.json, skip
+      console.log(`[bootstrap]   Not found: ${pkgPath}`);
     }
   }
 
@@ -146,6 +231,7 @@ export async function installDependencies(
   );
 
   // Run npm install in parallel
+  const startTime = Date.now();
   await Promise.all(
     installDirs.map(
       (dir) =>
@@ -159,4 +245,6 @@ export async function installDependencies(
         }),
     ),
   );
+  const elapsed = Date.now() - startTime;
+  console.log(`[bootstrap] All npm installs completed in ${elapsed}ms`);
 }
