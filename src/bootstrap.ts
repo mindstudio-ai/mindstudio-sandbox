@@ -46,30 +46,7 @@ function run(
 }
 
 export async function installTunnel(progress: ProgressFn): Promise<void> {
-  console.log('[bootstrap] Checking if mindstudio-local is in PATH...');
-  // Check if already available
-  try {
-    const whichResult = execSync('which mindstudio-local', {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    console.log(`[bootstrap] mindstudio-local found at: ${whichResult.trim()}`);
-
-    // Also check version
-    try {
-      const version = execSync('mindstudio-local --version', {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      console.log(`[bootstrap] mindstudio-local version: ${version.trim()}`);
-    } catch {
-      console.log('[bootstrap] mindstudio-local found but --version failed (ok)');
-    }
-    return;
-  } catch {
-    console.log('[bootstrap] mindstudio-local not found in PATH');
-  }
-
+  // Always install to ensure we have the right version
   progress('installTunnel', 'Installing mindstudio-local tunnel...');
   run('npm install -g mindstudio-ai/mindstudio-local-model-tunnel#seant/appsv2', {
     label: 'npm install -g mindstudio-local-model-tunnel#seant/appsv2',
@@ -81,9 +58,9 @@ export async function installTunnel(progress: ProgressFn): Promise<void> {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    console.log(`[bootstrap] Tunnel installed successfully at: ${whichResult.trim()}`);
+    console.log(`[bootstrap] Tunnel installed at: ${whichResult.trim()}`);
   } catch {
-    console.error('[bootstrap] WARNING: mindstudio-local still not found after install');
+    console.error('[bootstrap] WARNING: mindstudio-local not found after install');
   }
 }
 
