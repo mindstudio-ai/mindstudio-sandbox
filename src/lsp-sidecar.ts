@@ -1,0 +1,405 @@
+/**
+ * LSP Sidecar — HTTP API for the remy agent to access the TypeScript
+ * language server. Wraps LSP complexity behind simple REST endpoints.
+ *
+ * Shares the same language server instance as Monaco (via LspClient).
+ */
+
+import http from 'node:http';
+import type { LspClient } from './lsp-client.js';
+
+interface DiagnosticItem {
+  file: string;
+  line: number;
+  column: number;
+  severity: string;
+  message: string;
+  code: number | string | undefined;
+}
+
+const SEVERITY_MAP: Record<number, string> = {
+  1: 'error',
+  2: 'warning',
+  3: 'information',
+  4: 'hint',
+};
+
+const SYMBOL_KIND_MAP: Record<number, string> = {
+  1: 'file',
+  2: 'module',
+  3: 'namespace',
+  4: 'package',
+  5: 'class',
+  6: 'method',
+  7: 'property',
+  8: 'field',
+  9: 'constructor',
+  10: 'enum',
+  11: 'interface',
+  12: 'function',
+  13: 'variable',
+  14: 'constant',
+  15: 'string',
+  16: 'number',
+  17: 'boolean',
+  18: 'array',
+  19: 'object',
+  20: 'key',
+  21: 'null',
+  22: 'enumMember',
+  23: 'struct',
+  24: 'event',
+  25: 'operator',
+  26: 'typeParameter',
+};
+
+export class LspSidecar {
+  private server: http.Server | null = null;
+  private lsp: LspClient;
+  private diagnosticsCache = new Map<string, DiagnosticItem[]>();
+
+  constructor(lspClient: LspClient) {
+    this.lsp = lspClient;
+
+    // Listen for all diagnostics and cache them
+    this.lsp.onNotification(
+      'textDocument/publishDiagnostics',
+      (params: unknown) => {
+        const p = params as {
+          uri: string;
+          diagnostics: Array<{
+            range: { start: { line: number; character: number } };
+            severity?: number;
+            message: string;
+            code?: number | string;
+          }>;
+        };
+        const relPath = this.lsp.uriToPath(p.uri);
+        this.diagnosticsCache.set(
+          relPath,
+          p.diagnostics.map((d) => ({
+            file: relPath,
+            line: d.range.start.line + 1, // LSP is 0-indexed
+            column: d.range.start.character + 1,
+            severity: SEVERITY_MAP[d.severity ?? 1] || 'error',
+            message: d.message,
+            code: d.code,
+          })),
+        );
+      },
+    );
+  }
+
+  async start(port: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.server = http.createServer(async (req, res) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end('Method not allowed');
+          return;
+        }
+
+        // Read body
+        let body = '';
+        for await (const chunk of req) {
+          body += chunk;
+        }
+
+        let params: Record<string, unknown>;
+        try {
+          params = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          return;
+        }
+
+        try {
+          let result: unknown;
+          switch (req.url) {
+            case '/diagnostics':
+              result = await this.handleDiagnostics(params);
+              break;
+            case '/definition':
+              result = await this.handleDefinition(params);
+              break;
+            case '/references':
+              result = await this.handleReferences(params);
+              break;
+            case '/hover':
+              result = await this.handleHover(params);
+              break;
+            case '/symbols':
+              result = await this.handleSymbols(params);
+              break;
+            default:
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Not found' }));
+              return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          console.error(
+            `[lsp-sidecar] Error handling ${req.url}: ${err instanceof Error ? err.message : err}`,
+          );
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: err instanceof Error ? err.message : 'Unknown error',
+            }),
+          );
+        }
+      });
+
+      this.server.listen(port, () => {
+        console.log(`[lsp-sidecar] Listening on port ${port}`);
+        resolve();
+      });
+    });
+  }
+
+  stop(): void {
+    this.server?.close();
+  }
+
+  /** Notify the sidecar that a file changed on disk. */
+  async onFileChanged(relativePath: string): Promise<void> {
+    if (this.lsp.isFileOpen(this.lsp.pathToUri(relativePath))) {
+      await this.lsp.updateFileContent(relativePath);
+    }
+  }
+
+  // --- Endpoint handlers ---
+
+  private async handleDiagnostics(
+    params: Record<string, unknown>,
+  ): Promise<{ diagnostics: DiagnosticItem[] }> {
+    const file = params.file as string;
+    if (!file) {
+      throw new Error('Missing "file" parameter');
+    }
+
+    // Open/update the file so the language server analyzes it
+    await this.lsp.updateFileContent(file);
+
+    // Wait for diagnostics to settle (the LSP pushes them asynchronously)
+    const diagnostics = await this.waitForDiagnostics(file, 2000, 500);
+    return { diagnostics };
+  }
+
+  private async handleDefinition(
+    params: Record<string, unknown>,
+  ): Promise<{
+    definitions: Array<{ file: string; line: number; column: number }>;
+  }> {
+    const file = params.file as string;
+    const line = params.line as number;
+    const column = params.column as number;
+    if (!file || line === undefined || column === undefined) {
+      throw new Error('Missing "file", "line", or "column" parameter');
+    }
+
+    const uri = await this.lsp.ensureFileOpen(file);
+    const result = (await this.lsp.request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: line - 1, character: column - 1 },
+    })) as
+      | { uri: string; range: { start: { line: number; character: number } } }
+      | Array<{
+          uri: string;
+          range: { start: { line: number; character: number } };
+        }>
+      | null;
+
+    if (!result) {
+      return { definitions: [] };
+    }
+
+    const locations = Array.isArray(result) ? result : [result];
+    return {
+      definitions: locations.map((loc) => ({
+        file: this.lsp.uriToPath(loc.uri),
+        line: loc.range.start.line + 1,
+        column: loc.range.start.character + 1,
+      })),
+    };
+  }
+
+  private async handleReferences(
+    params: Record<string, unknown>,
+  ): Promise<{
+    references: Array<{ file: string; line: number; column: number }>;
+  }> {
+    const file = params.file as string;
+    const line = params.line as number;
+    const column = params.column as number;
+    if (!file || line === undefined || column === undefined) {
+      throw new Error('Missing "file", "line", or "column" parameter');
+    }
+
+    const uri = await this.lsp.ensureFileOpen(file);
+    const result = (await this.lsp.request('textDocument/references', {
+      textDocument: { uri },
+      position: { line: line - 1, character: column - 1 },
+      context: { includeDeclaration: true },
+    })) as Array<{
+      uri: string;
+      range: { start: { line: number; character: number } };
+    }> | null;
+
+    if (!result) {
+      return { references: [] };
+    }
+
+    return {
+      references: result.map((loc) => ({
+        file: this.lsp.uriToPath(loc.uri),
+        line: loc.range.start.line + 1,
+        column: loc.range.start.character + 1,
+      })),
+    };
+  }
+
+  private async handleHover(
+    params: Record<string, unknown>,
+  ): Promise<{ type: string; documentation: string }> {
+    const file = params.file as string;
+    const line = params.line as number;
+    const column = params.column as number;
+    if (!file || line === undefined || column === undefined) {
+      throw new Error('Missing "file", "line", or "column" parameter');
+    }
+
+    const uri = await this.lsp.ensureFileOpen(file);
+    const result = (await this.lsp.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: line - 1, character: column - 1 },
+    })) as {
+      contents:
+        | string
+        | { kind: string; value: string }
+        | Array<string | { kind: string; value: string }>;
+    } | null;
+
+    if (!result) {
+      return { type: '', documentation: '' };
+    }
+
+    // Extract text from various hover content formats
+    const contents = result.contents;
+    let type = '';
+    let documentation = '';
+
+    if (typeof contents === 'string') {
+      type = contents;
+    } else if (Array.isArray(contents)) {
+      for (const item of contents) {
+        const text = typeof item === 'string' ? item : item.value;
+        if (!type) {
+          type = text;
+        } else {
+          documentation += (documentation ? '\n' : '') + text;
+        }
+      }
+    } else if (contents && typeof contents === 'object') {
+      type = contents.value;
+    }
+
+    return { type, documentation };
+  }
+
+  private async handleSymbols(params: Record<string, unknown>): Promise<{
+    symbols: Array<{ name: string; kind: string; line: number }>;
+  }> {
+    const file = params.file as string;
+    if (!file) {
+      throw new Error('Missing "file" parameter');
+    }
+
+    const uri = await this.lsp.ensureFileOpen(file);
+    const result = (await this.lsp.request('textDocument/documentSymbol', {
+      textDocument: { uri },
+    })) as Array<{
+      name: string;
+      kind: number;
+      range: { start: { line: number } };
+      children?: Array<{
+        name: string;
+        kind: number;
+        range: { start: { line: number } };
+      }>;
+    }> | null;
+
+    if (!result) {
+      return { symbols: [] };
+    }
+
+    // Flatten (include children)
+    const symbols: Array<{ name: string; kind: string; line: number }> = [];
+    for (const sym of result) {
+      symbols.push({
+        name: sym.name,
+        kind: SYMBOL_KIND_MAP[sym.kind] || 'unknown',
+        line: sym.range.start.line + 1,
+      });
+      if (sym.children) {
+        for (const child of sym.children) {
+          symbols.push({
+            name: child.name,
+            kind: SYMBOL_KIND_MAP[child.kind] || 'unknown',
+            line: child.range.start.line + 1,
+          });
+        }
+      }
+    }
+
+    return { symbols };
+  }
+
+  // --- Helpers ---
+
+  private waitForDiagnostics(
+    file: string,
+    maxWaitMs: number,
+    settleMs: number,
+  ): Promise<DiagnosticItem[]> {
+    return new Promise((resolve) => {
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+      let maxTimer: ReturnType<typeof setTimeout>;
+
+      const finish = () => {
+        if (settleTimer) {
+          clearTimeout(settleTimer);
+        }
+        clearTimeout(maxTimer);
+        unsub();
+        resolve(this.diagnosticsCache.get(file) || []);
+      };
+
+      // Listen for diagnostics updates for this file
+      const unsub = this.lsp.onNotification(
+        'textDocument/publishDiagnostics',
+        (params: unknown) => {
+          const p = params as { uri: string };
+          if (this.lsp.uriToPath(p.uri) === file) {
+            // Reset settle timer on each update
+            if (settleTimer) {
+              clearTimeout(settleTimer);
+            }
+            settleTimer = setTimeout(finish, settleMs);
+          }
+        },
+      );
+
+      // Max wait timeout
+      maxTimer = setTimeout(finish, maxWaitMs);
+
+      // If we already have cached diagnostics and the file was already open,
+      // start the settle timer immediately (diagnostics may have already arrived)
+      if (this.diagnosticsCache.has(file)) {
+        settleTimer = setTimeout(finish, settleMs);
+      }
+    });
+  }
+}

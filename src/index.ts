@@ -2,6 +2,7 @@ import { loadConfig } from './config.js';
 import {
   installTunnel,
   installAgent,
+  installLsp,
   writeTunnelConfig,
   cloneAppRepo,
   readAppConfig,
@@ -18,12 +19,16 @@ import {
   setAppConfig,
   setProcessManager,
   trackAgentEvent,
+  setLspClient,
 } from './ws-server.js';
+import { LspClient } from './lsp-client.js';
+import { LspSidecar } from './lsp-sidecar.js';
 import { initFilesystem } from './handlers/filesystem.js';
 import { initSearch } from './handlers/search.js';
 import { initShell } from './handlers/shell.js';
 import { startWatcher, stopWatcher } from './file-watcher.js';
 import { parseTunnelLine } from './tunnel-events.js';
+import { initState, restoreState, saveState, appendOutput } from './state.js';
 import path from 'node:path';
 
 const bootStart = Date.now();
@@ -47,6 +52,7 @@ async function main(): Promise<void> {
   );
 
   const processManager = new ProcessManager();
+  let lspClientInstance: LspClient | null = null;
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -56,7 +62,9 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     console.log(`[cnc] (${elapsed()}) Shutting down...`);
+    await saveState();
     stopWatcher();
+    lspClientInstance?.stop();
     await processManager.stopAll();
     await stopServer();
     console.log(`[cnc] (${elapsed()}) Shutdown complete`);
@@ -89,10 +97,19 @@ async function main(): Promise<void> {
     broadcast('bootstrapProgress', { step, message });
   };
 
+  const output = (proc: string, stream: 'stdout' | 'stderr', line: string) => {
+    appendOutput(proc, stream, line);
+    broadcast('processOutput', { process: proc, stream, line });
+  };
+
   try {
     // 3. Install tunnel and agent
     console.log(`[cnc] (${elapsed()}) Step 3: Installing tunnel and agent...`);
-    await Promise.all([installTunnel(progress), installAgent(progress)]);
+    await Promise.all([
+      installTunnel(progress),
+      installAgent(progress),
+      installLsp(progress),
+    ]);
     console.log(`[cnc] (${elapsed()}) Tunnel and agent install complete`);
 
     // 4. Write tunnel config
@@ -132,6 +149,21 @@ async function main(): Promise<void> {
     initShell(config.workspaceDir, broadcast);
     setProcessManager(processManager);
 
+    // Restore persisted state from previous session (if resuming from snapshot)
+    initState(config.workspaceDir);
+    await restoreState();
+
+    // Start TypeScript language server
+    console.log(`[cnc] (${elapsed()}) Starting LSP...`);
+    lspClientInstance = new LspClient();
+    await lspClientInstance.start(config.workspaceDir);
+    setLspClient(lspClientInstance);
+
+    // Start LSP HTTP sidecar for remy
+    const lspSidecar = new LspSidecar(lspClientInstance);
+    await lspSidecar.start(4388);
+    console.log(`[cnc] (${elapsed()}) LSP sidecar ready on port 4388`);
+
     // 8. Start dev server
     const webDir = webConfig
       ? path.resolve(
@@ -155,20 +187,8 @@ async function main(): Promise<void> {
         cwd: webDir,
         restartOnCrash: true,
         maxRestarts: 5,
-        onStdout: (line) => {
-          broadcast('processOutput', {
-            process: 'devServer',
-            stream: 'stdout',
-            line,
-          });
-        },
-        onStderr: (line) => {
-          broadcast('processOutput', {
-            process: 'devServer',
-            stream: 'stderr',
-            line,
-          });
-        },
+        onStdout: (line) => output('devServer', 'stdout', line),
+        onStderr: (line) => output('devServer', 'stderr', line),
       });
     } else {
       console.log(
@@ -209,20 +229,10 @@ async function main(): Promise<void> {
           }
         } else {
           console.log(`[tunnel:stdout] ${line}`);
-          broadcast('processOutput', {
-            process: 'tunnel',
-            stream: 'stdout',
-            line,
-          });
+          output('tunnel', 'stdout', line);
         }
       },
-      onStderr: (line) => {
-        broadcast('processOutput', {
-          process: 'tunnel',
-          stream: 'stderr',
-          line,
-        });
-      },
+      onStderr: (line) => output('tunnel', 'stderr', line),
     });
 
     // 10. Start agent (remy --headless)
@@ -239,6 +249,7 @@ async function main(): Promise<void> {
         config.apiBaseUrl,
       ],
       cwd: config.workspaceDir,
+      env: { LSP_URL: 'http://localhost:4388' },
       stdin: true,
       restartOnCrash: false,
       maxRestarts: 0,
@@ -271,20 +282,10 @@ async function main(): Promise<void> {
           }
         } catch {
           console.log(`[agent:stdout] ${line}`);
-          broadcast('processOutput', {
-            process: 'agent',
-            stream: 'stdout',
-            line,
-          });
+          output('agent', 'stdout', line);
         }
       },
-      onStderr: (line) => {
-        broadcast('processOutput', {
-          process: 'agent',
-          stream: 'stderr',
-          line,
-        });
-      },
+      onStderr: (line) => output('agent', 'stderr', line),
     });
 
     // 11. Start file watcher
@@ -293,6 +294,10 @@ async function main(): Promise<void> {
     );
     startWatcher(config.workspaceDir, (filePath, changeType) => {
       broadcast('fileChanged', { path: filePath, changeType });
+      // Notify LSP sidecar of file changes so diagnostics stay fresh
+      if (changeType === 'modified' || changeType === 'created') {
+        lspSidecar.onFileChanged(filePath).catch(() => {});
+      }
     });
 
     // 11. Ready

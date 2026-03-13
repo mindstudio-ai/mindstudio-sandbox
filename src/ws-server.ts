@@ -15,6 +15,16 @@ import { buildTree } from './handlers/filesystem.js';
 import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
 import type { ProcessManager } from './process-manager.js';
+import type { LspClient } from './lsp-client.js';
+import {
+  getChatHistory,
+  getOutputLog,
+  trackUserMessage,
+  trackAgentEvent,
+} from './state.js';
+
+// Re-export so index.ts can keep importing from ws-server
+export { trackAgentEvent, trackUserMessage };
 
 type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -23,71 +33,6 @@ let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 let appConfig: AppConfig | null = null;
 let pm: ProcessManager | null = null;
-
-// Agent chat history — accumulates messages for reconnecting clients
-interface ChatEntry {
-  role: 'user' | 'assistant';
-  text: string;
-  toolCalls?: Array<{
-    id: string;
-    name: string;
-    input: Record<string, unknown>;
-    result?: string;
-    isError?: boolean;
-  }>;
-}
-
-const chatHistory: ChatEntry[] = [];
-let currentAssistantEntry: ChatEntry | null = null;
-
-/** Called by index.ts when agent events arrive. Builds up chat history. */
-export function trackAgentEvent(
-  eventType: string,
-  data: Record<string, unknown>,
-): void {
-  switch (eventType) {
-    case 'agentText':
-      if (currentAssistantEntry) {
-        currentAssistantEntry.text += data.text as string;
-      }
-      break;
-    case 'agentToolStart':
-      if (currentAssistantEntry) {
-        if (!currentAssistantEntry.toolCalls) {
-          currentAssistantEntry.toolCalls = [];
-        }
-        currentAssistantEntry.toolCalls.push({
-          id: data.id as string,
-          name: data.name as string,
-          input: data.input as Record<string, unknown>,
-        });
-      }
-      break;
-    case 'agentToolDone':
-      if (currentAssistantEntry?.toolCalls) {
-        const tc = currentAssistantEntry.toolCalls.find(
-          (t) => t.id === data.id,
-        );
-        if (tc) {
-          tc.result = data.result as string;
-          tc.isError = data.isError as boolean;
-        }
-      }
-      break;
-    case 'agentTurnDone':
-      if (currentAssistantEntry) {
-        currentAssistantEntry = null;
-      }
-      break;
-  }
-}
-
-/** Called when the user sends a message to the agent. */
-export function trackUserMessage(text: string): void {
-  chatHistory.push({ role: 'user', text });
-  currentAssistantEntry = { role: 'assistant', text: '', toolCalls: [] };
-  chatHistory.push(currentAssistantEntry);
-}
 
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
@@ -137,6 +82,8 @@ const actions: Record<string, ActionHandler> = {
 
 let httpServer: http.Server;
 let wss: WebSocketServer;
+let lspWss: WebSocketServer;
+let lspClient: LspClient | null = null;
 let status: ServerStatus = 'bootstrapping';
 
 export function getStatus(): ServerStatus {
@@ -164,6 +111,11 @@ export function setProxyTarget(port: number): void {
   console.log(`[ws-server] Preview proxy target set to localhost:${port}`);
 }
 
+/** Set the shared LSP client for WebSocket bridge and sidecar. */
+export function setLspClient(client: LspClient): void {
+  lspClient = client;
+}
+
 function verifyToken(url: string | undefined): boolean {
   if (!sandboxToken) {
     return true;
@@ -173,12 +125,13 @@ function verifyToken(url: string | undefined): boolean {
 }
 
 /** Check if this request is for the C&C control channel. */
+/** Paths handled by the C&C server (not proxied to HMR/preview). */
 function isCncPath(url: string | undefined): boolean {
   if (!url) {
     return false;
   }
   const pathname = new URL(url, 'http://localhost').pathname;
-  return pathname === '/ws' || pathname === '/health';
+  return pathname === '/ws' || pathname === '/health' || pathname === '/lsp';
 }
 
 export function startServer(port: number, token?: string): Promise<void> {
@@ -216,6 +169,75 @@ export function startServer(port: number, token?: string): Promise<void> {
     // C&C WebSocket — only on /ws path
     wss = new WebSocketServer({ noServer: true });
 
+    // LSP WebSocket — bridges Monaco to the shared LspClient
+    lspWss = new WebSocketServer({ noServer: true });
+    lspWss.on('connection', (ws) => {
+      console.log('[lsp] WebSocket client connected');
+
+      if (!lspClient?.isRunning) {
+        console.error('[lsp] Language server not running, closing connection');
+        ws.close(1013, 'Language server not running');
+        return;
+      }
+
+      // WebSocket → language server (route through LspClient)
+      ws.on('message', async (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.id !== undefined && msg.method) {
+            // Request — route response back to this WS
+            try {
+              const result = await lspClient!.request(msg.method, msg.params);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
+              }
+            } catch (err) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    error: {
+                      code: -32603,
+                      message:
+                        err instanceof Error ? err.message : 'Unknown error',
+                    },
+                  }),
+                );
+              }
+            }
+          } else {
+            // Notification — fire and forget
+            lspClient!.notify(msg.method, msg.params);
+          }
+        } catch {
+          console.error('[lsp] Failed to parse WebSocket message');
+        }
+      });
+
+      // Language server notifications → WebSocket
+      const unsubs: Array<() => void> = [];
+      const forwardNotification = (method: string) => {
+        const unsub = lspClient!.onNotification(method, (params) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
+          }
+        });
+        unsubs.push(unsub);
+      };
+
+      forwardNotification('textDocument/publishDiagnostics');
+      forwardNotification('window/logMessage');
+      forwardNotification('window/showMessage');
+
+      ws.on('close', () => {
+        console.log('[lsp] WebSocket client disconnected');
+        for (const unsub of unsubs) {
+          unsub();
+        }
+      });
+    });
+
     wss.on('connection', async (ws) => {
       console.log(
         `[ws-server] C&C WebSocket client connected (total: ${wss.clients.size})`,
@@ -237,7 +259,8 @@ export function startServer(port: number, token?: string): Promise<void> {
             previewAvailable: proxy !== null,
             app: appConfig,
             fileTree: tree,
-            chatHistory,
+            chatHistory: getChatHistory(),
+            outputLog: getOutputLog(),
           }),
         );
       } catch {
@@ -302,7 +325,13 @@ export function startServer(port: number, token?: string): Promise<void> {
       const pathname = new URL(req.url || '/', 'http://localhost').pathname;
       console.log(`[ws-server] WebSocket upgrade: ${pathname}`);
 
-      if (isCncPath(req.url)) {
+      if (pathname === '/lsp') {
+        // LSP WebSocket — bridges to language server
+        console.log('[ws-server] Upgrading LSP WebSocket');
+        lspWss.handleUpgrade(req, socket, head, (ws) => {
+          lspWss.emit('connection', ws, req);
+        });
+      } else if (isCncPath(req.url)) {
         // C&C WebSocket — auth required
         if (!verifyToken(req.url)) {
           console.log(`[ws-server] Rejected: invalid token on ${pathname}`);
@@ -358,6 +387,12 @@ export function stopServer(): Promise<void> {
   return new Promise((resolve) => {
     if (proxy) {
       proxy.close();
+    }
+    if (lspWss) {
+      for (const client of lspWss.clients) {
+        client.close(1001, 'Server shutting down');
+      }
+      lspWss.close();
     }
     if (wss) {
       for (const client of wss.clients) {

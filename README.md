@@ -11,10 +11,13 @@ Single port (4387) serves everything:
 ```
 Browser
   ├── wss://host/ws?token=...   → C&C WebSocket (editor control)
+  ├── wss://host/lsp            → TypeScript language server (LSP over JSON-RPC)
   ├── https://host/health       → health check (public)
   ├── https://host/*            → reverse proxy → dev server (preview)
   └── wss://host/*              → reverse proxy → dev server (HMR)
 ```
+
+Internally, port 4388 runs the LSP HTTP sidecar for the remy agent.
 
 Inside the container, the C&C server manages:
 - **Dev server** (Vite / webpack / etc.) — frontend with HMR
@@ -82,13 +85,14 @@ need to bootstrap the UI — no round-trips required:
     { "name": "mindstudio.json", "path": "mindstudio.json", "type": "file", "size": 1073, "modified": "..." }
   ],
   "chatHistory": [
-    { "role": "user", "text": "add a delete method for haikus" },
+    { "role": "user", "content": "add a delete method for haikus" },
     {
       "role": "assistant",
-      "text": "Done. Created deleteHaiku method with soft-delete.",
-      "toolCalls": [
-        { "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" }, "result": "...", "isError": false },
-        { "id": "tc_2", "name": "writeFile", "input": { "path": "src/deleteHaiku.ts" }, "result": "Created...", "isError": false }
+      "content": [
+        { "type": "text", "text": "I'll read the table schema first." },
+        { "type": "tool", "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" }, "result": "...", "isError": false },
+        { "type": "tool", "id": "tc_2", "name": "writeFile", "input": { "path": "src/deleteHaiku.ts" }, "result": "Created...", "isError": false },
+        { "type": "text", "text": "Done. Created deleteHaiku method with soft-delete." }
       ]
     }
   ]
@@ -107,10 +111,13 @@ Each tree entry has `name`, `path` (relative), `type`, `size`, `modified`,
 and `children` (for directories within the depth limit). Use `listDir`
 to lazily load deeper levels.
 
-Each chat entry has `role` (`"user"` or `"assistant"`), `text`, and
-optionally `toolCalls` (array of `{ id, name, input, result, isError }`).
-If the agent is mid-response when you connect, the last assistant entry
-will have partial text and in-progress tool calls (missing `result`).
+User messages have `content` as a string. Assistant messages have
+`content` as an ordered array of blocks — `{ type: "text", text }` and
+`{ type: "tool", id, name, input, result?, isError? }` — preserving
+the exact sequence of text → tool calls → more text. Render them in
+order. If the agent is mid-response when you connect, the last
+assistant entry may have partial text and in-progress tool calls
+(missing `result`).
 
 ### 4. Listen for pushed events
 
@@ -396,6 +403,29 @@ Agent encountered an error.
 ```json
 { "event": "agentError", "error": "Failed to start dev session" }
 ```
+
+## LSP HTTP Sidecar (port 4388)
+
+An internal HTTP API that wraps the TypeScript language server for the
+remy agent. Same language server instance as Monaco — shared via the
+LspClient multiplexer.
+
+All endpoints accept POST with JSON body. File paths are relative to
+the workspace root. Line/column numbers are 1-indexed.
+
+| Endpoint | Request | Response |
+|----------|---------|----------|
+| `/diagnostics` | `{ file }` | `{ diagnostics: [{ file, line, column, severity, message, code }] }` |
+| `/definition` | `{ file, line, column }` | `{ definitions: [{ file, line, column }] }` |
+| `/references` | `{ file, line, column }` | `{ references: [{ file, line, column }] }` |
+| `/hover` | `{ file, line, column }` | `{ type, documentation }` |
+| `/symbols` | `{ file }` | `{ symbols: [{ name, kind, line }] }` |
+
+The `/diagnostics` endpoint waits up to 2s for the language server to
+push diagnostics after opening/updating the file. File changes from
+the file watcher automatically sync to the language server.
+
+See `LSP-FRONTEND-SPEC.md` for Monaco WebSocket integration.
 
 ## Building a File Tree
 

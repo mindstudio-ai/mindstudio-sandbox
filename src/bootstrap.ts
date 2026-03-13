@@ -117,6 +117,25 @@ export async function installAgent(progress: ProgressFn): Promise<void> {
   }
 }
 
+export async function installLsp(progress: ProgressFn): Promise<void> {
+  progress('installLsp', 'Installing TypeScript language server...');
+  run('npm install -g typescript-language-server typescript', {
+    label: 'npm install -g typescript-language-server typescript',
+  });
+
+  try {
+    const whichResult = execSync('which typescript-language-server', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    console.log(`[bootstrap] LSP installed at: ${whichResult.trim()}`);
+  } catch {
+    console.error(
+      '[bootstrap] WARNING: typescript-language-server not found after install',
+    );
+  }
+}
+
 export async function writeTunnelConfig(config: Config): Promise<void> {
   const configDir = path.join(os.homedir(), '.mindstudio-local-tunnel');
   const configPath = path.join(configDir, 'config.json');
