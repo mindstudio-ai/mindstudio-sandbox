@@ -227,6 +227,10 @@ async function main(): Promise<void> {
     console.error(`[cnc] (${elapsed()}) ========================================`);
     setStatus('error');
     broadcast('bootstrapProgress', { step: 'error', message });
+
+    // Exit with non-zero so the sandbox manager knows the start failed
+    console.error(`[cnc] Exiting with code 1`);
+    process.exit(1);
   }
 }
 
