@@ -46,11 +46,18 @@ function run(
 }
 
 export async function installTunnel(progress: ProgressFn): Promise<void> {
-  // Always install to ensure we have the right version
-  progress('installTunnel', 'Installing mindstudio-local tunnel...');
-  run('npm install -g mindstudio-ai/mindstudio-local-model-tunnel#seant/appsv2', {
-    label: 'npm install -g mindstudio-local-model-tunnel#seant/appsv2',
+  // Clone, build, and link the tunnel from source.
+  // npm install -g from git doesn't work because devDependencies (tsup, etc.)
+  // aren't available. This is temporary — production will use the published npm package.
+  const tunnelDir = '/tmp/mindstudio-local-tunnel';
+  progress('installTunnel', 'Installing mindstudio-local tunnel from source...');
+  run(`rm -rf ${tunnelDir}`, { label: 'Clean tunnel dir' });
+  run(`git clone --depth 1 --branch seant/appsv2 https://github.com/mindstudio-ai/mindstudio-local-model-tunnel.git ${tunnelDir}`, {
+    label: 'git clone tunnel (seant/appsv2)',
   });
+  run('npm install', { cwd: tunnelDir, label: 'npm install in tunnel' });
+  run('npm run build', { cwd: tunnelDir, label: 'npm run build in tunnel' });
+  run(`npm install -g ${tunnelDir}`, { label: 'npm install -g (link built tunnel)' });
 
   // Verify it installed
   try {
