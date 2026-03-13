@@ -22,7 +22,9 @@ export function loadConfig(): Config {
       missing.push(name);
       return '';
     }
-    console.log(`[config]   ${name} = ${name.includes('KEY') || name.includes('TOKEN') ? val.slice(0, 8) + '...' : val}`);
+    console.log(
+      `[config]   ${name} = ${name.includes('KEY') || name.includes('TOKEN') ? val.slice(0, 8) + '...' : val}`,
+    );
     return val;
   }
 
@@ -38,15 +40,23 @@ export function loadConfig(): Config {
     apiKey: required('API_KEY'),
     userId: required('USER_ID'),
     apiBaseUrl: optional('API_BASE_URL', 'https://api.mindstudio.ai'),
-    workspaceDir: path.resolve(optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace')),
+    workspaceDir: path.resolve(
+      optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace'),
+    ),
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken: process.env['SANDBOX_TOKEN']
-      ? (console.log(`[config]   SANDBOX_TOKEN = ${process.env['SANDBOX_TOKEN']!.slice(0, 8)}...`), process.env['SANDBOX_TOKEN']!)
-      : (console.log('[config]   SANDBOX_TOKEN = (not set, auth disabled)'), ''),
+      ? (console.log(
+          `[config]   SANDBOX_TOKEN = ${process.env['SANDBOX_TOKEN']!.slice(0, 8)}...`,
+        ),
+        process.env['SANDBOX_TOKEN']!)
+      : (console.log('[config]   SANDBOX_TOKEN = (not set, auth disabled)'),
+        ''),
   };
 
   if (missing.length > 0) {
-    console.error(`[config] FATAL: Missing required env vars: ${missing.join(', ')}`);
+    console.error(
+      `[config] FATAL: Missing required env vars: ${missing.join(', ')}`,
+    );
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}`,
     );

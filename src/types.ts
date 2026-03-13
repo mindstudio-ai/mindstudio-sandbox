@@ -49,6 +49,7 @@ export interface ManagedProcessConfig {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
+  stdin?: boolean;
   restartOnCrash: boolean;
   maxRestarts: number;
   critical?: boolean;

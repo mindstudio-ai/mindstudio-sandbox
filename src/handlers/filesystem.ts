@@ -22,12 +22,37 @@ function relativePath(absPath: string): string {
 }
 
 const BINARY_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
-  '.woff', '.woff2', '.ttf', '.eot', '.otf',
-  '.zip', '.tar', '.gz', '.bz2', '.7z',
-  '.pdf', '.doc', '.docx',
-  '.mp3', '.mp4', '.wav', '.ogg', '.webm',
-  '.wasm', '.exe', '.dll', '.so', '.dylib',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.bmp',
+  '.ico',
+  '.webp',
+  '.svg',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.eot',
+  '.otf',
+  '.zip',
+  '.tar',
+  '.gz',
+  '.bz2',
+  '.7z',
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.mp3',
+  '.mp4',
+  '.wav',
+  '.ogg',
+  '.webm',
+  '.wasm',
+  '.exe',
+  '.dll',
+  '.so',
+  '.dylib',
 ]);
 
 function isBinary(filePath: string): boolean {
@@ -125,7 +150,9 @@ export async function buildTree(
   const results: TreeEntry[] = [];
 
   for (const entry of entries) {
-    if (TREE_IGNORE.has(entry.name)) continue;
+    if (TREE_IGNORE.has(entry.name)) {
+      continue;
+    }
 
     const fullPath = path.join(dirPath, entry.name);
     const relPath = path.relative(relativeTo, fullPath);
@@ -152,7 +179,9 @@ export async function buildTree(
 
   // Sort: directories first, then alphabetical
   results.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
     return a.name.localeCompare(b.name);
   });
 

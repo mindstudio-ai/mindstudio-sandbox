@@ -80,6 +80,17 @@ need to bootstrap the UI — no round-trips required:
       ]
     },
     { "name": "mindstudio.json", "path": "mindstudio.json", "type": "file", "size": 1073, "modified": "..." }
+  ],
+  "chatHistory": [
+    { "role": "user", "text": "add a delete method for haikus" },
+    {
+      "role": "assistant",
+      "text": "Done. Created deleteHaiku method with soft-delete.",
+      "toolCalls": [
+        { "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" }, "result": "...", "isError": false },
+        { "id": "tc_2", "name": "writeFile", "input": { "path": "src/deleteHaiku.ts" }, "result": "Created...", "isError": false }
+      ]
+    }
   ]
 }
 ```
@@ -90,10 +101,16 @@ need to bootstrap the UI — no round-trips required:
 | `previewAvailable` | Whether the preview proxy is ready |
 | `app` | Parsed `mindstudio.json` — app name, methods, tables, interfaces |
 | `fileTree` | Recursive file tree (3 levels deep), directories first, alphabetical. Excludes `node_modules`, `.git`, `.vite`. |
+| `chatHistory` | Full agent conversation history. Empty array if no messages yet. Persists across reconnects. |
 
 Each tree entry has `name`, `path` (relative), `type`, `size`, `modified`,
 and `children` (for directories within the depth limit). Use `listDir`
 to lazily load deeper levels.
+
+Each chat entry has `role` (`"user"` or `"assistant"`), `text`, and
+optionally `toolCalls` (array of `{ id, name, input, result, isError }`).
+If the agent is mid-response when you connect, the last assistant entry
+will have partial text and in-progress tool calls (missing `result`).
 
 ### 4. Listen for pushed events
 
@@ -253,6 +270,31 @@ lines are also streamed as `processOutput` events.
 Use `shell` for git operations, npm commands, running scripts, or
 anything else — the sandbox is an isolated container.
 
+### `agentMessage`
+
+Send a message to the AI coding agent. Response is an immediate ack —
+the agent's output streams as pushed events (see below).
+
+```json
+{ "requestId": "...", "action": "agentMessage", "params": { "text": "add a delete method for haikus" } }
+```
+
+Response:
+```json
+{ "requestId": "...", "success": true, "data": {} }
+```
+
+Then listen for `agentThinking`, `agentText`, `agentToolStart`,
+`agentToolDone`, and `agentTurnDone` events.
+
+### `agentCancel`
+
+Cancel the current agent turn. Kills and restarts the agent process.
+
+```json
+{ "requestId": "...", "action": "agentCancel", "params": {} }
+```
+
 ## Pushed Events
 
 Events are broadcast to all connected clients. They have an `event`
@@ -278,7 +320,7 @@ A line of stdout or stderr from a managed process.
 { "event": "processOutput", "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms" }
 ```
 
-`process` is `"devServer"`, `"tunnel"`, or `"shell"`.
+`process` is `"devServer"`, `"tunnel"`, `"agent"`, or `"shell"`.
 
 ### `tunnelEvent`
 
@@ -305,8 +347,55 @@ Status updates during sandbox bootstrap.
 { "event": "bootstrapProgress", "step": "installDeps", "message": "Installing dependencies..." }
 ```
 
-Steps in order: `installTunnel`, `cloneApp`, `installDeps`, `devServer`,
-`tunnel`, `ready`, or `error`.
+Steps in order: `installTunnel`, `installAgent`, `cloneApp`,
+`installDeps`, `devServer`, `tunnel`, `agent`, `ready`, or `error`.
+
+### Agent Events
+
+These stream while the agent is processing a message (after
+`agentMessage` action). They map 1:1 from remy's headless protocol.
+
+#### `agentReady`
+Agent process initialized and ready for messages.
+```json
+{ "event": "agentReady" }
+```
+
+#### `agentThinking`
+Agent's internal reasoning (streaming chunks).
+```json
+{ "event": "agentThinking", "text": "Let me look at the table schema..." }
+```
+
+#### `agentText`
+Agent's visible response text (streaming chunks).
+```json
+{ "event": "agentText", "text": "I've added the delete method. " }
+```
+
+#### `agentToolStart`
+Agent started executing a tool.
+```json
+{ "event": "agentToolStart", "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" } }
+```
+
+#### `agentToolDone`
+Agent tool execution completed.
+```json
+{ "event": "agentToolDone", "id": "tc_1", "name": "readFile", "result": "...", "isError": false }
+```
+
+#### `agentTurnDone`
+Agent finished responding to the message.
+```json
+{ "event": "agentTurnDone" }
+```
+
+#### `agentError`
+Agent encountered an error.
+```json
+{ "event": "agentError", "error": "Failed to start dev session" }
+```
 
 ## Building a File Tree
 

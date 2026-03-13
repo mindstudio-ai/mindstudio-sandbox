@@ -15,7 +15,9 @@ export function suppressPath(filePath: string): void {
 
 function isSuppressed(filePath: string): boolean {
   const ts = suppressedPaths.get(filePath);
-  if (!ts) return false;
+  if (!ts) {
+    return false;
+  }
   if (Date.now() - ts > SUPPRESS_TTL) {
     suppressedPaths.delete(filePath);
     return false;
@@ -26,16 +28,15 @@ function isSuppressed(filePath: string): boolean {
 
 export function startWatcher(
   dir: string,
-  onChange: (filePath: string, changeType: 'created' | 'modified' | 'deleted') => void,
+  onChange: (
+    filePath: string,
+    changeType: 'created' | 'modified' | 'deleted',
+  ) => void,
 ): void {
   workspaceDir = dir;
 
   watcher = chokidar.watch(dir, {
-    ignored: [
-      '**/node_modules/**',
-      '**/.git/**',
-      '**/.vite/**',
-    ],
+    ignored: ['**/node_modules/**', '**/.git/**', '**/.vite/**'],
     ignoreInitial: true,
     persistent: true,
     awaitWriteFinish: {
@@ -45,17 +46,23 @@ export function startWatcher(
   });
 
   watcher.on('add', (absPath) => {
-    if (isSuppressed(absPath)) return;
+    if (isSuppressed(absPath)) {
+      return;
+    }
     onChange(path.relative(workspaceDir, absPath), 'created');
   });
 
   watcher.on('change', (absPath) => {
-    if (isSuppressed(absPath)) return;
+    if (isSuppressed(absPath)) {
+      return;
+    }
     onChange(path.relative(workspaceDir, absPath), 'modified');
   });
 
   watcher.on('unlink', (absPath) => {
-    if (isSuppressed(absPath)) return;
+    if (isSuppressed(absPath)) {
+      return;
+    }
     onChange(path.relative(workspaceDir, absPath), 'deleted');
   });
 }

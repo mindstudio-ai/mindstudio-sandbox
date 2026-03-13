@@ -7,3 +7,4 @@ dist/
 *.tsbuildinfo
 .vite/
 *.__ms_dev__.mjs
+.vscode/settings.json

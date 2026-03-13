@@ -19,9 +19,13 @@ export class ProcessManager {
       throw new Error(`Process "${config.name}" already registered`);
     }
 
-    console.log(`[process-manager] Registering process "${config.name}": ${config.command} ${config.args.join(' ')}`);
+    console.log(
+      `[process-manager] Registering process "${config.name}": ${config.command} ${config.args.join(' ')}`,
+    );
     console.log(`[process-manager]   cwd: ${config.cwd}`);
-    console.log(`[process-manager]   restartOnCrash: ${config.restartOnCrash}, maxRestarts: ${config.maxRestarts}`);
+    console.log(
+      `[process-manager]   restartOnCrash: ${config.restartOnCrash}, maxRestarts: ${config.maxRestarts}`,
+    );
 
     const proc: ManagedProcess = {
       config,
@@ -38,31 +42,39 @@ export class ProcessManager {
 
   private spawn(proc: ManagedProcess): void {
     if (proc.stopped) {
-      console.log(`[process-manager] "${proc.config.name}" is stopped, not spawning`);
+      console.log(
+        `[process-manager] "${proc.config.name}" is stopped, not spawning`,
+      );
       return;
     }
 
     proc.state = 'starting';
     const { config } = proc;
 
-    console.log(`[process-manager] Spawning "${config.name}": ${config.command} ${config.args.join(' ')}`);
+    console.log(
+      `[process-manager] Spawning "${config.name}": ${config.command} ${config.args.join(' ')}`,
+    );
 
     let child: ChildProcess;
     try {
       child = spawn(config.command, config.args, {
         cwd: config.cwd,
         env: { ...process.env, ...config.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [config.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
-      console.error(`[process-manager] Failed to spawn "${config.name}": ${err instanceof Error ? err.message : err}`);
+      console.error(
+        `[process-manager] Failed to spawn "${config.name}": ${err instanceof Error ? err.message : err}`,
+      );
       proc.state = 'crashed';
       return;
     }
 
     proc.child = child;
     proc.state = 'running';
-    console.log(`[process-manager] "${config.name}" spawned with PID ${child.pid}`);
+    console.log(
+      `[process-manager] "${config.name}" spawned with PID ${child.pid}`,
+    );
 
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
@@ -78,11 +90,15 @@ export class ProcessManager {
     }
 
     child.on('exit', (code, signal) => {
-      console.log(`[process-manager] "${config.name}" (PID ${child.pid}) exited — code=${code}, signal=${signal}`);
+      console.log(
+        `[process-manager] "${config.name}" (PID ${child.pid}) exited — code=${code}, signal=${signal}`,
+      );
 
       if (proc.stopped) {
         proc.state = 'stopped';
-        console.log(`[process-manager] "${config.name}" was intentionally stopped`);
+        console.log(
+          `[process-manager] "${config.name}" was intentionally stopped`,
+        );
         return;
       }
 
@@ -98,9 +114,13 @@ export class ProcessManager {
           this.spawn(proc);
         }, delay);
       } else if (proc.restartCount >= config.maxRestarts) {
-        console.error(`[process-manager] "${config.name}" exceeded max restarts (${config.maxRestarts}), giving up`);
+        console.error(
+          `[process-manager] "${config.name}" exceeded max restarts (${config.maxRestarts}), giving up`,
+        );
         if (config.critical) {
-          console.error(`[process-manager] "${config.name}" is critical — exiting`);
+          console.error(
+            `[process-manager] "${config.name}" is critical — exiting`,
+          );
           process.exit(1);
         }
       }
@@ -110,13 +130,52 @@ export class ProcessManager {
       console.error(
         `[process-manager] "${config.name}" spawn error: ${err.message}`,
       );
-      console.error(`[process-manager]   code: ${(err as NodeJS.ErrnoException).code}`);
-      console.error(`[process-manager]   path: ${(err as NodeJS.ErrnoException).path}`);
+      console.error(
+        `[process-manager]   code: ${(err as NodeJS.ErrnoException).code}`,
+      );
+      console.error(
+        `[process-manager]   path: ${(err as NodeJS.ErrnoException).path}`,
+      );
     });
   }
 
   getState(name: string): ProcessState | undefined {
     return this.processes.get(name)?.state;
+  }
+
+  writeStdin(name: string, data: string): void {
+    const proc = this.processes.get(name);
+    if (!proc?.child?.stdin) {
+      console.error(
+        `[process-manager] writeStdin("${name}"): no stdin available`,
+      );
+      return;
+    }
+    if (proc.child.exitCode !== null) {
+      console.error(
+        `[process-manager] writeStdin("${name}"): process already exited`,
+      );
+      return;
+    }
+    proc.child.stdin.write(data + '\n');
+  }
+
+  async restart(name: string): Promise<void> {
+    const proc = this.processes.get(name);
+    if (!proc) {
+      return;
+    }
+
+    console.log(`[process-manager] Restarting "${name}"...`);
+    // Kill existing
+    if (proc.child && proc.child.exitCode === null) {
+      proc.stopped = true;
+      await this.killChild(proc.child, name);
+    }
+    // Reset and respawn
+    proc.stopped = false;
+    proc.restartCount = 0;
+    this.spawn(proc);
   }
 
   async stop(name: string): Promise<void> {
@@ -145,7 +204,9 @@ export class ProcessManager {
 
   async stopAll(): Promise<void> {
     const names = Array.from(this.processes.keys());
-    console.log(`[process-manager] Stopping all processes: ${names.join(', ')}`);
+    console.log(
+      `[process-manager] Stopping all processes: ${names.join(', ')}`,
+    );
     const stops = names.map((name) => this.stop(name));
     await Promise.all(stops);
     console.log('[process-manager] All processes stopped');
@@ -158,9 +219,13 @@ export class ProcessManager {
         return;
       }
 
-      console.log(`[process-manager] Sending SIGTERM to "${name}" (PID ${child.pid})`);
+      console.log(
+        `[process-manager] Sending SIGTERM to "${name}" (PID ${child.pid})`,
+      );
       const forceKill = setTimeout(() => {
-        console.log(`[process-manager] "${name}" did not exit in 5s, sending SIGKILL`);
+        console.log(
+          `[process-manager] "${name}" did not exit in 5s, sending SIGKILL`,
+        );
         child.kill('SIGKILL');
       }, 5000);
 

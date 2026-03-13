@@ -34,13 +34,21 @@ export async function search(params: {
 
     if (useRg) {
       args.push('--json', '--no-heading');
-      if (!params.caseSensitive) args.push('-i');
-      if (params.glob) args.push('--glob', params.glob);
+      if (!params.caseSensitive) {
+        args.push('-i');
+      }
+      if (params.glob) {
+        args.push('--glob', params.glob);
+      }
       args.push(
-        '--glob', '!node_modules',
-        '--glob', '!.git',
-        '--glob', '!.vite',
-        '--max-count', String(maxResults),
+        '--glob',
+        '!node_modules',
+        '--glob',
+        '!.git',
+        '--glob',
+        '!.vite',
+        '--max-count',
+        String(maxResults),
         params.query,
         searchDir,
       );
@@ -56,7 +64,9 @@ export async function search(params: {
     child.stdout?.on('data', (chunk: Buffer) => {
       const lines = chunk.toString().split('\n');
       for (const line of lines) {
-        if (!line.trim()) continue;
+        if (!line.trim()) {
+          continue;
+        }
         try {
           const parsed = JSON.parse(line);
           if (parsed.type === 'match' && results.length < maxResults) {
@@ -111,7 +121,9 @@ function grepFallback(
       '--exclude-dir=.git',
       '--exclude-dir=.vite',
     ];
-    if (!params.caseSensitive) args.push('-i');
+    if (!params.caseSensitive) {
+      args.push('-i');
+    }
     args.push(params.query, searchDir);
 
     const child = spawn('grep', args, {
@@ -128,7 +140,9 @@ function grepFallback(
       buf = lines.pop() || '';
 
       for (const line of lines) {
-        if (results.length >= maxResults) break;
+        if (results.length >= maxResults) {
+          break;
+        }
         // Format: file:line:text
         const match = line.match(/^(.+?):(\d+):(.*)$/);
         if (match) {
