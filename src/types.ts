@@ -30,6 +30,8 @@ export interface DirEntry {
 export interface TreeEntry extends DirEntry {
   path: string;
   children?: TreeEntry[];
+  /** If true, this directory exists but its contents are not included (e.g. node_modules). */
+  collapsed?: boolean;
 }
 
 export interface SearchResult {

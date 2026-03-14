@@ -778,10 +778,9 @@ Required to start the server:
 | Var | Purpose |
 |-----|---------|
 | `GIT_REPO_URL` | App git repo to clone |
-| `API_KEY` | Developer's MindStudio API key (for tunnel + agent) |
+| `MINDSTUDIO_API_KEY` | Developer's MindStudio API key (for tunnel + agent) |
 | `USER_ID` | Developer's user ID (for tunnel) |
 | `API_BASE_URL` | Platform API URL (default: `https://api.mindstudio.ai`) |
-| `WORKSPACE_DIR` | App workspace path (default: `/home/vercel-sandbox/workspace`) |
 | `PORT` | Server port (default: `4387`) |
 | `SANDBOX_TOKEN` | WebSocket auth token (optional, no auth if unset) |
 | `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` (default: `info`) |
@@ -793,9 +792,7 @@ Required to start the server:
 npm install
 
 # Run against the example app
-GIT_REPO_URL=test API_KEY=test USER_ID=test \
-  WORKSPACE_DIR=./example PORT=4387 \
-  npx tsx src/index.ts
+GIT_REPO_URL=test MINDSTUDIO_API_KEY=test USER_ID=test PORT=4387 npx tsx src/index.ts
 
 # Type-check
 npx tsc --noEmit

@@ -143,10 +143,6 @@ export async function buildTree(
   const results: TreeEntry[] = [];
 
   for (const entry of entries) {
-    if (TREE_IGNORE.has(entry.name)) {
-      continue;
-    }
-
     const fullPath = path.join(dirPath, entry.name);
     const relPath = path.relative(relativeTo, fullPath);
 
@@ -160,8 +156,13 @@ export async function buildTree(
         modified: stat.mtime.toISOString(),
       };
 
-      if (entry.isDirectory() && depth > 1) {
-        node.children = await buildTree(fullPath, relativeTo, depth - 1);
+      if (entry.isDirectory()) {
+        if (TREE_IGNORE.has(entry.name)) {
+          // Include but don't recurse — frontend renders as non-expandable
+          node.collapsed = true;
+        } else if (depth > 1) {
+          node.children = await buildTree(fullPath, relativeTo, depth - 1);
+        }
       }
 
       results.push(node);

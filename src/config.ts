@@ -18,7 +18,7 @@ export interface Config {
 
 export function loadConfig(): Config {
   // Bootstrap log level first so all subsequent logging respects it
-  const rawLogLevel = process.env['LOG_LEVEL']?.toLowerCase() ?? 'info';
+  const rawLogLevel = process.env['LOG_LEVEL']?.toLowerCase() ?? 'debug';
   const logLevel: LogLevel = VALID_LOG_LEVELS.includes(rawLogLevel as LogLevel)
     ? (rawLogLevel as LogLevel)
     : 'info';
@@ -60,12 +60,10 @@ export function loadConfig(): Config {
 
   const config: Config = {
     gitRepoUrl: required('GIT_REPO_URL'),
-    apiKey: required('API_KEY'),
+    apiKey: required('MINDSTUDIO_API_KEY'),
     userId: required('USER_ID'),
     apiBaseUrl: optional('API_BASE_URL', 'https://api.mindstudio.ai'),
-    workspaceDir: path.resolve(
-      optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace'),
-    ),
+    workspaceDir: '/home/vercel-sandbox/workspace',
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken,
     logLevel,
