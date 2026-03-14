@@ -1,39 +1,22 @@
 /**
  * Persistent sandbox state — survives hibernate/resume via filesystem snapshot.
  *
- * Written to disk on SIGTERM, restored on boot. The Vercel snapshot
- * captures the filesystem, so anything saved before shutdown is there
- * when the sandbox resumes.
+ * Stores the process output log. Chat history is owned by remy
+ * (persisted in .remy-session.json, fetched via get_history action).
+ *
+ * Auto-save: state is flushed synchronously (writeFileSync) after
+ * output accumulates, debounced to avoid thrashing. This survives
+ * unclean shutdowns where SIGTERM never arrives.
  */
 
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.js';
 
 const log = createLogger('state');
 
 // --- Types ---
-
-export interface ChatToolCall {
-  type: 'tool';
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-  result?: string;
-  isError?: boolean;
-}
-
-export interface ChatTextBlock {
-  type: 'text';
-  text: string;
-}
-
-export type ChatBlock = ChatTextBlock | ChatToolCall;
-
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string | ChatBlock[];
-}
 
 export interface OutputLine {
   process: string;
@@ -43,80 +26,63 @@ export interface OutputLine {
 }
 
 interface SandboxState {
-  chatHistory: ChatMessage[];
   outputLog: OutputLine[];
 }
 
 // --- In-memory state ---
 
 const MAX_OUTPUT_LINES = 5000;
+const FLUSH_DEBOUNCE_MS = 5_000; // 5 seconds after last mutation
 
 const state: SandboxState = {
-  chatHistory: [],
   outputLog: [],
 };
 
-let currentBlocks: ChatBlock[] | null = null;
 let statePath: string = '/tmp/sandbox-state.json';
+let dirty = false;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+// --- Auto-save ---
+
+/** Mark state as dirty and schedule a synchronous flush. */
+function markDirty(): void {
+  dirty = true;
+  if (flushTimer) {
+    return; // already scheduled
+  }
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushSync();
+  }, FLUSH_DEBOUNCE_MS);
+  flushTimer.unref();
+}
+
+/** Synchronous write — survives even if the process is about to die. */
+function flushSync(): void {
+  if (!dirty) {
+    return;
+  }
+  try {
+    const json = JSON.stringify(state);
+    fsSync.writeFileSync(statePath, json, 'utf-8');
+    dirty = false;
+    log.debug(`Auto-saved (${state.outputLog.length} output lines)`);
+  } catch (err) {
+    log.error(`Auto-save failed: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+export function stopAutoSave(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+}
 
 // --- Init ---
 
 export function initState(workspaceDir: string): void {
   statePath = path.join(workspaceDir, '.sandbox-state.json');
-}
-
-// --- Chat history ---
-
-export function getChatHistory(): ChatMessage[] {
-  return state.chatHistory;
-}
-
-export function trackUserMessage(text: string): void {
-  currentBlocks = [];
-  state.chatHistory.push({ role: 'user', content: text });
-  state.chatHistory.push({ role: 'assistant', content: currentBlocks });
-}
-
-export function trackAgentEvent(
-  eventType: string,
-  data: Record<string, unknown>,
-): void {
-  if (!currentBlocks) {
-    return;
-  }
-
-  switch (eventType) {
-    case 'agentText': {
-      const last = currentBlocks[currentBlocks.length - 1];
-      if (last && last.type === 'text') {
-        last.text += data.text as string;
-      } else {
-        currentBlocks.push({ type: 'text', text: data.text as string });
-      }
-      break;
-    }
-    case 'agentToolStart':
-      currentBlocks.push({
-        type: 'tool',
-        id: data.id as string,
-        name: data.name as string,
-        input: data.input as Record<string, unknown>,
-      });
-      break;
-    case 'agentToolDone': {
-      const tc = currentBlocks.find(
-        (b): b is ChatToolCall => b.type === 'tool' && b.id === data.id,
-      );
-      if (tc) {
-        tc.result = data.result as string;
-        tc.isError = data.isError as boolean;
-      }
-      break;
-    }
-    case 'agentTurnDone':
-      currentBlocks = null;
-      break;
-  }
 }
 
 // --- Process output log ---
@@ -135,17 +101,18 @@ export function appendOutput(
   if (state.outputLog.length > MAX_OUTPUT_LINES) {
     state.outputLog.splice(0, state.outputLog.length - MAX_OUTPUT_LINES);
   }
+  markDirty();
 }
 
 // --- Save / Restore ---
 
 export async function saveState(): Promise<void> {
   try {
+    stopAutoSave();
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
-    log.info(
-      `Saved (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) → ${statePath}`,
-    );
+    dirty = false;
+    log.info(`Saved (${state.outputLog.length} output lines) → ${statePath}`);
   } catch (err) {
     log.error(`Failed to save: ${err instanceof Error ? err.message : err}`);
   }
@@ -155,14 +122,11 @@ export async function restoreState(): Promise<boolean> {
   try {
     const json = await fs.readFile(statePath, 'utf-8');
     const saved = JSON.parse(json) as SandboxState;
-    if (saved.chatHistory) {
-      state.chatHistory.push(...saved.chatHistory);
-    }
     if (saved.outputLog) {
       state.outputLog.push(...saved.outputLog);
     }
     log.info(
-      `Restored (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) ← ${statePath}`,
+      `Restored (${state.outputLog.length} output lines) ← ${statePath}`,
     );
     return true;
   } catch {

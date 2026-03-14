@@ -22,19 +22,11 @@ import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
 import type { ProcessManager } from '../processes/process-manager.js';
 import type { LspClient } from '../lsp/client.js';
-import {
-  getChatHistory,
-  getOutputLog,
-  trackUserMessage,
-  trackAgentEvent,
-} from '../state.js';
+import { getOutputLog } from '../state.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
 const lspLog = createLogger('lsp-ws');
-
-// Re-export so index.ts can keep importing from ws-server
-export { trackAgentEvent, trackUserMessage };
 
 type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -43,6 +35,39 @@ let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 let appConfig: AppConfig | null = null;
 let processManager: ProcessManager | null = null;
+
+// Pending get_history callbacks — resolved when the agent emits a `history` event
+let historyResolvers: Array<(messages: unknown[]) => void> = [];
+
+/** Called from index.ts when a `history` event arrives from the agent. */
+export function resolveHistoryRequest(messages: unknown[]): void {
+  const resolvers = historyResolvers;
+  historyResolvers = [];
+  for (const resolve of resolvers) {
+    resolve(messages);
+  }
+}
+
+/** Request chat history from the agent process. Returns [] if agent isn't running or times out. */
+function getAgentHistory(): Promise<unknown[]> {
+  if (!processManager || processManager.getState('agent') !== 'running') {
+    return Promise.resolve([]);
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      historyResolvers = historyResolvers.filter((r) => r !== resolve);
+      resolve([]);
+    }, 2000);
+    historyResolvers.push((messages) => {
+      clearTimeout(timeout);
+      resolve(messages);
+    });
+    processManager!.writeStdin(
+      'agent',
+      JSON.stringify({ action: 'get_history' }),
+    );
+  });
+}
 
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
@@ -71,7 +96,6 @@ const actions: Record<string, ActionHandler> = {
       throw new Error('Agent not running');
     }
     log.info(`Sending message to agent: ${text.slice(0, 100)}...`);
-    trackUserMessage(text);
     processManager.writeStdin(
       'agent',
       JSON.stringify({ action: 'message', text }),
@@ -82,9 +106,22 @@ const actions: Record<string, ActionHandler> = {
     if (!processManager) {
       throw new Error('Process manager not initialized');
     }
-    log.info('Cancelling agent — restarting process');
-    broadcast('agentError', { error: 'Cancelled by user' });
-    await processManager.restart('agent');
+    if (processManager.getState('agent') !== 'running') {
+      throw new Error('Agent not running');
+    }
+    log.info('Cancelling agent turn');
+    processManager.writeStdin('agent', JSON.stringify({ action: 'cancel' }));
+    return {};
+  },
+  agentClear: async () => {
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('agent') !== 'running') {
+      throw new Error('Agent not running');
+    }
+    log.info('Clearing agent session');
+    processManager.writeStdin('agent', JSON.stringify({ action: 'clear' }));
     return {};
   },
 };
@@ -251,7 +288,10 @@ export function startServer(port: number, token?: string): Promise<void> {
 
       // Send initial frame with everything the client needs to bootstrap
       try {
-        const tree = await buildTree();
+        const [tree, chatHistory] = await Promise.all([
+          buildTree(),
+          getAgentHistory(),
+        ]);
         ws.send(
           JSON.stringify({
             event: 'init',
@@ -259,7 +299,7 @@ export function startServer(port: number, token?: string): Promise<void> {
             previewAvailable: proxy !== null,
             app: appConfig,
             fileTree: tree,
-            chatHistory: getChatHistory(),
+            chatHistory,
             outputLog: getOutputLog(),
           }),
         );
@@ -271,6 +311,7 @@ export function startServer(port: number, token?: string): Promise<void> {
             previewAvailable: proxy !== null,
             app: appConfig,
             fileTree: [],
+            chatHistory: [],
           }),
         );
       }

@@ -18,7 +18,7 @@ import {
   setProxyTarget,
   setAppConfig,
   setProcessManager,
-  trackAgentEvent,
+  resolveHistoryRequest,
   setLspClient,
 } from './server/ws-server.js';
 import { LspClient } from './lsp/client.js';
@@ -28,7 +28,13 @@ import { initSearch } from './server/handlers/search.js';
 import { initShell } from './server/handlers/shell.js';
 import { startWatcher, stopWatcher } from './processes/file-watcher.js';
 import { parseTunnelLine } from './processes/tunnel-events.js';
-import { initState, restoreState, saveState, appendOutput } from './state.js';
+import {
+  initState,
+  restoreState,
+  saveState,
+  stopAutoSave,
+  appendOutput,
+} from './state.js';
 import { createLogger, onLog } from './logger.js';
 import path from 'node:path';
 
@@ -65,6 +71,7 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     log.info(`(${elapsed()}) Shutting down...`);
+    stopAutoSave();
     await saveState();
     stopWatcher();
     lspClientInstance?.stop();
@@ -255,9 +262,13 @@ async function main(): Promise<void> {
         config.apiKey,
         '--base-url',
         config.apiBaseUrl,
+        '--lsp-url',
+        'http://localhost:4388',
+        '--log-level',
+        'debug',
       ],
       cwd: config.workspaceDir,
-      env: { LSP_URL: 'http://localhost:4388' },
+      env: {},
       stdin: true,
       restartOnCrash: false,
       maxRestarts: 0,
@@ -273,16 +284,25 @@ async function main(): Promise<void> {
               tool_start: 'agentToolStart',
               tool_done: 'agentToolDone',
               turn_done: 'agentTurnDone',
+              turn_cancelled: 'agentTurnCancelled',
               error: 'agentError',
               stopping: 'agentStopping',
               stopped: 'agentStopped',
+              session_restored: 'agentSessionRestored',
+              session_cleared: 'agentSessionCleared',
             };
+
+            // history event is a response to get_history — route to pending resolvers
+            if (event.event === 'history') {
+              resolveHistoryRequest(event.messages ?? []);
+              return;
+            }
+
             const mappedEvent = eventMap[event.event] || `agent_${event.event}`;
             const { event: _evt, ...data } = event;
             log.debug(
               `(${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
             );
-            trackAgentEvent(mappedEvent, data);
             broadcast(mappedEvent, data);
           } else {
             log.debug(`[agent:stdout] ${line}`);
