@@ -246,6 +246,7 @@ async function main(): Promise<void> {
         'debug',
       ],
       cwd: config.workspaceDir,
+      stdin: true,
       restartOnCrash: true,
       maxRestarts: 5,
       critical: true,

@@ -149,6 +149,96 @@ const actions: Record<string, ActionHandler> = {
     }
     return { log: processManager?.getProcessLog(name) ?? [] };
   },
+  tunnelRunScenario: async (p) => {
+    const { scenarioId } = p as { scenarioId: string };
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    if (!scenarioId) {
+      throw new Error('Missing "scenarioId" parameter');
+    }
+    log.info(`Running scenario: ${scenarioId}`);
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'runScenario', scenarioId }),
+    );
+    return {};
+  },
+  tunnelSyncSchema: async () => {
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    log.info('Requesting schema sync');
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'syncSchema' }),
+    );
+    return {};
+  },
+  tunnelListScenarios: async () => {
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'listScenarios' }),
+    );
+    return {};
+  },
+  tunnelImpersonate: async (p) => {
+    const { roles } = p as { roles: string[] };
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    if (!Array.isArray(roles)) {
+      throw new Error('Missing "roles" parameter (array of role IDs)');
+    }
+    log.info(`Impersonating roles: ${roles.join(', ')}`);
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'impersonate', roles }),
+    );
+    return {};
+  },
+  tunnelClearImpersonation: async () => {
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    log.info('Clearing role impersonation');
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'clearImpersonation' }),
+    );
+    return {};
+  },
+  tunnelListRoles: async () => {
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    if (processManager.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    processManager.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'listRoles' }),
+    );
+    return {};
+  },
 };
 
 let httpServer: http.Server;

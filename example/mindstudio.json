@@ -33,5 +33,32 @@
     }
   ],
 
-  "interfaces": [{ "type": "web", "path": "dist/interfaces/web/web.json" }]
+  "interfaces": [{ "type": "web", "path": "dist/interfaces/web/web.json" }],
+
+  "scenarios": [
+    {
+      "id": "sample-haikus",
+      "name": "Sample Haikus",
+      "description": "A handful of haikus across different topics",
+      "path": "dist/methods/.scenarios/sampleHaikus.ts",
+      "export": "sampleHaikus",
+      "roles": []
+    },
+    {
+      "id": "empty-state",
+      "name": "Empty State",
+      "description": "No data — test the empty UI",
+      "path": "dist/methods/.scenarios/emptyState.ts",
+      "export": "emptyState",
+      "roles": []
+    },
+    {
+      "id": "many-haikus",
+      "name": "Many Haikus",
+      "description": "20 haikus — test scrolling and list performance",
+      "path": "dist/methods/.scenarios/manyHaikus.ts",
+      "export": "manyHaikus",
+      "roles": []
+    }
+  ]
 }

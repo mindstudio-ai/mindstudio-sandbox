@@ -5,6 +5,11 @@ that provides full IDE features: autocomplete, diagnostics, hover info,
 go-to-definition, find references, rename, and code actions. It's
 available over WebSocket.
 
+The same language server instance is shared with the remy coding agent
+(via an HTTP sidecar on port 4388). This means diagnostics and type
+information are often already warm when you connect — files the agent
+has touched will have cached analysis.
+
 ## Connection
 
 ```
@@ -105,14 +110,14 @@ The language server works with `file://` URIs rooted at the workspace.
 When opening a file in Monaco, the model URI should match:
 
 ```typescript
+// WORKSPACE_DIR is the sandbox workspace path (from the init frame or config)
+// Default: /home/vercel-sandbox/workspace
+const WORKSPACE_DIR = '/home/vercel-sandbox/workspace';
+
 // When the file path from the C&C server is "dist/methods/src/generateHaiku.ts"
-const uri = monaco.Uri.parse(`file:///workspace/dist/methods/src/generateHaiku.ts`);
+const uri = monaco.Uri.parse(`file://${WORKSPACE_DIR}/dist/methods/src/generateHaiku.ts`);
 const model = monaco.editor.createModel(content, 'typescript', uri);
 ```
-
-The workspace root inside the sandbox is the `WORKSPACE_DIR` env var
-(default: `/home/vercel-sandbox/workspace`). Use this as the root for
-file URIs.
 
 The language server will send diagnostics keyed by these URIs, and
 features like go-to-definition will return locations using these URIs.
@@ -128,11 +133,10 @@ Once connected, Monaco gets these features automatically:
 | Hover | `textDocument/hover` | Type info on hover |
 | Go to definition | `textDocument/definition` | Jump to source |
 | Find references | `textDocument/references` | All usages across files |
-| Rename symbol | `textDocument/rename` | Project-wide rename |
+| Rename symbol | `textDocument/rename` | Project-wide rename (with prepare support) |
 | Code actions | `textDocument/codeAction` | Quick fixes, auto-import |
 | Signature help | `textDocument/signatureHelp` | Parameter hints |
 | Document symbols | `textDocument/documentSymbol` | Outline view |
-| Formatting | `textDocument/formatting` | If configured |
 
 ## Synchronizing File Content
 
@@ -148,12 +152,16 @@ When files change on disk (e.g., from the agent or `writeFile` action),
 and the file is open in the editor, update the Monaco model content.
 The language client will send a `didChange` notification automatically.
 
+The C&C server's file watcher also notifies the language server of
+disk changes, so diagnostics stay fresh even for files modified by the
+agent or shell commands.
+
 ## Lifecycle
 
 - The language server starts during C&C bootstrap
 - It stays running for the lifetime of the sandbox
 - If the WebSocket disconnects, the language server continues running
-  — the next connection reuses it
+  — the next connection reuses it (with all state intact)
 - On sandbox hibernate/resume, the language server restarts fresh
   (it rebuilds its project state from tsconfig.json on disk)
 

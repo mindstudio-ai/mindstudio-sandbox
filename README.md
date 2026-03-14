@@ -364,6 +364,62 @@ Response:
 }
 ```
 
+### `tunnelRunScenario`
+
+Run a scenario by ID. Truncates all tables, executes the seed function,
+and applies the scenario's roles. Listen for `tunnelEvent` with
+`scenario-start` and `scenario-complete` events.
+
+```json
+{ "requestId": "...", "action": "tunnelRunScenario", "params": { "scenarioId": "sample-haikus" } }
+```
+
+### `tunnelSyncSchema`
+
+Re-sync table definitions from disk (re-reads `mindstudio.json`).
+Listen for `tunnelEvent` with `schema-synced`.
+
+```json
+{ "requestId": "...", "action": "tunnelSyncSchema", "params": {} }
+```
+
+### `tunnelListScenarios`
+
+Request the current list of scenarios (re-reads `mindstudio.json`).
+Listen for `tunnelEvent` with `scenarios-list`.
+
+```json
+{ "requestId": "...", "action": "tunnelListScenarios", "params": {} }
+```
+
+### `tunnelImpersonate`
+
+Set a role override. Subsequent method executions will use these roles
+instead of the session's default. Listen for `tunnelEvent` with
+`impersonated`.
+
+```json
+{ "requestId": "...", "action": "tunnelImpersonate", "params": { "roles": ["ap", "admin"] } }
+```
+
+### `tunnelClearImpersonation`
+
+Clear the role override, reverting to the session's default roles.
+Listen for `tunnelEvent` with `impersonated` (roles will be `null`).
+
+```json
+{ "requestId": "...", "action": "tunnelClearImpersonation", "params": {} }
+```
+
+### `tunnelListRoles`
+
+Request the available roles from `mindstudio.json`. Listen for
+`tunnelEvent` with `roles-list`.
+
+```json
+{ "requestId": "...", "action": "tunnelListRoles", "params": {} }
+```
+
 ## Pushed Events
 
 Events are broadcast to all connected clients. They have an `event`
@@ -425,22 +481,51 @@ made via `writeFile` / `deleteFile` / `renameFile` actions.
 
 ### `tunnelEvent`
 
-A parsed JSON event from the dev tunnel's headless output.
+A parsed JSON event from the dev tunnel's headless output. All tunnel
+stdout events are forwarded as-is with `event: "tunnelEvent"` added.
 
 ```json
-{ "event": "tunnelEvent", "event": "session-started", "sessionId": "...", "proxyPort": 3835, "proxyUrl": "http://..." }
+{ "event": "tunnelEvent", "event": "session-started", "sessionId": "...", "proxyPort": 3835, "proxyUrl": "http://...", "scenarios": [...] }
 ```
 
-Key tunnel events:
+**Lifecycle events:**
 - `starting` — tunnel initializing (`appId`, `name`)
-- `session-started` — platform session active (`sessionId`, `branch`, `proxyPort`, `proxyUrl`)
+- `session-started` — platform session active (`sessionId`, `releaseId`, `branch`, `proxyPort`, `proxyUrl`, `webInterfaceUrl`, `scenarios`)
+- `stopping` — graceful shutdown initiated
+- `stopped` — cleanup complete, process exiting
+
+**Schema & data events:**
 - `schema-synced` — table schemas synced (`created`, `altered`, `errors`)
+- `scenario-start` — scenario being applied (`id`, `name`)
+- `scenario-complete` — scenario finished (`id`, `success`, `duration`, `roles`)
+- `scenarios-list` — response to `tunnelListScenarios` (`scenarios`)
+
+**Method execution events:**
 - `method-start` — method execution started (`id`, `method`)
 - `method-complete` — method execution finished (`id`, `success`, `duration`, `error?`)
+
+**Role impersonation events:**
+- `impersonated` — role override applied (`roles` array) or cleared (`roles: null`)
+- `roles-list` — response to `tunnelListRoles` (`roles: [{ id, name }]`)
+
+**Connection events:**
 - `connection-warning` — lost platform connection (`message`)
 - `connection-restored` — reconnected
-- `session-expired` — platform expired the session (tunnel exits)
+- `session-expired` — platform expired the session (tunnel exits with code 1)
+
+**Error events:**
 - `error` — fatal tunnel error (`message`)
+
+**Scenario discovery:** The `session-started` event includes a
+`scenarios` array with `{ id, name, description, roles }` for each
+available scenario. Use this to populate a scenario picker UI. Call
+`tunnelListScenarios` to refresh if `mindstudio.json` changes.
+
+**Role impersonation:** Use `tunnelListRoles` to get available roles,
+then `tunnelImpersonate` to set overrides. Method executions will run
+with the impersonated roles until `tunnelClearImpersonation` is called.
+The `scenario-complete` event also returns the roles applied by that
+scenario.
 
 ### `bootstrapProgress`
 
