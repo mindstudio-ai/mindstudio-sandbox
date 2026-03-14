@@ -25,6 +25,8 @@ export interface DirEntry {
   type: 'file' | 'directory';
   size: number;
   modified: string;
+  /** If true, this directory should not be expanded by the frontend. */
+  collapsed?: boolean;
 }
 
 export interface TreeEntry extends DirEntry {
@@ -143,6 +145,7 @@ export interface EditorTab {
 export interface EditorState {
   tabs: EditorTab[];
   activeTab: string | null;
+  expandedDirs: string[];
 }
 
 // Server state

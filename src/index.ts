@@ -12,6 +12,9 @@ import {
 } from './bootstrap.js';
 import { ProcessRegistry } from './processes/process-registry.js';
 import { ProcessManager } from './processes/process-manager.js';
+import { startTunnel } from './processes/tunnel/index.js';
+import { startAgent } from './processes/agent/index.js';
+import { startDevServer } from './processes/dev-server/index.js';
 import { BroadcastBatcher } from './server/broadcast-batcher.js';
 import {
   startServer,
@@ -21,7 +24,6 @@ import {
   setProxyTarget,
   setAppConfig,
   setProcessManager,
-  resolveHistoryRequest,
   setLspClient,
   setBatcher,
   setRegistry,
@@ -34,7 +36,6 @@ import { initFilesystem } from './server/handlers/filesystem.js';
 import { initSearch } from './server/handlers/search.js';
 import { initShell } from './server/handlers/shell.js';
 import { startWatcher, stopWatcher } from './processes/file-watcher.js';
-import { parseTunnelLine } from './processes/tunnel-events.js';
 import {
   initState,
   restoreState,
@@ -46,22 +47,6 @@ import { createLogger, onLog } from './logger.js';
 import path from 'node:path';
 
 const log = createLogger('cnc');
-
-/** Maps remy's headless event names to our WebSocket event names. */
-const AGENT_EVENT_MAP: Record<string, string> = {
-  ready: 'agentReady',
-  text: 'agentText',
-  thinking: 'agentThinking',
-  tool_start: 'agentToolStart',
-  tool_done: 'agentToolDone',
-  turn_done: 'agentTurnDone',
-  turn_cancelled: 'agentTurnCancelled',
-  error: 'agentError',
-  stopping: 'agentStopping',
-  stopped: 'agentStopped',
-  session_restored: 'agentSessionRestored',
-  session_cleared: 'agentSessionCleared',
-};
 
 const bootStart = Date.now();
 
@@ -242,15 +227,7 @@ async function main(): Promise<void> {
     if (webDir) {
       log.info(`(${elapsed()}) Step 8: Starting dev server in ${webDir}...`);
       progress('devServer', `Starting dev server: ${devCommand}`);
-      const [cmd, ...args] = devCommand.split(' ');
-      processManager.start({
-        name: 'devServer',
-        command: cmd,
-        args,
-        cwd: webDir,
-        restartOnCrash: true,
-        maxRestarts: 5,
-      });
+      startDevServer(processManager, { command: devCommand, cwd: webDir });
     } else {
       log.info(`(${elapsed()}) Step 8: No web interface, skipping dev server`);
     }
@@ -258,101 +235,27 @@ async function main(): Promise<void> {
     // 9. Start tunnel
     log.info(`(${elapsed()}) Step 9: Starting dev tunnel...`);
     progress('tunnel', 'Starting dev tunnel...');
-    processManager.start({
-      name: 'tunnel',
-      command: 'mindstudio-local',
-      args: [
-        '--headless',
-        '--port',
-        String(devPort),
-        '--bind',
-        '0.0.0.0',
-        '--log-level',
-        'debug',
-      ],
-      cwd: config.workspaceDir,
-      stdin: true,
-      restartOnCrash: true,
-      maxRestarts: 5,
-      critical: true,
-      onStdout: (line) => {
-        const tunnelEvent = parseTunnelLine(line);
-        if (tunnelEvent) {
-          log.debug(
-            `(${elapsed()}) Tunnel event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
-          );
-          broadcast('tunnelEvent', tunnelEvent);
-
-          switch (tunnelEvent.event) {
-            case 'session-started':
-              if (typeof tunnelEvent.proxyPort === 'number') {
-                log.info(
-                  `(${elapsed()}) Tunnel proxy port: ${tunnelEvent.proxyPort}`,
-                );
-                setProxyTarget(tunnelEvent.proxyPort);
-              }
-              break;
-            case 'session-expired':
-              log.error('Tunnel session expired by platform');
-              break;
-            case 'connection-warning':
-              log.warn(`Tunnel connection warning: ${tunnelEvent.message}`);
-              break;
-            case 'connection-restored':
-              log.info('Tunnel connection restored');
-              break;
-            case 'error':
-              log.error(`Tunnel error: ${tunnelEvent.message}`);
-              break;
-          }
-        }
+    startTunnel(
+      processManager,
+      { workspaceDir: config.workspaceDir, devPort },
+      {
+        onSessionStarted: (port) => setProxyTarget(port),
+        broadcast,
       },
-    });
+    );
 
-    // 10. Start agent (remy --headless)
+    // 10. Start agent
     log.info(`(${elapsed()}) Step 10: Starting agent...`);
     progress('agent', 'Starting coding agent...');
-    processManager.start({
-      name: 'agent',
-      command: 'remy',
-      args: [
-        '--headless',
-        '--api-key',
-        config.apiKey,
-        '--base-url',
-        config.apiBaseUrl,
-        '--lsp-url',
-        'http://localhost:4388',
-        '--log-level',
-        'debug',
-      ],
-      cwd: config.workspaceDir,
-      stdin: true,
-      restartOnCrash: false,
-      maxRestarts: 0,
-      critical: false,
-      onStdout: (line) => {
-        try {
-          const event = JSON.parse(line);
-          if (event && typeof event.event === 'string') {
-            if (event.event === 'history') {
-              resolveHistoryRequest(event.messages ?? []);
-              return;
-            }
-
-            const mappedEvent =
-              AGENT_EVENT_MAP[event.event] || `agent_${event.event}`;
-            const { event: _evt, ...data } = event;
-            log.debug(
-              `(${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
-            );
-            broadcast(mappedEvent, data);
-          }
-        } catch {
-          // Non-JSON stdout from agent — already captured by registry via ProcessManager
-        }
+    startAgent(
+      processManager,
+      {
+        workspaceDir: config.workspaceDir,
+        apiKey: config.apiKey,
+        apiBaseUrl: config.apiBaseUrl,
       },
-    });
+      { broadcast },
+    );
 
     // 11. Start file watcher
     log.info(

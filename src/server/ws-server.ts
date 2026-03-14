@@ -22,6 +22,11 @@ import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
 import type { ProcessManager } from '../processes/process-manager.js';
 import type { ProcessRegistry } from '../processes/process-registry.js';
+import { createTunnelActions } from '../processes/tunnel/index.js';
+import {
+  createAgentActions,
+  getAgentHistory,
+} from '../processes/agent/index.js';
 import type { BroadcastBatcher } from './broadcast-batcher.js';
 import type { EditorStateManager } from './editor-state.js';
 import type { LspClient } from '../lsp/client.js';
@@ -41,49 +46,17 @@ let batcher: BroadcastBatcher | null = null;
 let registry: ProcessRegistry | null = null;
 let editorState: EditorStateManager | null = null;
 
-// Pending get_history callbacks — resolved when the agent emits a `history` event
-let historyResolvers: Array<(messages: unknown[]) => void> = [];
-
-/** Called from index.ts when a `history` event arrives from the agent. */
-export function resolveHistoryRequest(messages: unknown[]): void {
-  const resolvers = historyResolvers;
-  historyResolvers = [];
-  for (const resolve of resolvers) {
-    resolve(messages);
-  }
-}
-
-/** Request chat history from the agent process. Returns [] if agent isn't running or times out. */
-function getAgentHistory(): Promise<unknown[]> {
-  if (!processManager || processManager.getState('agent') !== 'running') {
-    return Promise.resolve([]);
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      historyResolvers = historyResolvers.filter((r) => r !== resolve);
-      resolve([]);
-    }, 2000);
-    historyResolvers.push((messages) => {
-      clearTimeout(timeout);
-      resolve(messages);
-    });
-    processManager!.writeStdin(
-      'agent',
-      JSON.stringify({ action: 'get_history' }),
-    );
-  });
-}
-
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
   appConfig = config;
 }
 
-/** Store the process manager so agent actions can write to stdin / restart. */
+/** Store the process manager and wire up process-specific actions. */
 export function setProcessManager(pm: ProcessManager): void {
   processManager = pm;
-  // Grab registry reference from the process manager
-  registry = null; // will be set via the pm's internal registry
+  // Merge process-specific actions now that pm is available
+  Object.assign(actions, createTunnelActions(pm));
+  Object.assign(actions, createAgentActions(pm));
 }
 
 /** Store the batcher for batched broadcasts. */
@@ -91,7 +64,7 @@ export function setBatcher(b: BroadcastBatcher): void {
   batcher = b;
 }
 
-/** Set the registry ref so init frame can access process info. */
+/** Set the registry so init frame can access process info. */
 export function setRegistry(reg: ProcessRegistry): void {
   registry = reg;
 }
@@ -99,26 +72,6 @@ export function setRegistry(reg: ProcessRegistry): void {
 /** Set the editor state manager for tab actions + init frame. */
 export function setEditorState(editor: EditorStateManager): void {
   editorState = editor;
-}
-
-/** Assert a managed process exists and is running. */
-function requireProcess(name: string): void {
-  if (!processManager) {
-    throw new Error('Process manager not initialized');
-  }
-  if (processManager.getState(name) !== 'running') {
-    throw new Error(`${name} not running`);
-  }
-}
-
-/** Send a JSON action to a managed process's stdin. */
-function sendToProcess(
-  name: string,
-  action: string,
-  extra?: Record<string, unknown>,
-): void {
-  requireProcess(name);
-  processManager!.writeStdin(name, JSON.stringify({ action, ...extra }));
 }
 
 const actions: Record<string, ActionHandler> = {
@@ -140,60 +93,6 @@ const actions: Record<string, ActionHandler> = {
   },
   search: (p) => search(p as Parameters<typeof search>[0]),
   shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
-
-  // --- Agent ---
-  agentMessage: async (p) => {
-    const { text } = p as { text: string };
-    requireProcess('agent');
-    log.info(`Sending message to agent: ${text.slice(0, 100)}...`);
-    sendToProcess('agent', 'message', { text });
-    return {};
-  },
-  agentCancel: async () => {
-    sendToProcess('agent', 'cancel');
-    return {};
-  },
-  agentClear: async () => {
-    sendToProcess('agent', 'clear');
-    return {};
-  },
-
-  // --- Tunnel ---
-  tunnelRunScenario: async (p) => {
-    const { scenarioId } = p as { scenarioId: string };
-    if (!scenarioId) {
-      throw new Error('Missing "scenarioId" parameter');
-    }
-    log.info(`Running scenario: ${scenarioId}`);
-    sendToProcess('tunnel', 'runScenario', { scenarioId });
-    return {};
-  },
-  tunnelSyncSchema: async () => {
-    sendToProcess('tunnel', 'syncSchema');
-    return {};
-  },
-  tunnelListScenarios: async () => {
-    sendToProcess('tunnel', 'listScenarios');
-    return {};
-  },
-  tunnelImpersonate: async (p) => {
-    const { roles } = p as { roles: string[] };
-    if (!Array.isArray(roles)) {
-      throw new Error('Missing "roles" parameter (array of role IDs)');
-    }
-    log.info(`Impersonating roles: ${roles.join(', ')}`);
-    sendToProcess('tunnel', 'impersonate', { roles });
-    return {};
-  },
-  tunnelClearImpersonation: async () => {
-    log.info('Clearing role impersonation');
-    sendToProcess('tunnel', 'clearImpersonation');
-    return {};
-  },
-  tunnelListRoles: async () => {
-    sendToProcess('tunnel', 'listRoles');
-    return {};
-  },
 
   // --- Processes ---
   getProcesses: async () => {
@@ -240,6 +139,32 @@ const actions: Record<string, ActionHandler> = {
     editorState?.reorderTabs(paths);
     return {};
   },
+  expandDir: async (p) => {
+    const { path } = p as { path: string };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
+    }
+    editorState?.expandDir(path);
+    return {};
+  },
+  collapseDir: async (p) => {
+    const { path } = p as { path: string };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
+    }
+    editorState?.collapseDir(path);
+    return {};
+  },
+  toggleDir: async (p) => {
+    const { path } = p as { path: string };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
+    }
+    editorState?.toggleDir(path);
+    return {};
+  },
+
+  // Agent and tunnel actions are merged in via setProcessManager()
 };
 
 let httpServer: http.Server;
@@ -406,7 +331,9 @@ export function startServer(port: number, token?: string): Promise<void> {
       try {
         const [tree, chatHistory] = await Promise.all([
           buildTree(),
-          getAgentHistory(),
+          processManager
+            ? getAgentHistory(processManager)
+            : Promise.resolve([]),
         ]);
         ws.send(
           JSON.stringify({

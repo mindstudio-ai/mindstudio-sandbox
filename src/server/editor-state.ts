@@ -1,10 +1,10 @@
 /**
- * Server-owned editor tab state.
+ * Server-owned editor & workspace UI state.
  *
- * Tracks which files are open, their order, and which tab is active.
- * The frontend renders tabs from this state. Both user actions and
- * remy agent actions can manipulate tabs — the server is the source
- * of truth.
+ * Tracks which files are open, their order, which tab is active,
+ * and which directories are expanded in the file tree. The frontend
+ * renders from this state. Both user actions and the remy agent can
+ * manipulate it — the server is the source of truth.
  *
  * Does NOT manage buffer content, cursor position, undo history, or
  * selections — those live in Monaco on the frontend.
@@ -17,6 +17,7 @@ type ChangeCallback = (state: EditorState) => void;
 export class EditorStateManager {
   private tabs: EditorTab[] = [];
   private activeTab: string | null = null;
+  private expandedDirs = new Set<string>();
   private onChange: ChangeCallback;
 
   constructor(onChange: ChangeCallback) {
@@ -27,8 +28,11 @@ export class EditorStateManager {
     return {
       tabs: [...this.tabs],
       activeTab: this.activeTab,
+      expandedDirs: Array.from(this.expandedDirs).sort(),
     };
   }
+
+  // --- Tabs ---
 
   /**
    * Open a file. If already open, just activate it.
@@ -40,7 +44,6 @@ export class EditorStateManager {
     const existing = this.tabs.find((t) => t.path === path);
 
     if (existing) {
-      // Already open — activate it. If it was preview and this is a pin, upgrade it.
       if (!preview && existing.isPreview) {
         existing.isPreview = false;
       }
@@ -49,7 +52,6 @@ export class EditorStateManager {
       return;
     }
 
-    // If opening as preview, replace any existing preview tab
     if (preview) {
       const previewIdx = this.tabs.findIndex((t) => t.isPreview);
       if (previewIdx !== -1) {
@@ -60,7 +62,6 @@ export class EditorStateManager {
       }
     }
 
-    // Add new tab
     this.tabs.push({ path, isPreview: preview });
     this.activeTab = path;
     this.emit();
@@ -79,7 +80,6 @@ export class EditorStateManager {
       if (this.tabs.length === 0) {
         this.activeTab = null;
       } else {
-        // Activate the tab at the same index (or the last one)
         const newIdx = Math.min(idx, this.tabs.length - 1);
         this.activeTab = this.tabs[newIdx].path;
       }
@@ -111,23 +111,79 @@ export class EditorStateManager {
     this.emit();
   }
 
-  /**
-   * Handle a file being deleted or renamed — close/update affected tabs.
-   * Called from the file watcher or rename/delete actions.
-   */
+  // --- Directory tree ---
+
+  /** Expand a directory in the file tree. */
+  expandDir(path: string): void {
+    if (this.expandedDirs.has(path)) {
+      return;
+    }
+    this.expandedDirs.add(path);
+    this.emit();
+  }
+
+  /** Collapse a directory in the file tree. */
+  collapseDir(path: string): void {
+    if (!this.expandedDirs.has(path)) {
+      return;
+    }
+    this.expandedDirs.delete(path);
+    // Also collapse any children
+    for (const dir of this.expandedDirs) {
+      if (dir.startsWith(path + '/')) {
+        this.expandedDirs.delete(dir);
+      }
+    }
+    this.emit();
+  }
+
+  /** Toggle a directory's expanded state. */
+  toggleDir(path: string): void {
+    if (this.expandedDirs.has(path)) {
+      this.collapseDir(path);
+    } else {
+      this.expandDir(path);
+    }
+  }
+
+  // --- File lifecycle ---
+
   onFileDeleted(path: string): void {
     if (this.tabs.some((t) => t.path === path)) {
       this.closeFile(path);
     }
+    // Collapse deleted directories
+    this.expandedDirs.delete(path);
+    for (const dir of this.expandedDirs) {
+      if (dir.startsWith(path + '/')) {
+        this.expandedDirs.delete(dir);
+      }
+    }
   }
 
   onFileRenamed(oldPath: string, newPath: string): void {
+    // Update tabs
     const tab = this.tabs.find((t) => t.path === oldPath);
     if (tab) {
       tab.path = newPath;
       if (this.activeTab === oldPath) {
         this.activeTab = newPath;
       }
+    }
+
+    // Update expanded dirs
+    if (this.expandedDirs.has(oldPath)) {
+      this.expandedDirs.delete(oldPath);
+      this.expandedDirs.add(newPath);
+    }
+    for (const dir of this.expandedDirs) {
+      if (dir.startsWith(oldPath + '/')) {
+        this.expandedDirs.delete(dir);
+        this.expandedDirs.add(newPath + dir.slice(oldPath.length));
+      }
+    }
+
+    if (tab) {
       this.emit();
     }
   }
@@ -136,6 +192,7 @@ export class EditorStateManager {
   hydrate(state: EditorState): void {
     this.tabs = state.tabs.map((t) => ({ ...t }));
     this.activeTab = state.activeTab;
+    this.expandedDirs = new Set(state.expandedDirs ?? []);
   }
 
   private emit(): void {

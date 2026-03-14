@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { DirEntry, TreeEntry } from '../../types.js';
 import { suppressPath } from '../../processes/file-watcher.js';
-import { resolveSafe, IGNORED_DIRS } from '../../utils/paths.js';
+import { resolveSafe, TREE_HIDDEN, TREE_COLLAPSED } from '../../utils/paths.js';
 
 let workspaceDir: string;
 
@@ -60,15 +60,22 @@ export async function listDir(params: {
 
   const results: DirEntry[] = [];
   for (const entry of entries) {
+    if (TREE_HIDDEN.has(entry.name)) {
+      continue;
+    }
     const fullPath = path.join(dirPath, entry.name);
     try {
       const stat = await fs.stat(fullPath);
-      results.push({
+      const dirEntry: DirEntry = {
         name: entry.name,
         type: entry.isDirectory() ? 'directory' : 'file',
         size: stat.size,
         modified: stat.mtime.toISOString(),
-      });
+      };
+      if (entry.isDirectory() && TREE_COLLAPSED.has(entry.name)) {
+        dirEntry.collapsed = true;
+      }
+      results.push(dirEntry);
     } catch {
       // Skip entries we can't stat (broken symlinks, etc.)
     }
@@ -122,7 +129,7 @@ export async function renameFile(params: {
   return {};
 }
 
-const TREE_IGNORE = new Set<string>(IGNORED_DIRS);
+// TREE_HIDDEN and TREE_COLLAPSED imported from utils/paths.js
 
 /**
  * Build a recursive file tree up to `depth` levels deep.
@@ -143,6 +150,10 @@ export async function buildTree(
   const results: TreeEntry[] = [];
 
   for (const entry of entries) {
+    if (TREE_HIDDEN.has(entry.name)) {
+      continue;
+    }
+
     const fullPath = path.join(dirPath, entry.name);
     const relPath = path.relative(relativeTo, fullPath);
 
@@ -157,8 +168,7 @@ export async function buildTree(
       };
 
       if (entry.isDirectory()) {
-        if (TREE_IGNORE.has(entry.name)) {
-          // Include but don't recurse — frontend renders as non-expandable
+        if (TREE_COLLAPSED.has(entry.name)) {
           node.collapsed = true;
         } else if (depth > 1) {
           node.children = await buildTree(fullPath, relativeTo, depth - 1);
