@@ -35,8 +35,22 @@ export function startWatcher(
 ): void {
   workspaceDir = dir;
 
+  // Periodically clean stale suppression entries
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [filePath, ts] of suppressedPaths) {
+      if (now - ts > SUPPRESS_TTL) {
+        suppressedPaths.delete(filePath);
+      }
+    }
+  }, 30_000);
+  cleanupTimer.unref();
+
   watcher = chokidar.watch(dir, {
-    ignored: IGNORED_DIRS.map((d) => `**/${d}/**`),
+    ignored: [
+      ...IGNORED_DIRS.map((d) => `**/${d}/**`),
+      ...Array.from(TREE_HIDDEN).map((name) => `**/${name}`),
+    ],
     ignoreInitial: true,
     persistent: true,
     awaitWriteFinish: {

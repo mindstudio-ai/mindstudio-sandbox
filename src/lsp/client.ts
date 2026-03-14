@@ -7,8 +7,10 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { ProcessRegistry } from '../processes/process-registry.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-client');
@@ -20,6 +22,9 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB — safety cap on LSP message buffer
+const REQUEST_TIMEOUT_MS = 30_000; // 30s — reject hung requests
+
 export class LspClient {
   private process: ChildProcess | null = null;
   private workspaceDir: string = '';
@@ -29,8 +34,10 @@ export class LspClient {
   private openFiles = new Set<string>();
   private fileVersions = new Map<string, number>();
   private buffer = Buffer.alloc(0);
+  private registry: ProcessRegistry | null = null;
 
-  async start(workspaceDir: string): Promise<void> {
+  async start(workspaceDir: string, registry?: ProcessRegistry): Promise<void> {
+    this.registry = registry ?? null;
     this.workspaceDir = workspaceDir;
 
     log.info(
@@ -44,17 +51,36 @@ export class LspClient {
 
     log.info(`Spawned with PID ${this.process.pid}`);
 
-    this.process.stderr?.on('data', (chunk: Buffer) => {
-      log.debug(`stderr: ${chunk.toString().trim()}`);
+    // Register in process registry for dashboard visibility
+    this.registry?.register(
+      'lsp',
+      'service',
+      'typescript-language-server --stdio',
+    );
+    this.registry?.setState('lsp', 'running', {
+      pid: this.process.pid ?? null,
     });
+
+    if (this.process.stderr) {
+      const rl = createInterface({ input: this.process.stderr });
+      rl.on('line', (line) => {
+        log.debug(`stderr: ${line}`);
+        this.registry?.appendLog('lsp', 'stderr', line);
+      });
+    }
 
     this.process.on('error', (err) => {
       log.error(`Spawn error: ${err.message}`);
+      this.registry?.setState('lsp', 'crashed');
       this.process = null;
     });
 
     this.process.on('exit', (code, signal) => {
       log.info(`Exited (code=${code}, signal=${signal})`);
+      this.registry?.setState('lsp', 'stopped', {
+        exitCode: code,
+        signal: signal ?? undefined,
+      });
       this.process = null;
       // Reject all pending requests
       for (const [id, req] of this.pending) {
@@ -66,6 +92,13 @@ export class LspClient {
     // Parse Content-Length framed messages from stdout
     this.process.stdout?.on('data', (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
+      if (this.buffer.length > MAX_BUFFER_SIZE) {
+        log.error(
+          `Message buffer exceeded ${MAX_BUFFER_SIZE} bytes, dropping buffer`,
+        );
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
       this.drainBuffer();
     });
 
@@ -140,7 +173,28 @@ export class LspClient {
       }
 
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
+
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(
+            new Error(
+              `LSP request ${method} timed out after ${REQUEST_TIMEOUT_MS}ms`,
+            ),
+          );
+        }
+      }, REQUEST_TIMEOUT_MS);
+
+      this.pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
 
       const message = JSON.stringify({ jsonrpc: '2.0', id, method, params });
       this.writeMessage(message);

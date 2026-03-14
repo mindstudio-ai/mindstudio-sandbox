@@ -226,7 +226,7 @@ async function main(): Promise<void> {
     // Start TypeScript language server
     log.info(`(${elapsed()}) Starting LSP...`);
     lspClientInstance = new LspClient();
-    await lspClientInstance.start(config.workspaceDir);
+    await lspClientInstance.start(config.workspaceDir, registry);
     setLspClient(lspClientInstance);
 
     // Start LSP HTTP sidecar for remy

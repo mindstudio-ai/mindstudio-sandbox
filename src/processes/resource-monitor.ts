@@ -81,6 +81,13 @@ export class ResourceMonitor {
       }
     }
 
+    // Clean up CPU samples for processes no longer running
+    for (const name of this.cpuSamples.keys()) {
+      if (!processes[name]) {
+        this.cpuSamples.delete(name);
+      }
+    }
+
     const containerUsage = readContainerMemoryUsage();
 
     const snapshot: SystemResourceMetrics = {

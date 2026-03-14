@@ -56,6 +56,8 @@ const SYMBOL_KIND_MAP: Record<number, string> = {
   26: 'typeParameter',
 };
 
+const MAX_DIAGNOSTICS_CACHE = 200;
+
 export class LspSidecar {
   private server: http.Server | null = null;
   private lsp: LspClient;
@@ -89,6 +91,11 @@ export class LspSidecar {
             code: d.code,
           })),
         );
+        // Evict oldest entries if cache is too large
+        if (this.diagnosticsCache.size > MAX_DIAGNOSTICS_CACHE) {
+          const oldest = this.diagnosticsCache.keys().next().value!;
+          this.diagnosticsCache.delete(oldest);
+        }
       },
     );
   }

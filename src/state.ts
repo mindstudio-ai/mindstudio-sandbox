@@ -24,7 +24,7 @@ interface SandboxState {
   editorState?: EditorState;
 }
 
-const FLUSH_DEBOUNCE_MS = 5_000;
+const FLUSH_DEBOUNCE_MS = 30_000;
 
 let statePath: string = '/tmp/sandbox-state.json';
 let registry: ProcessRegistry | null = null;
