@@ -29,6 +29,7 @@ import {
 } from '../processes/agent/index.js';
 import type { BroadcastBatcher } from './broadcast-batcher.js';
 import type { EditorStateManager } from './editor-state.js';
+import type { ResourceMonitor } from '../processes/resource-monitor.js';
 import type { LspClient } from '../lsp/client.js';
 import { createLogger } from '../logger.js';
 
@@ -45,6 +46,7 @@ let processManager: ProcessManager | null = null;
 let batcher: BroadcastBatcher | null = null;
 let registry: ProcessRegistry | null = null;
 let editorState: EditorStateManager | null = null;
+let resourceMonitorRef: ResourceMonitor | null = null;
 
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
@@ -72,6 +74,11 @@ export function setRegistry(reg: ProcessRegistry): void {
 /** Set the editor state manager for tab actions + init frame. */
 export function setEditorState(editor: EditorStateManager): void {
   editorState = editor;
+}
+
+/** Set the resource monitor for on-demand snapshots. */
+export function setResourceMonitor(monitor: ResourceMonitor): void {
+  resourceMonitorRef = monitor;
 }
 
 const actions: Record<string, ActionHandler> = {
@@ -162,6 +169,11 @@ const actions: Record<string, ActionHandler> = {
     }
     editorState?.toggleDir(path);
     return {};
+  },
+
+  // --- Resources ---
+  getResources: async () => {
+    return resourceMonitorRef?.collectNow() ?? {};
   },
 
   // Agent and tunnel actions are merged in via setProcessManager()

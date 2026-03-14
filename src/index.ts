@@ -15,6 +15,7 @@ import { ProcessManager } from './processes/process-manager.js';
 import { startTunnel } from './processes/tunnel/index.js';
 import { startAgent } from './processes/agent/index.js';
 import { startDevServer } from './processes/dev-server/index.js';
+import { ResourceMonitor } from './processes/resource-monitor.js';
 import { BroadcastBatcher } from './server/broadcast-batcher.js';
 import {
   startServer,
@@ -28,6 +29,7 @@ import {
   setBatcher,
   setRegistry,
   setEditorState,
+  setResourceMonitor,
 } from './server/ws-server.js';
 import { EditorStateManager } from './server/editor-state.js';
 import { LspClient } from './lsp/client.js';
@@ -90,6 +92,17 @@ async function main(): Promise<void> {
     markDirty();
   });
 
+  // Start resource monitor — polls every 5s, broadcasts to clients
+  const resourceMonitor = new ResourceMonitor({
+    registry,
+    onSnapshot: (snapshot) => {
+      broadcast(
+        'resourceSnapshot',
+        snapshot as unknown as Record<string, unknown>,
+      );
+    },
+  });
+
   // Register system pseudo-process for C&C server logs
   registry.register('system', 'system', 'cnc-server');
   registry.setState('system', 'running');
@@ -114,6 +127,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log.info(`(${elapsed()}) Shutting down...`);
     registry.setState('system', 'stopped');
+    resourceMonitor.stop();
     batcher.stop();
     stopAutoSave();
     await saveState();
@@ -147,6 +161,7 @@ async function main(): Promise<void> {
   setBatcher(batcher);
   setRegistry(registry);
   setEditorState(editorManager);
+  setResourceMonitor(resourceMonitor);
   log.info(`(${elapsed()}) Server listening on port ${config.port}`);
 
   const progress = (step: string, message: string) => {
@@ -202,6 +217,11 @@ async function main(): Promise<void> {
     // Restore persisted state from previous session (if resuming from snapshot)
     initState(config.workspaceDir, registry, editorManager);
     await restoreState();
+
+    // On fresh sessions, pre-expand directories so the user sees their code
+    if (editorManager.isEmpty()) {
+      editorManager.expandFromAppConfig(appConfig);
+    }
 
     // Start TypeScript language server
     log.info(`(${elapsed()}) Starting LSP...`);

@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
-import { IGNORED_DIRS } from '../utils/paths.js';
+import { IGNORED_DIRS, TREE_HIDDEN } from '../utils/paths.js';
 
 let watcher: FSWatcher | null = null;
 let workspaceDir: string;
@@ -45,22 +45,33 @@ export function startWatcher(
     },
   });
 
-  watcher.on('add', (absPath) => {
+  function shouldEmit(absPath: string): boolean {
     if (isSuppressed(absPath)) {
+      return false;
+    }
+    // Don't emit events for hidden files (e.g. .sandbox-state.json)
+    if (TREE_HIDDEN.has(path.basename(absPath))) {
+      return false;
+    }
+    return true;
+  }
+
+  watcher.on('add', (absPath) => {
+    if (!shouldEmit(absPath)) {
       return;
     }
     onChange(path.relative(workspaceDir, absPath), 'created');
   });
 
   watcher.on('change', (absPath) => {
-    if (isSuppressed(absPath)) {
+    if (!shouldEmit(absPath)) {
       return;
     }
     onChange(path.relative(workspaceDir, absPath), 'modified');
   });
 
   watcher.on('unlink', (absPath) => {
-    if (isSuppressed(absPath)) {
+    if (!shouldEmit(absPath)) {
       return;
     }
     onChange(path.relative(workspaceDir, absPath), 'deleted');

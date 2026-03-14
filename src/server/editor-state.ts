@@ -10,7 +10,8 @@
  * selections — those live in Monaco on the frontend.
  */
 
-import type { EditorTab, EditorState } from '../types.js';
+import path from 'node:path';
+import type { EditorTab, EditorState, AppConfig } from '../types.js';
 
 type ChangeCallback = (state: EditorState) => void;
 
@@ -193,6 +194,43 @@ export class EditorStateManager {
     this.tabs = state.tabs.map((t) => ({ ...t }));
     this.activeTab = state.activeTab;
     this.expandedDirs = new Set(state.expandedDirs ?? []);
+  }
+
+  /** Returns true if any state exists (tabs or expanded dirs). */
+  isEmpty(): boolean {
+    return this.tabs.length === 0 && this.expandedDirs.size === 0;
+  }
+
+  /**
+   * Pre-expand directories based on the app config so new sessions
+   * show the user's code immediately. Expands the containing directories
+   * for all methods, tables, and web interfaces.
+   */
+  expandFromAppConfig(appConfig: AppConfig): void {
+    const dirs = new Set<string>();
+
+    // Collect the containing directory for each method/table file
+    for (const m of appConfig.methods ?? []) {
+      dirs.add(path.dirname(m.path));
+    }
+    for (const t of appConfig.tables ?? []) {
+      dirs.add(path.dirname(t.path));
+    }
+    // For interfaces, expand the directory containing the config file
+    for (const i of appConfig.interfaces ?? []) {
+      dirs.add(path.dirname(i.path));
+    }
+
+    // Expand each directory and all its ancestors
+    for (const dir of dirs) {
+      let current = dir;
+      while (current && current !== '.') {
+        this.expandedDirs.add(current);
+        current = path.dirname(current);
+      }
+    }
+
+    this.emit();
   }
 
   private emit(): void {

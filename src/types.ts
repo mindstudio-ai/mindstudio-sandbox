@@ -65,6 +65,23 @@ export interface RestartRecord {
   signal: string | null;
 }
 
+export interface ProcessResourceMetrics {
+  rss: number | null; // Resident set size in bytes
+  heapUsed: number | null; // JS heap used (main process only)
+  heapTotal: number | null; // JS heap total (main process only)
+  cpu: number | null; // CPU usage 0-100 since last sample
+}
+
+export interface SystemResourceMetrics {
+  timestamp: number;
+  container: {
+    memoryLimit: number | null; // cgroup limit in bytes (null if unknown)
+    memoryUsage: number | null; // cgroup current usage in bytes
+    memoryPercent: number | null;
+  };
+  processes: Record<string, ProcessResourceMetrics>;
+}
+
 export interface ProcessInfo {
   name: string;
   type: ProcessType;
