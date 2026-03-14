@@ -23,6 +23,7 @@ import { shell } from './handlers/shell.js';
 import type { ProcessManager } from '../processes/process-manager.js';
 import type { ProcessRegistry } from '../processes/process-registry.js';
 import type { BroadcastBatcher } from './broadcast-batcher.js';
+import type { EditorStateManager } from './editor-state.js';
 import type { LspClient } from '../lsp/client.js';
 import { createLogger } from '../logger.js';
 
@@ -37,7 +38,8 @@ let proxy: httpProxy | null = null;
 let appConfig: AppConfig | null = null;
 let processManager: ProcessManager | null = null;
 let batcher: BroadcastBatcher | null = null;
-let registryRef: ProcessRegistry | null = null;
+let registry: ProcessRegistry | null = null;
+let editorState: EditorStateManager | null = null;
 
 // Pending get_history callbacks — resolved when the agent emits a `history` event
 let historyResolvers: Array<(messages: unknown[]) => void> = [];
@@ -81,7 +83,7 @@ export function setAppConfig(config: AppConfig): void {
 export function setProcessManager(pm: ProcessManager): void {
   processManager = pm;
   // Grab registry reference from the process manager
-  registryRef = null; // will be set via the pm's internal registry
+  registry = null; // will be set via the pm's internal registry
 }
 
 /** Store the batcher for batched broadcasts. */
@@ -91,54 +93,109 @@ export function setBatcher(b: BroadcastBatcher): void {
 
 /** Set the registry ref so init frame can access process info. */
 export function setRegistry(reg: ProcessRegistry): void {
-  registryRef = reg;
+  registry = reg;
+}
+
+/** Set the editor state manager for tab actions + init frame. */
+export function setEditorState(editor: EditorStateManager): void {
+  editorState = editor;
+}
+
+/** Assert a managed process exists and is running. */
+function requireProcess(name: string): void {
+  if (!processManager) {
+    throw new Error('Process manager not initialized');
+  }
+  if (processManager.getState(name) !== 'running') {
+    throw new Error(`${name} not running`);
+  }
+}
+
+/** Send a JSON action to a managed process's stdin. */
+function sendToProcess(
+  name: string,
+  action: string,
+  extra?: Record<string, unknown>,
+): void {
+  requireProcess(name);
+  processManager!.writeStdin(name, JSON.stringify({ action, ...extra }));
 }
 
 const actions: Record<string, ActionHandler> = {
+  // --- Filesystem ---
   listDir: (p) => listDir(p as { path: string }),
   readFile: (p) => readFile(p as { path: string }),
   writeFile: (p) => writeFile(p as { path: string; content: string }),
-  deleteFile: (p) => deleteFile(p as { path: string }),
-  renameFile: (p) => renameFile(p as { oldPath: string; newPath: string }),
+  deleteFile: async (p) => {
+    const params = p as { path: string };
+    const result = await deleteFile(params);
+    editorState?.onFileDeleted(params.path);
+    return result;
+  },
+  renameFile: async (p) => {
+    const params = p as { oldPath: string; newPath: string };
+    const result = await renameFile(params);
+    editorState?.onFileRenamed(params.oldPath, params.newPath);
+    return result;
+  },
   search: (p) => search(p as Parameters<typeof search>[0]),
   shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
+
+  // --- Agent ---
   agentMessage: async (p) => {
     const { text } = p as { text: string };
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    if (processManager.getState('agent') !== 'running') {
-      throw new Error('Agent not running');
-    }
+    requireProcess('agent');
     log.info(`Sending message to agent: ${text.slice(0, 100)}...`);
-    processManager.writeStdin(
-      'agent',
-      JSON.stringify({ action: 'message', text }),
-    );
+    sendToProcess('agent', 'message', { text });
     return {};
   },
   agentCancel: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    if (processManager.getState('agent') !== 'running') {
-      throw new Error('Agent not running');
-    }
-    log.info('Cancelling agent turn');
-    processManager.writeStdin('agent', JSON.stringify({ action: 'cancel' }));
+    sendToProcess('agent', 'cancel');
     return {};
   },
   agentClear: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    if (processManager.getState('agent') !== 'running') {
-      throw new Error('Agent not running');
-    }
-    log.info('Clearing agent session');
-    processManager.writeStdin('agent', JSON.stringify({ action: 'clear' }));
+    sendToProcess('agent', 'clear');
     return {};
   },
+
+  // --- Tunnel ---
+  tunnelRunScenario: async (p) => {
+    const { scenarioId } = p as { scenarioId: string };
+    if (!scenarioId) {
+      throw new Error('Missing "scenarioId" parameter');
+    }
+    log.info(`Running scenario: ${scenarioId}`);
+    sendToProcess('tunnel', 'runScenario', { scenarioId });
+    return {};
+  },
+  tunnelSyncSchema: async () => {
+    sendToProcess('tunnel', 'syncSchema');
+    return {};
+  },
+  tunnelListScenarios: async () => {
+    sendToProcess('tunnel', 'listScenarios');
+    return {};
+  },
+  tunnelImpersonate: async (p) => {
+    const { roles } = p as { roles: string[] };
+    if (!Array.isArray(roles)) {
+      throw new Error('Missing "roles" parameter (array of role IDs)');
+    }
+    log.info(`Impersonating roles: ${roles.join(', ')}`);
+    sendToProcess('tunnel', 'impersonate', { roles });
+    return {};
+  },
+  tunnelClearImpersonation: async () => {
+    log.info('Clearing role impersonation');
+    sendToProcess('tunnel', 'clearImpersonation');
+    return {};
+  },
+  tunnelListRoles: async () => {
+    sendToProcess('tunnel', 'listRoles');
+    return {};
+  },
+
+  // --- Processes ---
   getProcesses: async () => {
     return { processes: processManager?.getProcesses() ?? [] };
   },
@@ -149,94 +206,38 @@ const actions: Record<string, ActionHandler> = {
     }
     return { log: processManager?.getProcessLog(name) ?? [] };
   },
-  tunnelRunScenario: async (p) => {
-    const { scenarioId } = p as { scenarioId: string };
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
+
+  // --- Editor ---
+  openFile: async (p) => {
+    const { path, preview } = p as { path: string; preview?: boolean };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
     }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    if (!scenarioId) {
-      throw new Error('Missing "scenarioId" parameter');
-    }
-    log.info(`Running scenario: ${scenarioId}`);
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'runScenario', scenarioId }),
-    );
+    editorState?.openFile(path, preview ?? false);
     return {};
   },
-  tunnelSyncSchema: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
+  closeFile: async (p) => {
+    const { path } = p as { path: string };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
     }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    log.info('Requesting schema sync');
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'syncSchema' }),
-    );
+    editorState?.closeFile(path);
     return {};
   },
-  tunnelListScenarios: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
+  setActiveTab: async (p) => {
+    const { path } = p as { path: string };
+    if (!path) {
+      throw new Error('Missing "path" parameter');
     }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'listScenarios' }),
-    );
+    editorState?.setActiveTab(path);
     return {};
   },
-  tunnelImpersonate: async (p) => {
-    const { roles } = p as { roles: string[] };
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
+  reorderTabs: async (p) => {
+    const { paths } = p as { paths: string[] };
+    if (!Array.isArray(paths)) {
+      throw new Error('Missing "paths" parameter (array of file paths)');
     }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    if (!Array.isArray(roles)) {
-      throw new Error('Missing "roles" parameter (array of role IDs)');
-    }
-    log.info(`Impersonating roles: ${roles.join(', ')}`);
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'impersonate', roles }),
-    );
-    return {};
-  },
-  tunnelClearImpersonation: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    log.info('Clearing role impersonation');
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'clearImpersonation' }),
-    );
-    return {};
-  },
-  tunnelListRoles: async () => {
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    if (processManager.getState('tunnel') !== 'running') {
-      throw new Error('Tunnel not running');
-    }
-    processManager.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'listRoles' }),
-    );
+    editorState?.reorderTabs(paths);
     return {};
   },
 };
@@ -415,8 +416,12 @@ export function startServer(port: number, token?: string): Promise<void> {
             app: appConfig,
             fileTree: tree,
             chatHistory,
-            processes: registryRef?.getAllInfo() ?? [],
-            outputLog: registryRef?.getMergedLog() ?? [],
+            processes: registry?.getAllInfo() ?? [],
+            outputLog: registry?.getMergedLog() ?? [],
+            editorState: editorState?.getState() ?? {
+              tabs: [],
+              activeTab: null,
+            },
           }),
         );
       } catch {
@@ -430,6 +435,7 @@ export function startServer(port: number, token?: string): Promise<void> {
             chatHistory: [],
             processes: [],
             outputLog: [],
+            editorState: { tabs: [], activeTab: null },
           }),
         );
       }

@@ -25,7 +25,9 @@ import {
   setLspClient,
   setBatcher,
   setRegistry,
+  setEditorState,
 } from './server/ws-server.js';
+import { EditorStateManager } from './server/editor-state.js';
 import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/handlers/filesystem.js';
@@ -44,6 +46,22 @@ import { createLogger, onLog } from './logger.js';
 import path from 'node:path';
 
 const log = createLogger('cnc');
+
+/** Maps remy's headless event names to our WebSocket event names. */
+const AGENT_EVENT_MAP: Record<string, string> = {
+  ready: 'agentReady',
+  text: 'agentText',
+  thinking: 'agentThinking',
+  tool_start: 'agentToolStart',
+  tool_done: 'agentToolDone',
+  turn_done: 'agentTurnDone',
+  turn_cancelled: 'agentTurnCancelled',
+  error: 'agentError',
+  stopping: 'agentStopping',
+  stopped: 'agentStopped',
+  session_restored: 'agentSessionRestored',
+  session_cleared: 'agentSessionCleared',
+};
 
 const bootStart = Date.now();
 
@@ -79,6 +97,12 @@ async function main(): Promise<void> {
       batcher.push('processOutput', { process: name, ...entry });
       markDirty();
     },
+  });
+
+  // Create editor state manager
+  const editorManager = new EditorStateManager((state) => {
+    broadcast('editorStateChanged', { editorState: state });
+    markDirty();
   });
 
   // Register system pseudo-process for C&C server logs
@@ -137,6 +161,7 @@ async function main(): Promise<void> {
   await startServer(config.port, config.sandboxToken);
   setBatcher(batcher);
   setRegistry(registry);
+  setEditorState(editorManager);
   log.info(`(${elapsed()}) Server listening on port ${config.port}`);
 
   const progress = (step: string, message: string) => {
@@ -190,7 +215,7 @@ async function main(): Promise<void> {
     setProcessManager(processManager);
 
     // Restore persisted state from previous session (if resuming from snapshot)
-    initState(config.workspaceDir, registry);
+    initState(config.workspaceDir, registry, editorManager);
     await restoreState();
 
     // Start TypeScript language server
@@ -302,7 +327,6 @@ async function main(): Promise<void> {
         'debug',
       ],
       cwd: config.workspaceDir,
-      env: {},
       stdin: true,
       restartOnCrash: false,
       maxRestarts: 0,
@@ -311,27 +335,13 @@ async function main(): Promise<void> {
         try {
           const event = JSON.parse(line);
           if (event && typeof event.event === 'string') {
-            const eventMap: Record<string, string> = {
-              ready: 'agentReady',
-              text: 'agentText',
-              thinking: 'agentThinking',
-              tool_start: 'agentToolStart',
-              tool_done: 'agentToolDone',
-              turn_done: 'agentTurnDone',
-              turn_cancelled: 'agentTurnCancelled',
-              error: 'agentError',
-              stopping: 'agentStopping',
-              stopped: 'agentStopped',
-              session_restored: 'agentSessionRestored',
-              session_cleared: 'agentSessionCleared',
-            };
-
             if (event.event === 'history') {
               resolveHistoryRequest(event.messages ?? []);
               return;
             }
 
-            const mappedEvent = eventMap[event.event] || `agent_${event.event}`;
+            const mappedEvent =
+              AGENT_EVENT_MAP[event.event] || `agent_${event.event}`;
             const { event: _evt, ...data } = event;
             log.debug(
               `(${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
@@ -352,6 +362,9 @@ async function main(): Promise<void> {
       broadcast('fileChanged', { path: filePath, changeType });
       if (changeType === 'modified' || changeType === 'created') {
         lspSidecar.onFileChanged(filePath).catch(() => {});
+      }
+      if (changeType === 'deleted') {
+        editorManager.onFileDeleted(filePath);
       }
     });
 

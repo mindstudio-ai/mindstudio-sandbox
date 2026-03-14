@@ -131,6 +131,18 @@ export interface WebConfig {
   };
 }
 
+// Editor state
+
+export interface EditorTab {
+  path: string;
+  isPreview: boolean;
+}
+
+export interface EditorState {
+  tabs: EditorTab[];
+  activeTab: string | null;
+}
+
 // Server state
 
 export type ServerStatus = 'bootstrapping' | 'ready' | 'error';

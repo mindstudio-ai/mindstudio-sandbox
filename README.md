@@ -38,6 +38,29 @@ and system logs — is tracked in a unified process registry with:
 Process types: `service` (long-lived), `task` (bootstrap one-shot),
 `shell` (ad-hoc commands), `system` (C&C server logs).
 
+### Editor State
+
+The server owns editor **tab state** — which files are open, their
+order, and which tab is active. The frontend renders tabs from this
+state and sends actions to mutate it (`openFile`, `closeFile`,
+`setActiveTab`, `reorderTabs`). Both user actions and the remy agent
+can manipulate tabs.
+
+The server does NOT manage buffer content, cursor position, undo
+history, or selections — those live in Monaco on the frontend. The
+filesystem is the source of truth for file content; the server manages
+the workspace layout.
+
+Tabs come in two flavors:
+- **Preview tabs** (`isPreview: true`) — single-click in file tree.
+  Replaced by the next preview-open (only one preview tab at a time).
+- **Pinned tabs** (`isPreview: false`) — double-click or explicit open.
+  Stay open until explicitly closed.
+
+Tab state persists across WebSocket reconnects (sent in the init frame)
+and across sandbox hibernate/resume (written to `.sandbox-state.json`).
+Tabs are automatically updated when files are deleted or renamed.
+
 ### Logging
 
 All logging goes through a centralized logger with levels (`debug`,
@@ -115,7 +138,14 @@ need to bootstrap the UI — no round-trips required:
   "outputLog": [
     { "process": "system", "stream": "stdout", "line": "[cnc] Server listening on port 4387", "ts": 1710000000000 },
     { "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms", "ts": 1710000000100 }
-  ]
+  ],
+  "editorState": {
+    "tabs": [
+      { "path": "src/App.tsx", "isPreview": false },
+      { "path": "mindstudio.json", "isPreview": true }
+    ],
+    "activeTab": "src/App.tsx"
+  }
 }
 ```
 
@@ -128,6 +158,7 @@ need to bootstrap the UI — no round-trips required:
 | `chatHistory` | Agent conversation history fetched from remy. Empty array if agent isn't running or no messages yet. This is the raw LLM-level message format from remy's session. |
 | `processes` | All tracked processes with lifecycle metadata (see Process Registry above) |
 | `outputLog` | Merged log across all processes, sorted by timestamp (last 5000 lines) |
+| `editorState` | Open tabs and active tab (see Editor State below) |
 
 Each tree entry has `name`, `path` (relative), `type`, `size`, `modified`,
 and `children` (for directories within the depth limit). Use `listDir`
@@ -420,6 +451,42 @@ Request the available roles from `mindstudio.json`. Listen for
 { "requestId": "...", "action": "tunnelListRoles", "params": {} }
 ```
 
+### `openFile`
+
+Open a file as a tab in the editor. If the file is already open,
+activates it. Pass `preview: true` for a preview tab (replaced by the
+next preview-open, like single-click in a file tree). Omit or pass
+`false` for a pinned tab (like double-click).
+
+```json
+{ "requestId": "...", "action": "openFile", "params": { "path": "src/App.tsx", "preview": false } }
+```
+
+### `closeFile`
+
+Close a tab. If the closed tab was active, an adjacent tab is activated.
+
+```json
+{ "requestId": "...", "action": "closeFile", "params": { "path": "src/App.tsx" } }
+```
+
+### `setActiveTab`
+
+Switch the active tab without opening or closing anything.
+
+```json
+{ "requestId": "...", "action": "setActiveTab", "params": { "path": "src/App.tsx" } }
+```
+
+### `reorderTabs`
+
+Reorder tabs (e.g. after drag-and-drop). Pass the full array of tab
+paths in the new order.
+
+```json
+{ "requestId": "...", "action": "reorderTabs", "params": { "paths": ["mindstudio.json", "src/App.tsx", "src/tables/haikus.ts"] } }
+```
+
 ## Pushed Events
 
 Events are broadcast to all connected clients. They have an `event`
@@ -478,6 +545,29 @@ made via `writeFile` / `deleteFile` / `renameFile` actions.
 ```
 
 `changeType` is `"created"`, `"modified"`, or `"deleted"`.
+
+### `editorStateChanged`
+
+The editor tab state changed (tab opened, closed, reordered, or active
+tab switched). The payload contains the full editor state — replace
+your local state with it.
+
+```json
+{
+  "event": "editorStateChanged",
+  "editorState": {
+    "tabs": [
+      { "path": "src/App.tsx", "isPreview": false },
+      { "path": "src/tables/haikus.ts", "isPreview": true }
+    ],
+    "activeTab": "src/App.tsx"
+  }
+}
+```
+
+This event also fires when files are deleted or renamed (tabs are
+updated automatically), and can be triggered by the agent opening
+files for the user.
 
 ### `tunnelEvent`
 
@@ -730,6 +820,7 @@ src/
   server/
     ws-server.ts        — HTTP + WebSocket server, actions, init frame
     broadcast-batcher.ts — batched WS event delivery (100ms flush)
+    editor-state.ts     — server-owned tab state (open files, active tab)
     handlers/
       filesystem.ts     — file operations (listDir, readFile, writeFile, etc.)
       search.ts         — ripgrep/grep search

@@ -24,23 +24,17 @@ export async function search(params: {
   const results: SearchResult[] = [];
 
   return new Promise((resolve, reject) => {
-    // Try ripgrep first, fall back to grep
-    const useRg = true; // Could detect availability
-    const args: string[] = [];
-
-    if (useRg) {
-      args.push('--json', '--no-heading');
-      if (!params.caseSensitive) {
-        args.push('-i');
-      }
-      if (params.glob) {
-        args.push('--glob', params.glob);
-      }
-      for (const dir of IGNORED_DIRS) {
-        args.push('--glob', `!${dir}`);
-      }
-      args.push('--max-count', String(maxResults), params.query, searchDir);
+    const args: string[] = ['--json', '--no-heading'];
+    if (!params.caseSensitive) {
+      args.push('-i');
     }
+    if (params.glob) {
+      args.push('--glob', params.glob);
+    }
+    for (const dir of IGNORED_DIRS) {
+      args.push('--glob', `!${dir}`);
+    }
+    args.push('--max-count', String(maxResults), params.query, searchDir);
 
     const child = spawn('rg', args, {
       cwd: workspaceDir,

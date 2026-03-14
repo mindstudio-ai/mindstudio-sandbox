@@ -12,20 +12,23 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import type { ProcessSnapshot } from './types.js';
+import type { ProcessSnapshot, EditorState } from './types.js';
 import type { ProcessRegistry } from './processes/process-registry.js';
+import type { EditorStateManager } from './server/editor-state.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('state');
 
 interface SandboxState {
   processSnapshots: ProcessSnapshot[];
+  editorState?: EditorState;
 }
 
 const FLUSH_DEBOUNCE_MS = 5_000;
 
 let statePath: string = '/tmp/sandbox-state.json';
 let registry: ProcessRegistry | null = null;
+let editorManager: EditorStateManager | null = null;
 let dirty = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -50,6 +53,7 @@ function flushSync(): void {
   try {
     const state: SandboxState = {
       processSnapshots: registry.getSnapshots(),
+      editorState: editorManager?.getState(),
     };
     fsSync.writeFileSync(statePath, JSON.stringify(state), 'utf-8');
     dirty = false;
@@ -70,9 +74,14 @@ export function stopAutoSave(): void {
 
 // --- Init ---
 
-export function initState(workspaceDir: string, reg: ProcessRegistry): void {
+export function initState(
+  workspaceDir: string,
+  reg: ProcessRegistry,
+  editor: EditorStateManager,
+): void {
   statePath = path.join(workspaceDir, '.sandbox-state.json');
   registry = reg;
+  editorManager = editor;
 }
 
 // --- Save / Restore ---
@@ -85,6 +94,7 @@ export async function saveState(): Promise<void> {
     stopAutoSave();
     const state: SandboxState = {
       processSnapshots: registry.getSnapshots(),
+      editorState: editorManager?.getState(),
     };
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
@@ -107,6 +117,9 @@ export async function restoreState(): Promise<boolean> {
     // Handle new format (processSnapshots)
     if (saved.processSnapshots && Array.isArray(saved.processSnapshots)) {
       registry.hydrate(saved.processSnapshots);
+      if (saved.editorState && editorManager) {
+        editorManager.hydrate(saved.editorState);
+      }
       log.info(
         `Restored (${saved.processSnapshots.length} process snapshots) ← ${statePath}`,
       );
