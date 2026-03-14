@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import type { ManagedProcessConfig, ProcessState } from '../types.js';
+import type {
+  ManagedProcessConfig,
+  ProcessState,
+  ProcessInfo,
+  ProcessLogEntry,
+} from '../types.js';
+import type { ProcessRegistry } from './process-registry.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('process-manager');
@@ -8,33 +14,35 @@ const log = createLogger('process-manager');
 interface ManagedProcess {
   config: ManagedProcessConfig;
   child: ChildProcess | null;
-  state: ProcessState;
-  restartCount: number;
   restartTimer: ReturnType<typeof setTimeout> | null;
   stopped: boolean;
 }
 
 export class ProcessManager {
   private processes = new Map<string, ManagedProcess>();
+  private registry: ProcessRegistry;
+
+  constructor(registry: ProcessRegistry) {
+    this.registry = registry;
+  }
 
   start(config: ManagedProcessConfig): void {
     if (this.processes.has(config.name)) {
       throw new Error(`Process "${config.name}" already registered`);
     }
 
-    log.info(
-      `Registering "${config.name}": ${config.command} ${config.args.join(' ')}`,
-    );
+    const fullCommand = `${config.command} ${config.args.join(' ')}`;
+    log.info(`Registering "${config.name}": ${fullCommand}`);
     log.debug(`  "${config.name}" cwd: ${config.cwd}`);
     log.debug(
       `  "${config.name}" restartOnCrash: ${config.restartOnCrash}, maxRestarts: ${config.maxRestarts}`,
     );
 
+    this.registry.register(config.name, 'service', fullCommand);
+
     const proc: ManagedProcess = {
       config,
       child: null,
-      state: 'starting',
-      restartCount: 0,
       restartTimer: null,
       stopped: false,
     };
@@ -49,8 +57,8 @@ export class ProcessManager {
       return;
     }
 
-    proc.state = 'starting';
     const { config } = proc;
+    this.registry.setState(config.name, 'starting');
 
     log.info(
       `Spawning "${config.name}": ${config.command} ${config.args.join(' ')}`,
@@ -67,22 +75,30 @@ export class ProcessManager {
       log.error(
         `Failed to spawn "${config.name}": ${err instanceof Error ? err.message : err}`,
       );
-      proc.state = 'crashed';
+      this.registry.setState(config.name, 'crashed');
       return;
     }
 
     proc.child = child;
-    proc.state = 'running';
+    this.registry.setState(config.name, 'running', {
+      pid: child.pid ?? null,
+    });
     log.info(`"${config.name}" spawned with PID ${child.pid}`);
 
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
-      rl.on('line', (line) => config.onStdout?.(line));
+      rl.on('line', (line) => {
+        this.registry.appendLog(config.name, 'stdout', line);
+        config.onStdout?.(line);
+      });
     }
 
     if (child.stderr) {
       const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => config.onStderr?.(line));
+      rl.on('line', (line) => {
+        this.registry.appendLog(config.name, 'stderr', line);
+        config.onStderr?.(line);
+      });
     }
 
     child.on('exit', (code, signal) => {
@@ -91,23 +107,31 @@ export class ProcessManager {
       );
 
       if (proc.stopped) {
-        proc.state = 'stopped';
+        this.registry.setState(config.name, 'stopped', {
+          exitCode: code,
+          signal: signal ?? undefined,
+        });
         log.debug(`"${config.name}" was intentionally stopped`);
         return;
       }
 
-      proc.state = 'crashed';
+      this.registry.setState(config.name, 'crashed', {
+        exitCode: code,
+        signal: signal ?? undefined,
+      });
 
-      if (config.restartOnCrash && proc.restartCount < config.maxRestarts) {
-        const delay = Math.min(1000 * 2 ** proc.restartCount, 30000);
+      const restartCount =
+        this.registry.getInfo(config.name)?.restartCount ?? 0;
+
+      if (config.restartOnCrash && restartCount < config.maxRestarts) {
+        const delay = Math.min(1000 * 2 ** restartCount, 30000);
         log.info(
-          `Will restart "${config.name}" in ${delay}ms (attempt ${proc.restartCount + 1}/${config.maxRestarts})`,
+          `Will restart "${config.name}" in ${delay}ms (attempt ${restartCount + 1}/${config.maxRestarts})`,
         );
         proc.restartTimer = setTimeout(() => {
-          proc.restartCount++;
           this.spawn(proc);
         }, delay);
-      } else if (proc.restartCount >= config.maxRestarts) {
+      } else if (restartCount >= config.maxRestarts) {
         log.error(
           `"${config.name}" exceeded max restarts (${config.maxRestarts}), giving up`,
         );
@@ -127,7 +151,15 @@ export class ProcessManager {
   }
 
   getState(name: string): ProcessState | undefined {
-    return this.processes.get(name)?.state;
+    return this.registry.getInfo(name)?.state;
+  }
+
+  getProcesses(): ProcessInfo[] {
+    return this.registry.getAllInfo();
+  }
+
+  getProcessLog(name: string): ProcessLogEntry[] {
+    return this.registry.getLog(name);
   }
 
   writeStdin(name: string, data: string): void {
@@ -155,7 +187,6 @@ export class ProcessManager {
       await this.killChild(proc.child, name);
     }
     proc.stopped = false;
-    proc.restartCount = 0;
     this.spawn(proc);
   }
 
@@ -173,13 +204,13 @@ export class ProcessManager {
     }
 
     if (!proc.child || proc.child.exitCode !== null) {
-      proc.state = 'stopped';
+      this.registry.setState(name, 'stopped');
       log.debug(`"${name}" already exited`);
       return;
     }
 
     await this.killChild(proc.child, name);
-    proc.state = 'stopped';
+    this.registry.setState(name, 'stopped');
     log.info(`"${name}" stopped`);
   }
 

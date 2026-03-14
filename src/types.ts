@@ -41,7 +41,57 @@ export interface SearchResult {
 
 // Process types
 
-export type ProcessState = 'starting' | 'running' | 'crashed' | 'stopped';
+export type ProcessType = 'service' | 'task' | 'shell' | 'system';
+export type ProcessState =
+  | 'starting'
+  | 'running'
+  | 'crashed'
+  | 'stopped'
+  | 'completed';
+
+export interface ProcessLogEntry {
+  stream: 'stdout' | 'stderr';
+  line: string;
+  ts: number;
+}
+
+export interface RestartRecord {
+  at: number;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+export interface ProcessInfo {
+  name: string;
+  type: ProcessType;
+  command: string;
+  state: ProcessState;
+  startedAt: number | null;
+  endedAt: number | null;
+  duration: number | null;
+  exitCode: number | null;
+  signal: string | null;
+  restartCount: number;
+  restartHistory: RestartRecord[];
+  pid: number | null;
+}
+
+export interface ProcessStateChangeEvent {
+  name: string;
+  type: ProcessType;
+  prevState: ProcessState;
+  state: ProcessState;
+  exitCode?: number | null;
+  signal?: string | null;
+  pid?: number | null;
+  restartCount?: number;
+  timestamp: number;
+}
+
+export interface ProcessSnapshot {
+  info: ProcessInfo;
+  log: ProcessLogEntry[];
+}
 
 export interface ManagedProcessConfig {
   name: string;

@@ -1,28 +1,27 @@
 import { spawn } from 'node:child_process';
 import { resolveSafe } from '../../utils/paths.js';
+import type { ProcessRegistry } from '../../processes/process-registry.js';
 
 let workspaceDir: string;
-let broadcast: (event: string, data: Record<string, unknown>) => void;
+let registry: ProcessRegistry | null = null;
 
-export function initShell(
-  dir: string,
-  broadcastFn: (event: string, data: Record<string, unknown>) => void,
-): void {
+export function initShell(dir: string, reg: ProcessRegistry): void {
   workspaceDir = dir;
-  broadcast = broadcastFn;
+  registry = reg;
 }
 
 function pipeOutput(
   stream: NodeJS.ReadableStream | null,
-  name: 'stdout' | 'stderr',
+  streamName: 'stdout' | 'stderr',
   accum: { value: string },
+  procName: string,
 ): void {
   stream?.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
     accum.value += text;
     for (const line of text.split('\n')) {
       if (line) {
-        broadcast('processOutput', { process: 'shell', stream: name, line });
+        registry?.appendLog(procName, streamName, line);
       }
     }
   });
@@ -36,6 +35,9 @@ export async function shell(params: {
   const cwd = params.cwd ? resolveSafe(workspaceDir, params.cwd) : workspaceDir;
 
   const timeout = params.timeout ?? 30000;
+  const shellId = `shell:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  registry?.register(shellId, 'shell', params.command);
 
   return new Promise((resolve, reject) => {
     const child = spawn('sh', ['-c', params.command], {
@@ -43,6 +45,8 @@ export async function shell(params: {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    registry?.setState(shellId, 'running', { pid: child.pid ?? null });
 
     let killed = false;
     const stdout = { value: '' };
@@ -53,20 +57,28 @@ export async function shell(params: {
       child.kill('SIGKILL');
     }, timeout);
 
-    pipeOutput(child.stdout, 'stdout', stdout);
-    pipeOutput(child.stderr, 'stderr', stderr);
+    pipeOutput(child.stdout, 'stdout', stdout, shellId);
+    pipeOutput(child.stderr, 'stderr', stderr, shellId);
 
     child.on('close', (code) => {
       clearTimeout(timer);
       if (killed) {
+        registry?.setState(shellId, 'crashed', { exitCode: null });
         reject(new Error(`Command timed out after ${timeout}ms`));
       } else {
+        registry?.setState(shellId, code === 0 ? 'completed' : 'crashed', {
+          exitCode: code,
+        });
         resolve({ exitCode: code, stdout: stdout.value, stderr: stderr.value });
       }
+      // Clean up shell entries after 5 minutes
+      const cleanup = setTimeout(() => registry?.remove(shellId), 5 * 60_000);
+      cleanup.unref();
     });
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      registry?.setState(shellId, 'crashed');
       reject(err);
     });
   });

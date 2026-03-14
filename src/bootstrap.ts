@@ -4,14 +4,26 @@ import path from 'node:path';
 import os from 'node:os';
 import type { Config } from './config.js';
 import type { AppConfig, WebConfig } from './types.js';
+import type { ProcessRegistry } from './processes/process-registry.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('bootstrap');
+
+let registry: ProcessRegistry | null = null;
+
+export function setBootstrapRegistry(r: ProcessRegistry): void {
+  registry = r;
+}
 
 type ProgressFn = (step: string, message: string) => void;
 
 function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
   const label = opts?.label ?? cmd;
+  const procName = `bootstrap:${(label ?? cmd).replace(/\s+/g, '-').slice(0, 60)}`;
+
+  registry?.register(procName, 'task', cmd);
+  registry?.setState(procName, 'running');
+
   log.info(`Running: ${label}`);
   const startTime = Date.now();
   try {
@@ -24,12 +36,11 @@ function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
     const elapsed = Date.now() - startTime;
     log.info(`Completed in ${elapsed}ms: ${label}`);
     if (result.trim()) {
-      const lines = result.trim().split('\n');
-      const preview = lines.slice(0, 5).join('\n');
-      log.debug(
-        `Output (${lines.length} lines):\n${preview}${lines.length > 5 ? '\n  ...' : ''}`,
-      );
+      for (const line of result.trim().split('\n')) {
+        registry?.appendLog(procName, 'stdout', line);
+      }
     }
+    registry?.setState(procName, 'completed', { exitCode: 0 });
     return result;
   } catch (err: unknown) {
     const elapsed = Date.now() - startTime;
@@ -42,11 +53,16 @@ function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
     log.error(`FAILED after ${elapsed}ms: ${label}`);
     log.error(`  Exit code: ${execErr.status}`);
     if (execErr.stderr) {
-      log.error(`  stderr: ${execErr.stderr.trim().slice(0, 2000)}`);
+      for (const line of execErr.stderr.trim().split('\n')) {
+        registry?.appendLog(procName, 'stderr', line);
+      }
     }
     if (execErr.stdout) {
-      log.error(`  stdout: ${execErr.stdout.trim().slice(0, 2000)}`);
+      for (const line of execErr.stdout.trim().split('\n')) {
+        registry?.appendLog(procName, 'stdout', line);
+      }
     }
+    registry?.setState(procName, 'crashed', { exitCode: execErr.status ?? 1 });
     throw err;
   }
 }

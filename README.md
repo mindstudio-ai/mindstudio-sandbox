@@ -22,7 +22,28 @@ Internally, port 4388 runs the LSP HTTP sidecar for the remy agent.
 Inside the container, the C&C server manages:
 - **Dev server** (Vite / webpack / etc.) — frontend with HMR
 - **Dev tunnel** (`mindstudio-local --headless`) — method execution, platform sync
+- **Remy agent** (`remy --headless`) — AI coding agent
 - **File watcher** — broadcasts filesystem changes to connected clients
+- **TypeScript language server** — shared between Monaco editor and remy
+
+### Process Registry
+
+Every process — bootstrap tasks, long-lived services, shell commands,
+and system logs — is tracked in a unified process registry with:
+
+- Lifecycle metadata (state, PID, start/end time, exit code, restart history)
+- Per-process log buffers (1000 lines each)
+- State-change events broadcast to all connected clients
+
+Process types: `service` (long-lived), `task` (bootstrap one-shot),
+`shell` (ad-hoc commands), `system` (C&C server logs).
+
+### Logging
+
+All logging goes through a centralized logger with levels (`debug`,
+`info`, `warn`, `error`). Set `LOG_LEVEL` env var to control verbosity
+(default: `info`). Logs flow into the process registry and are
+broadcast to WebSocket clients as batched `processOutput` events.
 
 ## Connecting from the Frontend
 
@@ -77,24 +98,23 @@ need to bootstrap the UI — no round-trips required:
   "fileTree": [
     {
       "name": "dist", "path": "dist", "type": "directory", "size": 160, "modified": "...",
-      "children": [
-        { "name": "methods", "path": "dist/methods", "type": "directory", "children": [...] },
-        { "name": "interfaces", "path": "dist/interfaces", "type": "directory", "children": [...] }
-      ]
+      "children": [...]
     },
     { "name": "mindstudio.json", "path": "mindstudio.json", "type": "file", "size": 1073, "modified": "..." }
   ],
   "chatHistory": [
     { "role": "user", "content": "add a delete method for haikus" },
-    {
-      "role": "assistant",
-      "content": [
-        { "type": "text", "text": "I'll read the table schema first." },
-        { "type": "tool", "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" }, "result": "...", "isError": false },
-        { "type": "tool", "id": "tc_2", "name": "writeFile", "input": { "path": "src/deleteHaiku.ts" }, "result": "Created...", "isError": false },
-        { "type": "text", "text": "Done. Created deleteHaiku method with soft-delete." }
-      ]
-    }
+    { "role": "assistant", "content": "I'll update the table schema.", "toolCalls": [...] }
+  ],
+  "processes": [
+    { "name": "devServer", "type": "service", "state": "running", "pid": 12345, "startedAt": 1710000000000, ... },
+    { "name": "tunnel", "type": "service", "state": "running", "pid": 12346, ... },
+    { "name": "agent", "type": "service", "state": "running", "pid": 12347, ... },
+    { "name": "bootstrap:npm-install", "type": "task", "state": "completed", "exitCode": 0, "duration": 4523, ... }
+  ],
+  "outputLog": [
+    { "process": "system", "stream": "stdout", "line": "[cnc] Server listening on port 4387", "ts": 1710000000000 },
+    { "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms", "ts": 1710000000100 }
   ]
 }
 ```
@@ -105,19 +125,13 @@ need to bootstrap the UI — no round-trips required:
 | `previewAvailable` | Whether the preview proxy is ready |
 | `app` | Parsed `mindstudio.json` — app name, methods, tables, interfaces |
 | `fileTree` | Recursive file tree (3 levels deep), directories first, alphabetical. Excludes `node_modules`, `.git`, `.vite`. |
-| `chatHistory` | Full agent conversation history. Empty array if no messages yet. Persists across reconnects. |
+| `chatHistory` | Agent conversation history fetched from remy. Empty array if agent isn't running or no messages yet. This is the raw LLM-level message format from remy's session. |
+| `processes` | All tracked processes with lifecycle metadata (see Process Registry above) |
+| `outputLog` | Merged log across all processes, sorted by timestamp (last 5000 lines) |
 
 Each tree entry has `name`, `path` (relative), `type`, `size`, `modified`,
 and `children` (for directories within the depth limit). Use `listDir`
 to lazily load deeper levels.
-
-User messages have `content` as a string. Assistant messages have
-`content` as an ordered array of blocks — `{ type: "text", text }` and
-`{ type: "tool", id, name, input, result?, isError? }` — preserving
-the exact sequence of text → tool calls → more text. Render them in
-order. If the agent is mid-response when you connect, the last
-assistant entry may have partial text and in-progress tool calls
-(missing `result`).
 
 ### 4. Listen for pushed events
 
@@ -134,6 +148,10 @@ ws.addEventListener('message', (event) => {
   }
 });
 ```
+
+**Note:** `processOutput` and `processStateChanged` events are batched —
+they arrive as `{ event: "...", batch: [...] }` with an array of entries,
+flushed every 100ms. All other events are sent individually.
 
 ## Actions
 
@@ -188,11 +206,6 @@ Write or create a file. Parent directories are created automatically.
 { "requestId": "...", "action": "writeFile", "params": { "path": "src/App.tsx", "content": "..." } }
 ```
 
-Response:
-```json
-{ "requestId": "...", "success": true, "data": {} }
-```
-
 ### `deleteFile`
 
 Delete a file or directory (recursive).
@@ -226,25 +239,13 @@ Search file contents using ripgrep (falls back to grep).
 }
 ```
 
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "results": [
-      { "file": "src/App.tsx", "line": 3, "column": 10, "text": "const [count, setCount] = useState(0);" }
-    ]
-  }
-}
-```
-
 `glob` and `caseSensitive` are optional. `maxResults` defaults to 100.
 Results always exclude `node_modules/`, `.git/`, and `.vite/`.
 
 ### `shell`
 
-Run an arbitrary shell command.
+Run an arbitrary shell command. Tracked as a `shell` process in the
+registry (visible in `getProcesses`, auto-removed after 5 minutes).
 
 ```json
 {
@@ -272,10 +273,7 @@ Response:
 
 `timeout` is in milliseconds, defaults to 30000. `cwd` is optional
 (relative to workspace root). While the command runs, stdout/stderr
-lines are also streamed as `processOutput` events.
-
-Use `shell` for git operations, npm commands, running scripts, or
-anything else — the sandbox is an isolated container.
+lines are streamed as batched `processOutput` events.
 
 ### `agentMessage`
 
@@ -286,26 +284,132 @@ the agent's output streams as pushed events (see below).
 { "requestId": "...", "action": "agentMessage", "params": { "text": "add a delete method for haikus" } }
 ```
 
-Response:
-```json
-{ "requestId": "...", "success": true, "data": {} }
-```
-
 Then listen for `agentThinking`, `agentText`, `agentToolStart`,
 `agentToolDone`, and `agentTurnDone` events.
 
 ### `agentCancel`
 
-Cancel the current agent turn. Kills and restarts the agent process.
+Cancel the current agent turn. Aborts the in-progress response
+gracefully — partial output is saved to the session.
 
 ```json
 { "requestId": "...", "action": "agentCancel", "params": {} }
+```
+
+Listen for `agentTurnCancelled` to confirm.
+
+### `agentClear`
+
+Clear the agent's conversation history and start a fresh session.
+
+```json
+{ "requestId": "...", "action": "agentClear", "params": {} }
+```
+
+Listen for `agentSessionCleared` to confirm.
+
+### `getProcesses`
+
+Get all tracked processes with their current state and metadata.
+
+```json
+{ "requestId": "...", "action": "getProcesses", "params": {} }
+```
+
+Response:
+```json
+{
+  "requestId": "...",
+  "success": true,
+  "data": {
+    "processes": [
+      {
+        "name": "devServer",
+        "type": "service",
+        "command": "npm run dev",
+        "state": "running",
+        "startedAt": 1710000000000,
+        "endedAt": null,
+        "duration": null,
+        "exitCode": null,
+        "signal": null,
+        "restartCount": 0,
+        "restartHistory": [],
+        "pid": 12345
+      }
+    ]
+  }
+}
+```
+
+### `getProcessLog`
+
+Get the per-process log buffer (up to 1000 lines).
+
+```json
+{ "requestId": "...", "action": "getProcessLog", "params": { "name": "tunnel" } }
+```
+
+Response:
+```json
+{
+  "requestId": "...",
+  "success": true,
+  "data": {
+    "log": [
+      { "stream": "stdout", "line": "{\"event\":\"session-started\",...}", "ts": 1710000000000 },
+      { "stream": "stderr", "line": "[INFO] api POST /dev/manage/start → 200 (142ms)", "ts": 1710000000001 }
+    ]
+  }
+}
 ```
 
 ## Pushed Events
 
 Events are broadcast to all connected clients. They have an `event`
 field and no `requestId`.
+
+### `processOutput` (batched)
+
+Lines of stdout/stderr from tracked processes. Delivered as batched
+arrays every 100ms.
+
+```json
+{
+  "event": "processOutput",
+  "batch": [
+    { "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms", "ts": 1710000000000 },
+    { "process": "system", "stream": "stdout", "line": "[cnc] Bootstrap complete", "ts": 1710000000005 }
+  ]
+}
+```
+
+`process` can be any registered name: `devServer`, `tunnel`, `agent`,
+`system` (C&C server logs), `bootstrap:*` (task names), `shell:*`
+(ad-hoc command IDs).
+
+### `processStateChanged` (batched)
+
+A process transitioned state. Delivered as batched arrays.
+
+```json
+{
+  "event": "processStateChanged",
+  "batch": [
+    {
+      "name": "devServer",
+      "type": "service",
+      "prevState": "starting",
+      "state": "running",
+      "pid": 12345,
+      "restartCount": 0,
+      "timestamp": 1710000000000
+    }
+  ]
+}
+```
+
+States: `starting`, `running`, `crashed`, `stopped`, `completed`.
 
 ### `fileChanged`
 
@@ -319,32 +423,24 @@ made via `writeFile` / `deleteFile` / `renameFile` actions.
 
 `changeType` is `"created"`, `"modified"`, or `"deleted"`.
 
-### `processOutput`
-
-A line of stdout or stderr from a managed process.
-
-```json
-{ "event": "processOutput", "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms" }
-```
-
-`process` is `"devServer"`, `"tunnel"`, `"agent"`, or `"shell"`.
-
 ### `tunnelEvent`
 
 A parsed JSON event from the dev tunnel's headless output.
 
 ```json
-{ "event": "tunnelEvent", "event": "session-started", "sessionId": "...", "proxyPort": 3835 }
+{ "event": "tunnelEvent", "event": "session-started", "sessionId": "...", "proxyPort": 3835, "proxyUrl": "http://..." }
 ```
 
 Key tunnel events:
-- `starting` — tunnel initializing
-- `session-started` — platform session active (has `sessionId`, `proxyPort`)
+- `starting` — tunnel initializing (`appId`, `name`)
+- `session-started` — platform session active (`sessionId`, `branch`, `proxyPort`, `proxyUrl`)
 - `schema-synced` — table schemas synced (`created`, `altered`, `errors`)
 - `method-start` — method execution started (`id`, `method`)
-- `method-complete` — method execution finished (`id`, `success`, `duration`)
-- `session-expired` — platform expired the session
-- `error` — fatal tunnel error
+- `method-complete` — method execution finished (`id`, `success`, `duration`, `error?`)
+- `connection-warning` — lost platform connection (`message`)
+- `connection-restored` — reconnected
+- `session-expired` — platform expired the session (tunnel exits)
+- `error` — fatal tunnel error (`message`)
 
 ### `bootstrapProgress`
 
@@ -354,7 +450,7 @@ Status updates during sandbox bootstrap.
 { "event": "bootstrapProgress", "step": "installDeps", "message": "Installing dependencies..." }
 ```
 
-Steps in order: `installTunnel`, `installAgent`, `cloneApp`,
+Steps in order: `installTunnel`, `installAgent`, `installLsp`, `cloneApp`,
 `installDeps`, `devServer`, `tunnel`, `agent`, `ready`, or `error`.
 
 ### Agent Events
@@ -362,47 +458,18 @@ Steps in order: `installTunnel`, `installAgent`, `cloneApp`,
 These stream while the agent is processing a message (after
 `agentMessage` action). They map 1:1 from remy's headless protocol.
 
-#### `agentReady`
-Agent process initialized and ready for messages.
-```json
-{ "event": "agentReady" }
-```
-
-#### `agentThinking`
-Agent's internal reasoning (streaming chunks).
-```json
-{ "event": "agentThinking", "text": "Let me look at the table schema..." }
-```
-
-#### `agentText`
-Agent's visible response text (streaming chunks).
-```json
-{ "event": "agentText", "text": "I've added the delete method. " }
-```
-
-#### `agentToolStart`
-Agent started executing a tool.
-```json
-{ "event": "agentToolStart", "id": "tc_1", "name": "readFile", "input": { "path": "src/tables/haikus.ts" } }
-```
-
-#### `agentToolDone`
-Agent tool execution completed.
-```json
-{ "event": "agentToolDone", "id": "tc_1", "name": "readFile", "result": "...", "isError": false }
-```
-
-#### `agentTurnDone`
-Agent finished responding to the message.
-```json
-{ "event": "agentTurnDone" }
-```
-
-#### `agentError`
-Agent encountered an error.
-```json
-{ "event": "agentError", "error": "Failed to start dev session" }
-```
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `agentReady` | | Agent process initialized and ready for messages |
+| `agentThinking` | `text` | Agent's internal reasoning (streaming chunks) |
+| `agentText` | `text` | Agent's visible response text (streaming chunks) |
+| `agentToolStart` | `id`, `name`, `input` | Agent started executing a tool |
+| `agentToolDone` | `id`, `name`, `result`, `isError` | Agent tool execution completed |
+| `agentTurnDone` | | Agent finished responding to a message |
+| `agentTurnCancelled` | | Agent turn was cancelled (via `agentCancel`) |
+| `agentError` | `error` | Agent encountered an error |
+| `agentSessionRestored` | `messageCount` | Agent restored a previous session on startup |
+| `agentSessionCleared` | | Agent session was cleared (via `agentClear`) |
 
 ## LSP HTTP Sidecar (port 4388)
 
@@ -427,22 +494,10 @@ the file watcher automatically sync to the language server.
 
 See `LSP-FRONTEND-SPEC.md` for Monaco WebSocket integration.
 
-## Building a File Tree
-
-To build a recursive file tree for the sidebar, call `listDir`
-recursively. A practical approach:
-
-1. Call `listDir` with `path: "."` to get the root.
-2. For each directory entry, call `listDir` with that path.
-3. Expand lazily (load subdirectories when the user opens them).
-4. Listen for `fileChanged` events to update the tree incrementally.
-
-Suggested excludes for display: `node_modules`, `.git`, `.vite`.
-
 ## Live Preview
 
 The preview iframe points at the same domain as the C&C server, but
-any path other than `/ws` and `/health`:
+any path other than `/ws`, `/lsp`, and `/health`:
 
 ```html
 <iframe src={`https://${cncDomain}/`} />
@@ -487,12 +542,13 @@ Required to start the server:
 | Var | Purpose |
 |-----|---------|
 | `GIT_REPO_URL` | App git repo to clone |
-| `API_KEY` | Developer's MindStudio API key (for tunnel) |
+| `API_KEY` | Developer's MindStudio API key (for tunnel + agent) |
 | `USER_ID` | Developer's user ID (for tunnel) |
 | `API_BASE_URL` | Platform API URL (default: `https://api.mindstudio.ai`) |
-| `WORKSPACE_DIR` | App workspace path (default: `/workspace`) |
+| `WORKSPACE_DIR` | App workspace path (default: `/home/vercel-sandbox/workspace`) |
 | `PORT` | Server port (default: `4387`) |
 | `SANDBOX_TOKEN` | WebSocket auth token (optional, no auth if unset) |
+| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` (default: `info`) |
 
 ## Development
 
@@ -514,3 +570,32 @@ npm run build
 
 The `example/` directory contains a sample MindStudio app (Haiku
 Generator) for local testing.
+
+## Project Structure
+
+```
+src/
+  index.ts              — entry point, orchestrates bootstrap + services
+  config.ts             — environment variable parsing
+  types.ts              — shared TypeScript types
+  logger.ts             — centralized logger with levels + onLog hook
+  state.ts              — persistent state (process snapshots to disk)
+  bootstrap.ts          — sync install/clone/build commands
+  server/
+    ws-server.ts        — HTTP + WebSocket server, actions, init frame
+    broadcast-batcher.ts — batched WS event delivery (100ms flush)
+    handlers/
+      filesystem.ts     — file operations (listDir, readFile, writeFile, etc.)
+      search.ts         — ripgrep/grep search
+      shell.ts          — shell command execution
+  lsp/
+    client.ts           — language server JSON-RPC multiplexer
+    sidecar.ts          — language server HTTP API for remy
+  processes/
+    process-registry.ts — unified process metadata + per-process logs
+    process-manager.ts  — long-lived child process lifecycle
+    file-watcher.ts     — chokidar file watcher
+    tunnel-events.ts    — tunnel NDJSON event parser
+  utils/
+    paths.ts            — shared path utilities
+```

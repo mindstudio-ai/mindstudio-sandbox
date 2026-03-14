@@ -21,8 +21,9 @@ import {
 import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
 import type { ProcessManager } from '../processes/process-manager.js';
+import type { ProcessRegistry } from '../processes/process-registry.js';
+import type { BroadcastBatcher } from './broadcast-batcher.js';
 import type { LspClient } from '../lsp/client.js';
-import { getOutputLog } from '../state.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
@@ -35,6 +36,8 @@ let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 let appConfig: AppConfig | null = null;
 let processManager: ProcessManager | null = null;
+let batcher: BroadcastBatcher | null = null;
+let registryRef: ProcessRegistry | null = null;
 
 // Pending get_history callbacks — resolved when the agent emits a `history` event
 let historyResolvers: Array<(messages: unknown[]) => void> = [];
@@ -77,6 +80,18 @@ export function setAppConfig(config: AppConfig): void {
 /** Store the process manager so agent actions can write to stdin / restart. */
 export function setProcessManager(pm: ProcessManager): void {
   processManager = pm;
+  // Grab registry reference from the process manager
+  registryRef = null; // will be set via the pm's internal registry
+}
+
+/** Store the batcher for batched broadcasts. */
+export function setBatcher(b: BroadcastBatcher): void {
+  batcher = b;
+}
+
+/** Set the registry ref so init frame can access process info. */
+export function setRegistry(reg: ProcessRegistry): void {
+  registryRef = reg;
 }
 
 const actions: Record<string, ActionHandler> = {
@@ -123,6 +138,16 @@ const actions: Record<string, ActionHandler> = {
     log.info('Clearing agent session');
     processManager.writeStdin('agent', JSON.stringify({ action: 'clear' }));
     return {};
+  },
+  getProcesses: async () => {
+    return { processes: processManager?.getProcesses() ?? [] };
+  },
+  getProcessLog: async (p) => {
+    const { name } = p as { name: string };
+    if (!name) {
+      throw new Error('Missing "name" parameter');
+    }
+    return { log: processManager?.getProcessLog(name) ?? [] };
   },
 };
 
@@ -300,7 +325,8 @@ export function startServer(port: number, token?: string): Promise<void> {
             app: appConfig,
             fileTree: tree,
             chatHistory,
-            outputLog: getOutputLog(),
+            processes: registryRef?.getAllInfo() ?? [],
+            outputLog: registryRef?.getMergedLog() ?? [],
           }),
         );
       } catch {
@@ -312,6 +338,8 @@ export function startServer(port: number, token?: string): Promise<void> {
             app: appConfig,
             fileTree: [],
             chatHistory: [],
+            processes: [],
+            outputLog: [],
           }),
         );
       }

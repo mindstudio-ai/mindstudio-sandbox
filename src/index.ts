@@ -8,8 +8,11 @@ import {
   readAppConfig,
   readWebConfig,
   installDependencies,
+  setBootstrapRegistry,
 } from './bootstrap.js';
+import { ProcessRegistry } from './processes/process-registry.js';
 import { ProcessManager } from './processes/process-manager.js';
+import { BroadcastBatcher } from './server/broadcast-batcher.js';
 import {
   startServer,
   broadcast,
@@ -20,6 +23,8 @@ import {
   setProcessManager,
   resolveHistoryRequest,
   setLspClient,
+  setBatcher,
+  setRegistry,
 } from './server/ws-server.js';
 import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
@@ -33,7 +38,7 @@ import {
   restoreState,
   saveState,
   stopAutoSave,
-  appendOutput,
+  markDirty,
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
 import path from 'node:path';
@@ -60,7 +65,35 @@ async function main(): Promise<void> {
     `(${elapsed()}) Config loaded — port=${config.port}, workspace=${config.workspaceDir}`,
   );
 
-  const processManager = new ProcessManager();
+  // Create process registry + batcher early so bootstrap can register
+  const batcher = new BroadcastBatcher({
+    flush: (event, batch) => broadcast(event, { batch }),
+  });
+
+  const registry = new ProcessRegistry({
+    onStateChange: (event) => {
+      batcher.push('processStateChanged', event);
+      markDirty();
+    },
+    onLogAppend: (name, entry) => {
+      batcher.push('processOutput', { process: name, ...entry });
+      markDirty();
+    },
+  });
+
+  // Register system pseudo-process for C&C server logs
+  registry.register('system', 'system', 'cnc-server');
+  registry.setState('system', 'running');
+
+  onLog((entry) => {
+    const stream =
+      entry.level === 'error' || entry.level === 'warn' ? 'stderr' : 'stdout';
+    registry.appendLog('system', stream, `[${entry.module}] ${entry.message}`);
+  });
+
+  // Wire registry into bootstrap and process manager
+  setBootstrapRegistry(registry);
+  const processManager = new ProcessManager(registry);
   let lspClientInstance: LspClient | null = null;
 
   // Graceful shutdown
@@ -71,6 +104,8 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     log.info(`(${elapsed()}) Shutting down...`);
+    registry.setState('system', 'stopped');
+    batcher.stop();
     stopAutoSave();
     await saveState();
     stopWatcher();
@@ -100,24 +135,9 @@ async function main(): Promise<void> {
   // 2. Start HTTP/WS server immediately (health returns "bootstrapping")
   log.info(`(${elapsed()}) Step 2: Starting HTTP/WS server...`);
   await startServer(config.port, config.sandboxToken);
+  setBatcher(batcher);
+  setRegistry(registry);
   log.info(`(${elapsed()}) Server listening on port ${config.port}`);
-
-  // Wire logger into broadcast + ring buffer so server logs reach WS clients
-  const output = (proc: string, stream: 'stdout' | 'stderr', line: string) => {
-    appendOutput(proc, stream, line);
-    broadcast('processOutput', { process: proc, stream, line });
-  };
-
-  onLog((entry) => {
-    const stream =
-      entry.level === 'error' || entry.level === 'warn' ? 'stderr' : 'stdout';
-    appendOutput(`cnc:${entry.module}`, stream, entry.message);
-    broadcast('processOutput', {
-      process: `cnc:${entry.module}`,
-      stream,
-      line: entry.message,
-    });
-  });
 
   const progress = (step: string, message: string) => {
     log.info(`(${elapsed()}) [${step}] ${message}`);
@@ -166,11 +186,11 @@ async function main(): Promise<void> {
     log.debug(`(${elapsed()}) Initializing handlers...`);
     initFilesystem(config.workspaceDir);
     initSearch(config.workspaceDir);
-    initShell(config.workspaceDir, broadcast);
+    initShell(config.workspaceDir, registry);
     setProcessManager(processManager);
 
     // Restore persisted state from previous session (if resuming from snapshot)
-    initState(config.workspaceDir);
+    initState(config.workspaceDir, registry);
     await restoreState();
 
     // Start TypeScript language server
@@ -205,8 +225,6 @@ async function main(): Promise<void> {
         cwd: webDir,
         restartOnCrash: true,
         maxRestarts: 5,
-        onStdout: (line) => output('devServer', 'stdout', line),
-        onStderr: (line) => output('devServer', 'stderr', line),
       });
     } else {
       log.info(`(${elapsed()}) Step 8: No web interface, skipping dev server`);
@@ -218,7 +236,15 @@ async function main(): Promise<void> {
     processManager.start({
       name: 'tunnel',
       command: 'mindstudio-local',
-      args: ['--headless', '--port', String(devPort), '--bind', '0.0.0.0'],
+      args: [
+        '--headless',
+        '--port',
+        String(devPort),
+        '--bind',
+        '0.0.0.0',
+        '--log-level',
+        'debug',
+      ],
       cwd: config.workspaceDir,
       restartOnCrash: true,
       maxRestarts: 5,
@@ -230,24 +256,31 @@ async function main(): Promise<void> {
             `(${elapsed()}) Tunnel event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
           );
           broadcast('tunnelEvent', tunnelEvent);
-          if (
-            tunnelEvent.event === 'session-started' &&
-            typeof tunnelEvent.proxyPort === 'number'
-          ) {
-            log.info(
-              `(${elapsed()}) Tunnel proxy port: ${tunnelEvent.proxyPort}`,
-            );
-            setProxyTarget(tunnelEvent.proxyPort);
+
+          switch (tunnelEvent.event) {
+            case 'session-started':
+              if (typeof tunnelEvent.proxyPort === 'number') {
+                log.info(
+                  `(${elapsed()}) Tunnel proxy port: ${tunnelEvent.proxyPort}`,
+                );
+                setProxyTarget(tunnelEvent.proxyPort);
+              }
+              break;
+            case 'session-expired':
+              log.error('Tunnel session expired by platform');
+              break;
+            case 'connection-warning':
+              log.warn(`Tunnel connection warning: ${tunnelEvent.message}`);
+              break;
+            case 'connection-restored':
+              log.info('Tunnel connection restored');
+              break;
+            case 'error':
+              log.error(`Tunnel error: ${tunnelEvent.message}`);
+              break;
           }
-          if (tunnelEvent.event === 'error') {
-            log.error(`Tunnel error: ${tunnelEvent.message}`);
-          }
-        } else {
-          log.debug(`[tunnel:stdout] ${line}`);
-          output('tunnel', 'stdout', line);
         }
       },
-      onStderr: (line) => output('tunnel', 'stderr', line),
     });
 
     // 10. Start agent (remy --headless)
@@ -292,7 +325,6 @@ async function main(): Promise<void> {
               session_cleared: 'agentSessionCleared',
             };
 
-            // history event is a response to get_history — route to pending resolvers
             if (event.event === 'history') {
               resolveHistoryRequest(event.messages ?? []);
               return;
@@ -304,15 +336,11 @@ async function main(): Promise<void> {
               `(${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
             );
             broadcast(mappedEvent, data);
-          } else {
-            log.debug(`[agent:stdout] ${line}`);
           }
         } catch {
-          log.debug(`[agent:stdout] ${line}`);
-          output('agent', 'stdout', line);
+          // Non-JSON stdout from agent — already captured by registry via ProcessManager
         }
       },
-      onStderr: (line) => output('agent', 'stderr', line),
     });
 
     // 11. Start file watcher
