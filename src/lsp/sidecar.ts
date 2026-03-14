@@ -6,7 +6,10 @@
  */
 
 import http from 'node:http';
-import type { LspClient } from './lsp-client.js';
+import type { LspClient } from './client.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('lsp-sidecar');
 
 interface DiagnosticItem {
   file: string;
@@ -140,8 +143,8 @@ export class LspSidecar {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));
         } catch (err) {
-          console.error(
-            `[lsp-sidecar] Error handling ${req.url}: ${err instanceof Error ? err.message : err}`,
+          log.error(
+            `Error handling ${req.url}: ${err instanceof Error ? err.message : err}`,
           );
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(
@@ -153,7 +156,7 @@ export class LspSidecar {
       });
 
       this.server.listen(port, () => {
-        console.log(`[lsp-sidecar] Listening on port ${port}`);
+        log.info(`Listening on port ${port}`);
         resolve();
       });
     });
@@ -188,9 +191,7 @@ export class LspSidecar {
     return { diagnostics };
   }
 
-  private async handleDefinition(
-    params: Record<string, unknown>,
-  ): Promise<{
+  private async handleDefinition(params: Record<string, unknown>): Promise<{
     definitions: Array<{ file: string; line: number; column: number }>;
   }> {
     const file = params.file as string;
@@ -217,18 +218,10 @@ export class LspSidecar {
     }
 
     const locations = Array.isArray(result) ? result : [result];
-    return {
-      definitions: locations.map((loc) => ({
-        file: this.lsp.uriToPath(loc.uri),
-        line: loc.range.start.line + 1,
-        column: loc.range.start.character + 1,
-      })),
-    };
+    return { definitions: this.mapLocations(locations) };
   }
 
-  private async handleReferences(
-    params: Record<string, unknown>,
-  ): Promise<{
+  private async handleReferences(params: Record<string, unknown>): Promise<{
     references: Array<{ file: string; line: number; column: number }>;
   }> {
     const file = params.file as string;
@@ -252,13 +245,7 @@ export class LspSidecar {
       return { references: [] };
     }
 
-    return {
-      references: result.map((loc) => ({
-        file: this.lsp.uriToPath(loc.uri),
-        line: loc.range.start.line + 1,
-        column: loc.range.start.character + 1,
-      })),
-    };
+    return { references: this.mapLocations(result) };
   }
 
   private async handleHover(
@@ -358,6 +345,19 @@ export class LspSidecar {
   }
 
   // --- Helpers ---
+
+  private mapLocations(
+    locations: Array<{
+      uri: string;
+      range: { start: { line: number; character: number } };
+    }>,
+  ): Array<{ file: string; line: number; column: number }> {
+    return locations.map((loc) => ({
+      file: this.lsp.uriToPath(loc.uri),
+      line: loc.range.start.line + 1,
+      column: loc.range.start.character + 1,
+    }));
+  }
 
   private waitForDiagnostics(
     file: string,

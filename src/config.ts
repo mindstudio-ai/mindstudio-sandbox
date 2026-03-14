@@ -1,4 +1,9 @@
 import path from 'node:path';
+import { createLogger, setLogLevel, type LogLevel } from './logger.js';
+
+const log = createLogger('config');
+
+const VALID_LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
 export interface Config {
   gitRepoUrl: string;
@@ -8,22 +13,33 @@ export interface Config {
   workspaceDir: string;
   port: number;
   sandboxToken: string;
+  logLevel: LogLevel;
 }
 
 export function loadConfig(): Config {
-  console.log('[config] Loading environment variables...');
+  // Bootstrap log level first so all subsequent logging respects it
+  const rawLogLevel = process.env['LOG_LEVEL']?.toLowerCase() ?? 'info';
+  const logLevel: LogLevel = VALID_LOG_LEVELS.includes(rawLogLevel as LogLevel)
+    ? (rawLogLevel as LogLevel)
+    : 'info';
+  setLogLevel(logLevel);
+
+  log.info('Loading environment variables...');
+  log.info(
+    `  LOG_LEVEL = ${logLevel}${rawLogLevel !== logLevel ? ` (invalid "${rawLogLevel}", using default)` : ''}`,
+  );
 
   const missing: string[] = [];
 
   function required(name: string): string {
     const val = process.env[name];
     if (!val) {
-      console.log(`[config]   ${name} = (MISSING)`);
+      log.info(`  ${name} = (MISSING)`);
       missing.push(name);
       return '';
     }
-    console.log(
-      `[config]   ${name} = ${name.includes('KEY') || name.includes('TOKEN') ? val.slice(0, 8) + '...' : val}`,
+    log.debug(
+      `  ${name} = ${name.includes('KEY') || name.includes('TOKEN') ? val.slice(0, 8) + '...' : val}`,
     );
     return val;
   }
@@ -31,8 +47,15 @@ export function loadConfig(): Config {
   function optional(name: string, defaultVal: string): string {
     const val = process.env[name];
     const result = val || defaultVal;
-    console.log(`[config]   ${name} = ${result}${val ? '' : ' (default)'}`);
+    log.debug(`  ${name} = ${result}${val ? '' : ' (default)'}`);
     return result;
+  }
+
+  const sandboxToken = process.env['SANDBOX_TOKEN'] ?? '';
+  if (sandboxToken) {
+    log.debug(`  SANDBOX_TOKEN = ${sandboxToken.slice(0, 8)}...`);
+  } else {
+    log.debug('  SANDBOX_TOKEN = (not set, auth disabled)');
   }
 
   const config: Config = {
@@ -44,24 +67,17 @@ export function loadConfig(): Config {
       optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace'),
     ),
     port: parseInt(optional('PORT', '4387'), 10),
-    sandboxToken: process.env['SANDBOX_TOKEN']
-      ? (console.log(
-          `[config]   SANDBOX_TOKEN = ${process.env['SANDBOX_TOKEN']!.slice(0, 8)}...`,
-        ),
-        process.env['SANDBOX_TOKEN']!)
-      : (console.log('[config]   SANDBOX_TOKEN = (not set, auth disabled)'),
-        ''),
+    sandboxToken,
+    logLevel,
   };
 
   if (missing.length > 0) {
-    console.error(
-      `[config] FATAL: Missing required env vars: ${missing.join(', ')}`,
-    );
+    log.error(`FATAL: Missing required env vars: ${missing.join(', ')}`);
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}`,
     );
   }
 
-  console.log('[config] Configuration loaded successfully');
+  log.info('Configuration loaded successfully');
   return config;
 }

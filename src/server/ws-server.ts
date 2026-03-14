@@ -9,19 +9,29 @@ import type {
   WsEvent,
   ServerStatus,
   AppConfig,
-} from './types.js';
-import * as filesystem from './handlers/filesystem.js';
-import { buildTree } from './handlers/filesystem.js';
+} from '../types.js';
+import {
+  buildTree,
+  listDir,
+  readFile,
+  writeFile,
+  deleteFile,
+  renameFile,
+} from './handlers/filesystem.js';
 import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
-import type { ProcessManager } from './process-manager.js';
-import type { LspClient } from './lsp-client.js';
+import type { ProcessManager } from '../processes/process-manager.js';
+import type { LspClient } from '../lsp/client.js';
 import {
   getChatHistory,
   getOutputLog,
   trackUserMessage,
   trackAgentEvent,
-} from './state.js';
+} from '../state.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('ws-server');
+const lspLog = createLogger('lsp-ws');
 
 // Re-export so index.ts can keep importing from ws-server
 export { trackAgentEvent, trackUserMessage };
@@ -32,7 +42,7 @@ let sandboxToken: string = '';
 let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 let appConfig: AppConfig | null = null;
-let pm: ProcessManager | null = null;
+let processManager: ProcessManager | null = null;
 
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
@@ -40,42 +50,41 @@ export function setAppConfig(config: AppConfig): void {
 }
 
 /** Store the process manager so agent actions can write to stdin / restart. */
-export function setProcessManager(processManager: ProcessManager): void {
-  pm = processManager;
+export function setProcessManager(pm: ProcessManager): void {
+  processManager = pm;
 }
 
 const actions: Record<string, ActionHandler> = {
-  listDir: (p) => filesystem.listDir(p as { path: string }),
-  readFile: (p) => filesystem.readFile(p as { path: string }),
-  writeFile: (p) =>
-    filesystem.writeFile(p as { path: string; content: string }),
-  deleteFile: (p) => filesystem.deleteFile(p as { path: string }),
-  renameFile: (p) =>
-    filesystem.renameFile(p as { oldPath: string; newPath: string }),
+  listDir: (p) => listDir(p as { path: string }),
+  readFile: (p) => readFile(p as { path: string }),
+  writeFile: (p) => writeFile(p as { path: string; content: string }),
+  deleteFile: (p) => deleteFile(p as { path: string }),
+  renameFile: (p) => renameFile(p as { oldPath: string; newPath: string }),
   search: (p) => search(p as Parameters<typeof search>[0]),
   shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
   agentMessage: async (p) => {
     const { text } = p as { text: string };
-    if (!pm) {
+    if (!processManager) {
       throw new Error('Process manager not initialized');
     }
-    if (pm.getState('agent') !== 'running') {
+    if (processManager.getState('agent') !== 'running') {
       throw new Error('Agent not running');
     }
-    console.log(
-      `[ws-server] Sending message to agent: ${text.slice(0, 100)}...`,
-    );
+    log.info(`Sending message to agent: ${text.slice(0, 100)}...`);
     trackUserMessage(text);
-    pm.writeStdin('agent', JSON.stringify({ action: 'message', text }));
+    processManager.writeStdin(
+      'agent',
+      JSON.stringify({ action: 'message', text }),
+    );
     return {};
   },
   agentCancel: async () => {
-    if (!pm) {
+    if (!processManager) {
       throw new Error('Process manager not initialized');
     }
-    console.log('[ws-server] Cancelling agent — restarting process');
+    log.info('Cancelling agent — restarting process');
     broadcast('agentError', { error: 'Cancelled by user' });
-    await pm.restart('agent');
+    await processManager.restart('agent');
     return {};
   },
 };
@@ -91,7 +100,7 @@ export function getStatus(): ServerStatus {
 }
 
 export function setStatus(s: ServerStatus): void {
-  console.log(`[ws-server] Status: ${status} → ${s}`);
+  log.info(`Status: ${status} → ${s}`);
   status = s;
 }
 
@@ -108,7 +117,7 @@ export function setProxyTarget(port: number): void {
   proxy.on('error', () => {
     // Handled per-request below
   });
-  console.log(`[ws-server] Preview proxy target set to localhost:${port}`);
+  log.info(`Preview proxy target set to localhost:${port}`);
 }
 
 /** Set the shared LSP client for WebSocket bridge and sidecar. */
@@ -124,7 +133,6 @@ function verifyToken(url: string | undefined): boolean {
   return parsed.searchParams.get('token') === sandboxToken;
 }
 
-/** Check if this request is for the C&C control channel. */
 /** Paths handled by the C&C server (not proxied to HMR/preview). */
 function isCncPath(url: string | undefined): boolean {
   if (!url) {
@@ -138,20 +146,18 @@ export function startServer(port: number, token?: string): Promise<void> {
   sandboxToken = token || '';
 
   return new Promise((resolve) => {
-    console.log(`[ws-server] Creating HTTP server on port ${port}`);
-    console.log(
-      `[ws-server] Auth: ${sandboxToken ? 'token required' : 'disabled (no SANDBOX_TOKEN)'}`,
+    log.info(`Creating HTTP server on port ${port}`);
+    log.debug(
+      `Auth: ${sandboxToken ? 'token required' : 'disabled (no SANDBOX_TOKEN)'}`,
     );
 
     httpServer = http.createServer((req, res) => {
-      // Health endpoint — always served by C&C
       if (req.url === '/health' || req.url?.startsWith('/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status, proxyTarget }));
         return;
       }
 
-      // Everything else → reverse proxy to tunnel proxy
       if (!proxy) {
         res.writeHead(503, { 'Content-Type': 'text/html' });
         res.end('<html><body><p>Preview starting...</p></body></html>');
@@ -172,20 +178,18 @@ export function startServer(port: number, token?: string): Promise<void> {
     // LSP WebSocket — bridges Monaco to the shared LspClient
     lspWss = new WebSocketServer({ noServer: true });
     lspWss.on('connection', (ws) => {
-      console.log('[lsp] WebSocket client connected');
+      lspLog.info('WebSocket client connected');
 
       if (!lspClient?.isRunning) {
-        console.error('[lsp] Language server not running, closing connection');
+        lspLog.error('Language server not running, closing connection');
         ws.close(1013, 'Language server not running');
         return;
       }
 
-      // WebSocket → language server (route through LspClient)
       ws.on('message', async (data) => {
         try {
           const msg = JSON.parse(data.toString());
           if (msg.id !== undefined && msg.method) {
-            // Request — route response back to this WS
             try {
               const result = await lspClient!.request(msg.method, msg.params);
               if (ws.readyState === WebSocket.OPEN) {
@@ -207,15 +211,13 @@ export function startServer(port: number, token?: string): Promise<void> {
               }
             }
           } else {
-            // Notification — fire and forget
             lspClient!.notify(msg.method, msg.params);
           }
         } catch {
-          console.error('[lsp] Failed to parse WebSocket message');
+          lspLog.warn('Failed to parse WebSocket message');
         }
       });
 
-      // Language server notifications → WebSocket
       const unsubs: Array<() => void> = [];
       const forwardNotification = (method: string) => {
         const unsub = lspClient!.onNotification(method, (params) => {
@@ -231,7 +233,7 @@ export function startServer(port: number, token?: string): Promise<void> {
       forwardNotification('window/showMessage');
 
       ws.on('close', () => {
-        console.log('[lsp] WebSocket client disconnected');
+        lspLog.debug('WebSocket client disconnected');
         for (const unsub of unsubs) {
           unsub();
         }
@@ -239,13 +241,11 @@ export function startServer(port: number, token?: string): Promise<void> {
     });
 
     wss.on('connection', async (ws) => {
-      console.log(
-        `[ws-server] C&C WebSocket client connected (total: ${wss.clients.size})`,
-      );
+      log.info(`C&C client connected (total: ${wss.clients.size})`);
 
       ws.on('close', (code, reason) => {
-        console.log(
-          `[ws-server] C&C WebSocket client disconnected (code=${code}, reason=${reason.toString() || 'none'}, remaining: ${wss.clients.size})`,
+        log.debug(
+          `C&C client disconnected (code=${code}, reason=${reason.toString() || 'none'}, remaining: ${wss.clients.size})`,
         );
       });
 
@@ -323,48 +323,43 @@ export function startServer(port: number, token?: string): Promise<void> {
     // Handle all WebSocket upgrades — route by path
     httpServer.on('upgrade', (req, socket: net.Socket, head) => {
       const pathname = new URL(req.url || '/', 'http://localhost').pathname;
-      console.log(`[ws-server] WebSocket upgrade: ${pathname}`);
+      log.debug(`WebSocket upgrade: ${pathname}`);
 
       if (pathname === '/lsp') {
-        // LSP WebSocket — bridges to language server
-        console.log('[ws-server] Upgrading LSP WebSocket');
+        log.debug('Upgrading LSP WebSocket');
         lspWss.handleUpgrade(req, socket, head, (ws) => {
           lspWss.emit('connection', ws, req);
         });
       } else if (isCncPath(req.url)) {
-        // C&C WebSocket — auth required
         if (!verifyToken(req.url)) {
-          console.log(`[ws-server] Rejected: invalid token on ${pathname}`);
+          log.warn(`Rejected: invalid token on ${pathname}`);
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;
         }
-        console.log(`[ws-server] Upgrading C&C WebSocket on ${pathname}`);
+        log.debug(`Upgrading C&C WebSocket on ${pathname}`);
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit('connection', ws, req);
         });
       } else {
-        // HMR / dev server WebSocket — proxy to tunnel
         if (!proxy) {
-          console.log(
-            `[ws-server] HMR proxy not ready, returning 503 for ${pathname}`,
-          );
+          log.warn(`HMR proxy not ready, returning 503 for ${pathname}`);
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
           return;
         }
-        console.log(
-          `[ws-server] Proxying HMR WebSocket: ${pathname} → localhost:${proxyTarget}`,
+        log.debug(
+          `Proxying HMR WebSocket: ${pathname} → localhost:${proxyTarget}`,
         );
         proxy.ws(req, socket, head, {}, (err) => {
-          console.error(`[ws-server] HMR proxy error: ${err?.message}`);
+          log.error(`HMR proxy error: ${err?.message}`);
           socket.destroy();
         });
       }
     });
 
     httpServer.listen(port, () => {
-      console.log(`[ws-server] Listening on port ${port}`);
+      log.info(`Listening on port ${port}`);
       resolve();
     });
   });

@@ -9,6 +9,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('lsp-client');
 
 type NotificationHandler = (params: unknown) => void;
 
@@ -30,8 +33,8 @@ export class LspClient {
   async start(workspaceDir: string): Promise<void> {
     this.workspaceDir = workspaceDir;
 
-    console.log(
-      `[lsp-client] Starting typescript-language-server --stdio (cwd: ${workspaceDir})`,
+    log.info(
+      `Starting typescript-language-server --stdio (cwd: ${workspaceDir})`,
     );
 
     this.process = spawn('typescript-language-server', ['--stdio'], {
@@ -39,19 +42,19 @@ export class LspClient {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    console.log(`[lsp-client] Spawned with PID ${this.process.pid}`);
+    log.info(`Spawned with PID ${this.process.pid}`);
 
     this.process.stderr?.on('data', (chunk: Buffer) => {
-      console.log(`[lsp-client:stderr] ${chunk.toString().trim()}`);
+      log.debug(`stderr: ${chunk.toString().trim()}`);
     });
 
     this.process.on('error', (err) => {
-      console.error(`[lsp-client] Spawn error: ${err.message}`);
+      log.error(`Spawn error: ${err.message}`);
       this.process = null;
     });
 
     this.process.on('exit', (code, signal) => {
-      console.log(`[lsp-client] Exited (code=${code}, signal=${signal})`);
+      log.info(`Exited (code=${code}, signal=${signal})`);
       this.process = null;
       // Reject all pending requests
       for (const [id, req] of this.pending) {
@@ -68,7 +71,7 @@ export class LspClient {
 
     // Send initialize request
     const rootUri = `file://${workspaceDir}`;
-    console.log(`[lsp-client] Sending initialize (rootUri: ${rootUri})`);
+    log.debug(`Sending initialize (rootUri: ${rootUri})`);
 
     const initResult = await this.request('initialize', {
       processId: process.pid,
@@ -105,16 +108,16 @@ export class LspClient {
       workspaceFolders: [{ uri: rootUri, name: path.basename(workspaceDir) }],
     });
 
-    console.log('[lsp-client] Initialize response received');
+    log.debug('Initialize response received');
 
     // Send initialized notification
     this.notify('initialized', {});
-    console.log('[lsp-client] Ready');
+    log.info('Ready');
   }
 
   stop(): void {
     if (this.process) {
-      console.log('[lsp-client] Stopping...');
+      log.info('Stopping...');
       this.process.kill();
       this.process = null;
     }
@@ -311,8 +314,8 @@ export class LspClient {
         const message = JSON.parse(messageBytes.toString());
         this.handleMessage(message);
       } catch (err) {
-        console.error(
-          `[lsp-client] Failed to parse message: ${err instanceof Error ? err.message : err}`,
+        log.error(
+          `Failed to parse message: ${err instanceof Error ? err.message : err}`,
         );
       }
     }
@@ -347,8 +350,8 @@ export class LspClient {
           try {
             handler(message.params);
           } catch (err) {
-            console.error(
-              `[lsp-client] Notification handler error for ${message.method}: ${err}`,
+            log.error(
+              `Notification handler error for ${message.method}: ${err}`,
             );
           }
         }

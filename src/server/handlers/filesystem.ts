@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { DirEntry, TreeEntry } from '../types.js';
-import { suppressPath } from '../file-watcher.js';
+import type { DirEntry, TreeEntry } from '../../types.js';
+import { suppressPath } from '../../processes/file-watcher.js';
+import { resolveSafe, IGNORED_DIRS } from '../../utils/paths.js';
 
 let workspaceDir: string;
 
@@ -9,16 +10,8 @@ export function initFilesystem(dir: string): void {
   workspaceDir = dir;
 }
 
-function resolveSafe(userPath: string): string {
-  const resolved = path.resolve(workspaceDir, userPath);
-  if (resolved !== workspaceDir && !resolved.startsWith(workspaceDir + '/')) {
-    throw new Error('Path escapes workspace');
-  }
-  return resolved;
-}
-
-function relativePath(absPath: string): string {
-  return path.relative(workspaceDir, absPath);
+function safe(userPath: string): string {
+  return resolveSafe(workspaceDir, userPath);
 }
 
 const BINARY_EXTENSIONS = new Set([
@@ -62,7 +55,7 @@ function isBinary(filePath: string): boolean {
 export async function listDir(params: {
   path: string;
 }): Promise<{ entries: DirEntry[] }> {
-  const dirPath = resolveSafe(params.path);
+  const dirPath = safe(params.path);
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
   const results: DirEntry[] = [];
@@ -87,7 +80,7 @@ export async function listDir(params: {
 export async function readFile(params: {
   path: string;
 }): Promise<{ content: string; encoding: string }> {
-  const filePath = resolveSafe(params.path);
+  const filePath = safe(params.path);
   if (isBinary(filePath)) {
     const buf = await fs.readFile(filePath);
     return { content: buf.toString('base64'), encoding: 'base64' };
@@ -100,7 +93,7 @@ export async function writeFile(params: {
   path: string;
   content: string;
 }): Promise<Record<string, never>> {
-  const filePath = resolveSafe(params.path);
+  const filePath = safe(params.path);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   suppressPath(filePath);
   await fs.writeFile(filePath, params.content, 'utf-8');
@@ -110,7 +103,7 @@ export async function writeFile(params: {
 export async function deleteFile(params: {
   path: string;
 }): Promise<Record<string, never>> {
-  const filePath = resolveSafe(params.path);
+  const filePath = safe(params.path);
   suppressPath(filePath);
   await fs.rm(filePath, { recursive: true });
   return {};
@@ -120,8 +113,8 @@ export async function renameFile(params: {
   oldPath: string;
   newPath: string;
 }): Promise<Record<string, never>> {
-  const oldFilePath = resolveSafe(params.oldPath);
-  const newFilePath = resolveSafe(params.newPath);
+  const oldFilePath = safe(params.oldPath);
+  const newFilePath = safe(params.newPath);
   await fs.mkdir(path.dirname(newFilePath), { recursive: true });
   suppressPath(oldFilePath);
   suppressPath(newFilePath);
@@ -129,7 +122,7 @@ export async function renameFile(params: {
   return {};
 }
 
-const TREE_IGNORE = new Set(['node_modules', '.git', '.vite']);
+const TREE_IGNORE = new Set<string>(IGNORED_DIRS);
 
 /**
  * Build a recursive file tree up to `depth` levels deep.

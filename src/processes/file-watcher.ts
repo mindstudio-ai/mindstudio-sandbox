@@ -1,5 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
+import { IGNORED_DIRS } from '../utils/paths.js';
 
 let watcher: FSWatcher | null = null;
 let workspaceDir: string;
@@ -22,7 +23,6 @@ function isSuppressed(filePath: string): boolean {
     suppressedPaths.delete(filePath);
     return false;
   }
-  suppressedPaths.delete(filePath);
   return true;
 }
 
@@ -36,7 +36,7 @@ export function startWatcher(
   workspaceDir = dir;
 
   watcher = chokidar.watch(dir, {
-    ignored: ['**/node_modules/**', '**/.git/**', '**/.vite/**'],
+    ignored: IGNORED_DIRS.map((d) => `**/${d}/**`),
     ignoreInitial: true,
     persistent: true,
     awaitWriteFinish: {

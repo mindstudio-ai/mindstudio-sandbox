@@ -8,6 +8,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createLogger } from './logger.js';
+
+const log = createLogger('state');
 
 // --- Types ---
 
@@ -140,13 +143,11 @@ export async function saveState(): Promise<void> {
   try {
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
-    console.log(
-      `[state] Saved (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) → ${statePath}`,
+    log.info(
+      `Saved (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) → ${statePath}`,
     );
   } catch (err) {
-    console.error(
-      `[state] Failed to save: ${err instanceof Error ? err.message : err}`,
-    );
+    log.error(`Failed to save: ${err instanceof Error ? err.message : err}`);
   }
 }
 
@@ -160,12 +161,12 @@ export async function restoreState(): Promise<boolean> {
     if (saved.outputLog) {
       state.outputLog.push(...saved.outputLog);
     }
-    console.log(
-      `[state] Restored (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) ← ${statePath}`,
+    log.info(
+      `Restored (${state.chatHistory.length} chat messages, ${state.outputLog.length} output lines) ← ${statePath}`,
     );
     return true;
   } catch {
-    console.log(`[state] No saved state found at ${statePath}`);
+    log.info(`No saved state found at ${statePath}`);
     return false;
   }
 }

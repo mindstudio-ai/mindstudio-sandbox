@@ -9,7 +9,7 @@ import {
   readWebConfig,
   installDependencies,
 } from './bootstrap.js';
-import { ProcessManager } from './process-manager.js';
+import { ProcessManager } from './processes/process-manager.js';
 import {
   startServer,
   broadcast,
@@ -20,16 +20,19 @@ import {
   setProcessManager,
   trackAgentEvent,
   setLspClient,
-} from './ws-server.js';
-import { LspClient } from './lsp-client.js';
-import { LspSidecar } from './lsp-sidecar.js';
-import { initFilesystem } from './handlers/filesystem.js';
-import { initSearch } from './handlers/search.js';
-import { initShell } from './handlers/shell.js';
-import { startWatcher, stopWatcher } from './file-watcher.js';
-import { parseTunnelLine } from './tunnel-events.js';
+} from './server/ws-server.js';
+import { LspClient } from './lsp/client.js';
+import { LspSidecar } from './lsp/sidecar.js';
+import { initFilesystem } from './server/handlers/filesystem.js';
+import { initSearch } from './server/handlers/search.js';
+import { initShell } from './server/handlers/shell.js';
+import { startWatcher, stopWatcher } from './processes/file-watcher.js';
+import { parseTunnelLine } from './processes/tunnel-events.js';
 import { initState, restoreState, saveState, appendOutput } from './state.js';
+import { createLogger, onLog } from './logger.js';
 import path from 'node:path';
+
+const log = createLogger('cnc');
 
 const bootStart = Date.now();
 
@@ -38,17 +41,17 @@ function elapsed(): string {
 }
 
 async function main(): Promise<void> {
-  console.log(`[cnc] ========================================`);
-  console.log(`[cnc] C&C Server starting at ${new Date().toISOString()}`);
-  console.log(`[cnc] Node ${process.version}, PID ${process.pid}`);
-  console.log(`[cnc] cwd: ${process.cwd()}`);
-  console.log(`[cnc] ========================================`);
+  log.info('========================================');
+  log.info(`C&C Server starting at ${new Date().toISOString()}`);
+  log.info(`Node ${process.version}, PID ${process.pid}`);
+  log.info(`cwd: ${process.cwd()}`);
+  log.info('========================================');
 
-  // 1. Parse config
-  console.log(`[cnc] (${elapsed()}) Step 1: Loading config...`);
+  // 1. Parse config (also sets LOG_LEVEL)
+  log.info(`(${elapsed()}) Step 1: Loading config...`);
   const config = loadConfig();
-  console.log(
-    `[cnc] (${elapsed()}) Config loaded — port=${config.port}, workspace=${config.workspaceDir}`,
+  log.info(
+    `(${elapsed()}) Config loaded — port=${config.port}, workspace=${config.workspaceDir}`,
   );
 
   const processManager = new ProcessManager();
@@ -61,89 +64,99 @@ async function main(): Promise<void> {
       return;
     }
     shuttingDown = true;
-    console.log(`[cnc] (${elapsed()}) Shutting down...`);
+    log.info(`(${elapsed()}) Shutting down...`);
     await saveState();
     stopWatcher();
     lspClientInstance?.stop();
     await processManager.stopAll();
     await stopServer();
-    console.log(`[cnc] (${elapsed()}) Shutdown complete`);
+    log.info(`(${elapsed()}) Shutdown complete`);
     process.exit(0);
   };
 
   process.on('SIGTERM', () => {
-    console.log('[cnc] Received SIGTERM');
+    log.info('Received SIGTERM');
     shutdown();
   });
   process.on('SIGINT', () => {
-    console.log('[cnc] Received SIGINT');
+    log.info('Received SIGINT');
     shutdown();
   });
   process.on('uncaughtException', (err) => {
-    console.error(`[cnc] Uncaught exception: ${err.message}`);
-    console.error(err.stack);
+    log.error(`Uncaught exception: ${err.message}`);
+    log.error(err.stack ?? '');
   });
   process.on('unhandledRejection', (reason) => {
-    console.error(`[cnc] Unhandled rejection: ${reason}`);
+    log.error(`Unhandled rejection: ${reason}`);
   });
 
   // 2. Start HTTP/WS server immediately (health returns "bootstrapping")
-  console.log(`[cnc] (${elapsed()}) Step 2: Starting HTTP/WS server...`);
+  log.info(`(${elapsed()}) Step 2: Starting HTTP/WS server...`);
   await startServer(config.port, config.sandboxToken);
-  console.log(`[cnc] (${elapsed()}) Server listening on port ${config.port}`);
+  log.info(`(${elapsed()}) Server listening on port ${config.port}`);
 
-  const progress = (step: string, message: string) => {
-    console.log(`[cnc] (${elapsed()}) [${step}] ${message}`);
-    broadcast('bootstrapProgress', { step, message });
-  };
-
+  // Wire logger into broadcast + ring buffer so server logs reach WS clients
   const output = (proc: string, stream: 'stdout' | 'stderr', line: string) => {
     appendOutput(proc, stream, line);
     broadcast('processOutput', { process: proc, stream, line });
   };
 
+  onLog((entry) => {
+    const stream =
+      entry.level === 'error' || entry.level === 'warn' ? 'stderr' : 'stdout';
+    appendOutput(`cnc:${entry.module}`, stream, entry.message);
+    broadcast('processOutput', {
+      process: `cnc:${entry.module}`,
+      stream,
+      line: entry.message,
+    });
+  });
+
+  const progress = (step: string, message: string) => {
+    log.info(`(${elapsed()}) [${step}] ${message}`);
+    broadcast('bootstrapProgress', { step, message });
+  };
+
   try {
     // 3. Install tunnel and agent
-    console.log(`[cnc] (${elapsed()}) Step 3: Installing tunnel and agent...`);
+    log.info(`(${elapsed()}) Step 3: Installing tunnel and agent...`);
     await Promise.all([
       installTunnel(progress),
       installAgent(progress),
       installLsp(progress),
     ]);
-    console.log(`[cnc] (${elapsed()}) Tunnel and agent install complete`);
+    log.info(`(${elapsed()}) Tunnel and agent install complete`);
 
     // 4. Write tunnel config
-    console.log(`[cnc] (${elapsed()}) Step 4: Writing tunnel config...`);
+    log.info(`(${elapsed()}) Step 4: Writing tunnel config...`);
     await writeTunnelConfig(config);
-    console.log(`[cnc] (${elapsed()}) Tunnel config written`);
+    log.info(`(${elapsed()}) Tunnel config written`);
 
     // 5. Clone app repo (skip if already exists)
-    console.log(`[cnc] (${elapsed()}) Step 5: Cloning app repo...`);
+    log.info(`(${elapsed()}) Step 5: Cloning app repo...`);
     await cloneAppRepo(config, progress);
-    console.log(`[cnc] (${elapsed()}) App repo ready`);
+    log.info(`(${elapsed()}) App repo ready`);
 
     // 6. Read app config
-    console.log(`[cnc] (${elapsed()}) Step 6: Reading app config...`);
+    log.info(`(${elapsed()}) Step 6: Reading app config...`);
     const appConfig = await readAppConfig(config.workspaceDir);
     const webConfig = await readWebConfig(config.workspaceDir, appConfig);
     setAppConfig(appConfig);
-    console.log(
-      `[cnc] (${elapsed()}) App: ${appConfig.name} (${appConfig.appId})`,
-    );
+    log.info(`(${elapsed()}) App: ${appConfig.name} (${appConfig.appId})`);
 
     const devPort = webConfig?.web.devPort ?? 5173;
     const devCommand = webConfig?.web.devCommand ?? 'npm run dev';
-    console.log(
-      `[cnc] (${elapsed()}) Dev server: port=${devPort}, command="${devCommand}"`,
+    log.info(
+      `(${elapsed()}) Dev server: port=${devPort}, command="${devCommand}"`,
     );
 
     // 7. Install dependencies
-    console.log(`[cnc] (${elapsed()}) Step 7: Installing dependencies...`);
+    log.info(`(${elapsed()}) Step 7: Installing dependencies...`);
     await installDependencies(config.workspaceDir, progress);
-    console.log(`[cnc] (${elapsed()}) Dependencies installed`);
+    log.info(`(${elapsed()}) Dependencies installed`);
 
     // Init handlers
-    console.log(`[cnc] (${elapsed()}) Initializing handlers...`);
+    log.debug(`(${elapsed()}) Initializing handlers...`);
     initFilesystem(config.workspaceDir);
     initSearch(config.workspaceDir);
     initShell(config.workspaceDir, broadcast);
@@ -154,7 +167,7 @@ async function main(): Promise<void> {
     await restoreState();
 
     // Start TypeScript language server
-    console.log(`[cnc] (${elapsed()}) Starting LSP...`);
+    log.info(`(${elapsed()}) Starting LSP...`);
     lspClientInstance = new LspClient();
     await lspClientInstance.start(config.workspaceDir);
     setLspClient(lspClientInstance);
@@ -162,7 +175,7 @@ async function main(): Promise<void> {
     // Start LSP HTTP sidecar for remy
     const lspSidecar = new LspSidecar(lspClientInstance);
     await lspSidecar.start(4388);
-    console.log(`[cnc] (${elapsed()}) LSP sidecar ready on port 4388`);
+    log.info(`(${elapsed()}) LSP sidecar ready on port 4388`);
 
     // 8. Start dev server
     const webDir = webConfig
@@ -175,9 +188,7 @@ async function main(): Promise<void> {
       : null;
 
     if (webDir) {
-      console.log(
-        `[cnc] (${elapsed()}) Step 8: Starting dev server in ${webDir}...`,
-      );
+      log.info(`(${elapsed()}) Step 8: Starting dev server in ${webDir}...`);
       progress('devServer', `Starting dev server: ${devCommand}`);
       const [cmd, ...args] = devCommand.split(' ');
       processManager.start({
@@ -191,13 +202,11 @@ async function main(): Promise<void> {
         onStderr: (line) => output('devServer', 'stderr', line),
       });
     } else {
-      console.log(
-        `[cnc] (${elapsed()}) Step 8: No web interface, skipping dev server`,
-      );
+      log.info(`(${elapsed()}) Step 8: No web interface, skipping dev server`);
     }
 
     // 9. Start tunnel
-    console.log(`[cnc] (${elapsed()}) Step 9: Starting dev tunnel...`);
+    log.info(`(${elapsed()}) Step 9: Starting dev tunnel...`);
     progress('tunnel', 'Starting dev tunnel...');
     processManager.start({
       name: 'tunnel',
@@ -210,25 +219,24 @@ async function main(): Promise<void> {
       onStdout: (line) => {
         const tunnelEvent = parseTunnelLine(line);
         if (tunnelEvent) {
-          console.log(
-            `[cnc] (${elapsed()}) Tunnel event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
+          log.debug(
+            `(${elapsed()}) Tunnel event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
           );
           broadcast('tunnelEvent', tunnelEvent);
-          // Capture the tunnel proxy port for reverse proxying
           if (
             tunnelEvent.event === 'session-started' &&
             typeof tunnelEvent.proxyPort === 'number'
           ) {
-            console.log(
-              `[cnc] (${elapsed()}) Tunnel proxy port: ${tunnelEvent.proxyPort}`,
+            log.info(
+              `(${elapsed()}) Tunnel proxy port: ${tunnelEvent.proxyPort}`,
             );
             setProxyTarget(tunnelEvent.proxyPort);
           }
           if (tunnelEvent.event === 'error') {
-            console.error(`[cnc] Tunnel error: ${tunnelEvent.message}`);
+            log.error(`Tunnel error: ${tunnelEvent.message}`);
           }
         } else {
-          console.log(`[tunnel:stdout] ${line}`);
+          log.debug(`[tunnel:stdout] ${line}`);
           output('tunnel', 'stdout', line);
         }
       },
@@ -236,7 +244,7 @@ async function main(): Promise<void> {
     });
 
     // 10. Start agent (remy --headless)
-    console.log(`[cnc] (${elapsed()}) Step 10: Starting agent...`);
+    log.info(`(${elapsed()}) Step 10: Starting agent...`);
     progress('agent', 'Starting coding agent...');
     processManager.start({
       name: 'agent',
@@ -255,7 +263,6 @@ async function main(): Promise<void> {
       maxRestarts: 0,
       critical: false,
       onStdout: (line) => {
-        // Parse remy NDJSON events and broadcast as agentX events
         try {
           const event = JSON.parse(line);
           if (event && typeof event.event === 'string') {
@@ -272,16 +279,16 @@ async function main(): Promise<void> {
             };
             const mappedEvent = eventMap[event.event] || `agent_${event.event}`;
             const { event: _evt, ...data } = event;
-            console.log(
-              `[cnc] (${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
+            log.debug(
+              `(${elapsed()}) Agent event: ${mappedEvent}${data.text ? ` "${data.text.slice(0, 80)}..."` : ''}`,
             );
             trackAgentEvent(mappedEvent, data);
             broadcast(mappedEvent, data);
           } else {
-            console.log(`[agent:stdout] ${line}`);
+            log.debug(`[agent:stdout] ${line}`);
           }
         } catch {
-          console.log(`[agent:stdout] ${line}`);
+          log.debug(`[agent:stdout] ${line}`);
           output('agent', 'stdout', line);
         }
       },
@@ -289,51 +296,41 @@ async function main(): Promise<void> {
     });
 
     // 11. Start file watcher
-    console.log(
-      `[cnc] (${elapsed()}) Step 10: Starting file watcher on ${config.workspaceDir}`,
+    log.info(
+      `(${elapsed()}) Step 11: Starting file watcher on ${config.workspaceDir}`,
     );
     startWatcher(config.workspaceDir, (filePath, changeType) => {
       broadcast('fileChanged', { path: filePath, changeType });
-      // Notify LSP sidecar of file changes so diagnostics stay fresh
       if (changeType === 'modified' || changeType === 'created') {
         lspSidecar.onFileChanged(filePath).catch(() => {});
       }
     });
 
-    // 11. Ready
+    // Ready
     setStatus('ready');
     progress('ready', 'C&C server is ready');
-    console.log(
-      `[cnc] (${elapsed()}) ========================================`,
-    );
-    console.log(`[cnc] (${elapsed()}) READY — Bootstrap complete`);
-    console.log(
-      `[cnc] (${elapsed()}) ========================================`,
-    );
+    log.info(`(${elapsed()}) ========================================`);
+    log.info(`(${elapsed()}) READY — Bootstrap complete`);
+    log.info(`(${elapsed()}) ========================================`);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Bootstrap failed';
     const stack = err instanceof Error ? err.stack : undefined;
-    console.error(
-      `[cnc] (${elapsed()}) ========================================`,
-    );
-    console.error(`[cnc] (${elapsed()}) BOOTSTRAP ERROR: ${message}`);
+    log.error(`(${elapsed()}) ========================================`);
+    log.error(`(${elapsed()}) BOOTSTRAP ERROR: ${message}`);
     if (stack) {
-      console.error(stack);
+      log.error(stack);
     }
-    console.error(
-      `[cnc] (${elapsed()}) ========================================`,
-    );
+    log.error(`(${elapsed()}) ========================================`);
     setStatus('error');
     broadcast('bootstrapProgress', { step: 'error', message });
 
-    // Exit with non-zero so the sandbox manager knows the start failed
-    console.error(`[cnc] Exiting with code 1`);
+    log.error('Exiting with code 1');
     process.exit(1);
   }
 }
 
 main().catch((err) => {
-  console.error('[cnc] Fatal error in main():', err);
-  console.error(err.stack);
+  log.error(`Fatal error in main(): ${err}`);
+  log.error(err.stack ?? '');
   process.exit(1);
 });

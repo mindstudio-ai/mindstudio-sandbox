@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import type { SearchResult } from '../types.js';
+import type { SearchResult } from '../../types.js';
+import { resolveSafe, IGNORED_DIRS } from '../../utils/paths.js';
 
 let workspaceDir: string;
 
@@ -16,13 +17,8 @@ export async function search(params: {
   maxResults?: number;
 }): Promise<{ results: SearchResult[] }> {
   const searchDir = params.path
-    ? path.resolve(workspaceDir, params.path)
+    ? resolveSafe(workspaceDir, params.path)
     : workspaceDir;
-
-  // Validate no escape
-  if (!searchDir.startsWith(workspaceDir)) {
-    throw new Error('Path escapes workspace');
-  }
 
   const maxResults = params.maxResults ?? 100;
   const results: SearchResult[] = [];
@@ -40,18 +36,10 @@ export async function search(params: {
       if (params.glob) {
         args.push('--glob', params.glob);
       }
-      args.push(
-        '--glob',
-        '!node_modules',
-        '--glob',
-        '!.git',
-        '--glob',
-        '!.vite',
-        '--max-count',
-        String(maxResults),
-        params.query,
-        searchDir,
-      );
+      for (const dir of IGNORED_DIRS) {
+        args.push('--glob', `!${dir}`);
+      }
+      args.push('--max-count', String(maxResults), params.query, searchDir);
     }
 
     const child = spawn('rg', args, {
@@ -115,12 +103,7 @@ function grepFallback(
   maxResults: number,
 ): Promise<{ results: SearchResult[] }> {
   return new Promise((resolve) => {
-    const args = [
-      '-rn',
-      '--exclude-dir=node_modules',
-      '--exclude-dir=.git',
-      '--exclude-dir=.vite',
-    ];
+    const args = ['-rn', ...IGNORED_DIRS.map((d) => `--exclude-dir=${d}`)];
     if (!params.caseSensitive) {
       args.push('-i');
     }
