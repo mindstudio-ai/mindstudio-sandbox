@@ -596,6 +596,67 @@ The preview is available once the tunnel emits `session-started` (watch
 for the `tunnelEvent` pushed event). Before that, requests return a
 503 "Preview starting..." page.
 
+## Scenarios & Roles
+
+MindStudio Apps v2 have **roles** (app-level access control) and
+**scenarios** (seed scripts that set up the dev database into a specific
+state). Both are declared in `mindstudio.json` and managed through the
+dev tunnel.
+
+### Roles
+
+Roles are simple string identifiers (e.g. `"admin"`, `"ap"`,
+`"requester"`) that control what a user can see and do within an app.
+Methods check roles at runtime via `auth.requireRole()` and
+`auth.hasRole()` from the `@mindstudio-ai/agent` SDK.
+
+During development, **role impersonation** lets you see the app from
+any role's perspective without switching accounts. Use
+`tunnelImpersonate` to set role overrides — subsequent method executions
+will run with those roles. Use `tunnelClearImpersonation` to revert.
+Use `tunnelListRoles` to discover available roles.
+
+### Scenarios
+
+Scenarios solve the problem of testing role-based, stateful UIs. Instead
+of manually creating data through the app every time, you run a scenario
+and get a repeatable, well-defined starting point.
+
+A scenario is a TypeScript function that seeds the database using the
+same `@mindstudio-ai/agent` SDK that methods use (`db.push()`, etc.).
+Each scenario declares which roles to impersonate after seeding, so you
+immediately see the app from the right perspective.
+
+**Running a scenario** (via `tunnelRunScenario`) does three things:
+1. **Truncate** — clears all tables (blank canvas)
+2. **Seed** — executes the scenario function (creates data)
+3. **Impersonate** — sets the scenario's roles
+
+Scenarios are declared in `mindstudio.json`:
+
+```json
+{
+  "scenarios": [
+    {
+      "id": "ap-overdue-invoices",
+      "name": "AP: Overdue Invoices",
+      "description": "AP user with two invoices past due date",
+      "path": "dist/methods/.scenarios/apOverdueInvoices.ts",
+      "export": "apOverdueInvoices",
+      "roles": ["ap"]
+    }
+  ]
+}
+```
+
+The `session-started` tunnel event includes the full scenario list for
+populating a picker UI. Use `tunnelListScenarios` to refresh if the
+manifest changes.
+
+**Use cases:** testing role-based UI visibility, demo data for
+stakeholders, deterministic starting points for development, visual
+regression testing across roles and data states.
+
 ## Health Check
 
 ```
