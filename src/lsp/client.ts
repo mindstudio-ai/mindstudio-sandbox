@@ -145,6 +145,15 @@ export class LspClient {
 
     // Send initialized notification
     this.notify('initialized', {});
+
+    // Route LSP server log messages to the process registry
+    this.onNotification('window/logMessage', (params) => {
+      const p = params as { type: number; message: string };
+      // LSP log types: 1=Error, 2=Warning, 3=Info, 4=Log
+      const stream = p.type <= 2 ? 'stderr' : 'stdout';
+      this.registry?.appendLog('lsp', stream, p.message);
+    });
+
     log.info('Ready');
   }
 
