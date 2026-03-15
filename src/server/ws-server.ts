@@ -39,6 +39,7 @@ import type { EditorStateManager } from './editor-state.js';
 import type { ResourceMonitor } from '../processes/resource-monitor.js';
 import type { FileTreeManager } from './file-tree.js';
 import type { LspClient } from '../lsp/client.js';
+import { HmrRelay, HmrRelayManager } from './hmr-relay.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
@@ -216,6 +217,8 @@ const actions: Record<string, ActionHandler> = {
 let httpServer: http.Server;
 let wss: WebSocketServer;
 let lspWss: WebSocketServer;
+let hmrWss: WebSocketServer;
+const hmrRelayManager = new HmrRelayManager();
 let lspClient: LspClient | null = null;
 let status: ServerStatus = 'bootstrapping';
 
@@ -231,6 +234,7 @@ export function setStatus(s: ServerStatus): void {
 /** Set the tunnel proxy port for reverse proxying preview/HMR traffic. */
 export function setProxyTarget(port: number): void {
   proxyTarget = port;
+  hmrRelayManager.destroyAll();
   if (proxy) {
     proxy.close();
   }
@@ -301,6 +305,9 @@ export function startServer(port: number, token?: string): Promise<void> {
 
     // LSP WebSocket — bridges Monaco to the shared LspClient
     lspWss = new WebSocketServer({ noServer: true });
+
+    // HMR WebSocket — relay with buffering during agent turns
+    hmrWss = new WebSocketServer({ noServer: true });
     lspWss.on('connection', (ws) => {
       lspLog.info('WebSocket client connected');
 
@@ -482,18 +489,20 @@ export function startServer(port: number, token?: string): Promise<void> {
           wss.emit('connection', ws, req);
         });
       } else {
-        if (!proxy) {
+        if (!proxyTarget) {
           log.warn(`HMR proxy not ready, returning 503 for ${pathname}`);
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
           return;
         }
         log.debug(
-          `Proxying HMR WebSocket: ${pathname} → localhost:${proxyTarget}`,
+          `Relaying HMR WebSocket: ${pathname} → localhost:${proxyTarget}`,
         );
-        proxy.ws(req, socket, head, {}, (err) => {
-          log.error(`HMR proxy error: ${err?.message}`);
-          socket.destroy();
+        hmrWss.handleUpgrade(req, socket, head, (clientWs) => {
+          const url = new URL(req.url || '/', 'http://localhost');
+          const upstreamUrl = `ws://127.0.0.1:${proxyTarget}${url.pathname}${url.search}`;
+          const relay = new HmrRelay(clientWs, upstreamUrl);
+          hmrRelayManager.add(relay);
         });
       }
     });
@@ -516,12 +525,21 @@ export function broadcast(event: string, data: Record<string, unknown>): void {
       client.send(payload);
     }
   }
+
+  // Toggle HMR buffering when agent activity changes
+  if (event === 'agentActivityChanged' && data.busy !== undefined) {
+    hmrRelayManager.onAgentBusyChanged(data.busy as boolean);
+  }
 }
 
 export function stopServer(): Promise<void> {
   return new Promise((resolve) => {
+    hmrRelayManager.destroyAll();
     if (proxy) {
       proxy.close();
+    }
+    if (hmrWss) {
+      hmrWss.close();
     }
     if (lspWss) {
       for (const client of lspWss.clients) {
