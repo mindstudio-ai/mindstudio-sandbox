@@ -70,6 +70,18 @@ function setActivity(
   );
 }
 
+function closeAutoOpened(cb: AgentCallbacks): void {
+  if (!autoOpenedFile) {
+    return;
+  }
+  const state = cb.editorState.getState();
+  const tab = state.tabs.find((t) => t.path === autoOpenedFile);
+  if (tab?.isPreview) {
+    cb.editorState.closeFile(autoOpenedFile);
+  }
+  autoOpenedFile = null;
+}
+
 function onToolStart(
   name: string,
   id: string,
@@ -86,21 +98,20 @@ function onToolStart(
     return;
   }
 
+  // If switching to a different file, close the previous auto-opened one
+  if (autoOpenedFile && autoOpenedFile !== filePath) {
+    closeAutoOpened(cb);
+  }
+
   // Track activity
   setActivity(filePath, fileAction, id, cb);
 
-  // Auto-open for writes/edits so user sees the change happen
-  if (fileAction === 'writing' || fileAction === 'editing') {
-    const state = cb.editorState.getState();
-    const alreadyOpen = state.tabs.some((t) => t.path === filePath);
-    if (!alreadyOpen) {
-      cb.editorState.openFile(filePath, true);
-      autoOpenedFile = filePath;
-    } else {
-      autoOpenedFile = null;
-    }
-  } else {
-    autoOpenedFile = null;
+  // Auto-open so user sees the file the agent is working on
+  const state = cb.editorState.getState();
+  const alreadyOpen = state.tabs.some((t) => t.path === filePath);
+  if (!alreadyOpen) {
+    cb.editorState.openFile(filePath, true);
+    autoOpenedFile = filePath;
   }
 }
 
@@ -108,29 +119,13 @@ function onToolDone(id: string, cb: AgentCallbacks): void {
   if (activity.toolCallId !== id) {
     return;
   }
-
-  // Auto-close if we opened it and it's still a preview tab
-  if (autoOpenedFile) {
-    const state = cb.editorState.getState();
-    const tab = state.tabs.find((t) => t.path === autoOpenedFile);
-    if (tab?.isPreview) {
-      cb.editorState.closeFile(autoOpenedFile);
-    }
-    autoOpenedFile = null;
-  }
-
+  // Don't close the file here — keep it open until the agent moves
+  // to a different file or the turn ends. Prevents flash-open-close.
   setActivity(null, null, null, cb);
 }
 
 function onTurnEnd(cb: AgentCallbacks): void {
-  if (autoOpenedFile) {
-    const state = cb.editorState.getState();
-    const tab = state.tabs.find((t) => t.path === autoOpenedFile);
-    if (tab?.isPreview) {
-      cb.editorState.closeFile(autoOpenedFile);
-    }
-    autoOpenedFile = null;
-  }
+  closeAutoOpened(cb);
   setActivity(null, null, null, cb);
 }
 
