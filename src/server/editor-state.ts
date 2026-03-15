@@ -112,6 +112,11 @@ export class EditorStateManager {
     this.emit();
   }
 
+  /** Get the current set of expanded directory paths. */
+  getExpandedDirs(): Set<string> {
+    return this.expandedDirs;
+  }
+
   // --- Directory tree ---
 
   /** Expand a directory in the file tree. */

@@ -11,8 +11,6 @@ import type {
   AppConfig,
 } from '../types.js';
 import {
-  buildTree,
-  listDir,
   readFile,
   writeFile,
   deleteFile,
@@ -39,6 +37,7 @@ import {
 import type { BroadcastBatcher } from './broadcast-batcher.js';
 import type { EditorStateManager } from './editor-state.js';
 import type { ResourceMonitor } from '../processes/resource-monitor.js';
+import type { FileTreeManager } from './file-tree.js';
 import type { LspClient } from '../lsp/client.js';
 import { createLogger } from '../logger.js';
 
@@ -56,6 +55,7 @@ let batcher: BroadcastBatcher | null = null;
 let registry: ProcessRegistry | null = null;
 let editorState: EditorStateManager | null = null;
 let resourceMonitorRef: ResourceMonitor | null = null;
+let fileTreeManagerRef: FileTreeManager | null = null;
 
 /** Store the app config so it can be sent in the initial frame. */
 export function setAppConfig(config: AppConfig): void {
@@ -90,9 +90,13 @@ export function setResourceMonitor(monitor: ResourceMonitor): void {
   resourceMonitorRef = monitor;
 }
 
+/** Set the file tree manager for init frame + tree broadcasts. */
+export function setFileTreeManager(ftm: FileTreeManager): void {
+  fileTreeManagerRef = ftm;
+}
+
 const actions: Record<string, ActionHandler> = {
   // --- Filesystem ---
-  listDir: (p) => listDir(p as { path: string }),
   readFile: (p) => readFile(p as { path: string }),
   writeFile: (p) => writeFile(p as { path: string; content: string }),
   deleteFile: async (p) => {
@@ -371,19 +375,16 @@ export function startServer(port: number, token?: string): Promise<void> {
 
       // Send initial frame with everything the client needs to bootstrap
       try {
-        const [tree, chatHistory] = await Promise.all([
-          buildTree(),
-          processManager
-            ? getAgentHistory(processManager)
-            : Promise.resolve([]),
-        ]);
+        const chatHistory = processManager
+          ? await getAgentHistory(processManager)
+          : [];
         ws.send(
           JSON.stringify({
             event: 'init',
             status,
             previewAvailable: proxy !== null,
             app: appConfig,
-            fileTree: tree,
+            fileTree: fileTreeManagerRef?.getTree() ?? [],
             chatHistory,
             processes: registry?.getAllInfo() ?? [],
             outputLog: registry?.getMergedLog() ?? [],

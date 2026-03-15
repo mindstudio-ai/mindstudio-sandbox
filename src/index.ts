@@ -30,8 +30,10 @@ import {
   setRegistry,
   setEditorState,
   setResourceMonitor,
+  setFileTreeManager,
 } from './server/ws-server.js';
 import { EditorStateManager } from './server/editor-state.js';
+import { FileTreeManager } from './server/file-tree.js';
 import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/handlers/filesystem.js';
@@ -87,10 +89,22 @@ async function main(): Promise<void> {
     },
   });
 
-  // Create editor state manager
+  // Create file tree manager
+  const fileTreeManager = new FileTreeManager({
+    workspaceDir: config.workspaceDir,
+    getExpandedDirs: () => editorManager.getExpandedDirs(),
+    onChange: (tree) => {
+      broadcast('fileTreeChanged', {
+        fileTree: tree as unknown as Record<string, unknown>,
+      });
+    },
+  });
+
+  // Create editor state manager — tree rebuilds on expand/collapse
   const editorManager = new EditorStateManager((state) => {
     broadcast('editorStateChanged', { editorState: state });
     markDirty();
+    fileTreeManager.onExpandedDirsChanged();
   });
 
   // Start resource monitor — polls every 5s, broadcasts to clients
@@ -163,6 +177,7 @@ async function main(): Promise<void> {
   setBatcher(batcher);
   setRegistry(registry);
   setEditorState(editorManager);
+  setFileTreeManager(fileTreeManager);
   setResourceMonitor(resourceMonitor);
   log.info(`(${elapsed()}) Server listening on port ${config.port}`);
 
@@ -225,6 +240,9 @@ async function main(): Promise<void> {
     if (editorManager.isEmpty()) {
       editorManager.expandFromAppConfig(appConfig);
     }
+
+    // Build initial visible tree
+    await fileTreeManager.buildVisibleTree();
 
     // Start TypeScript language server
     log.info(`(${elapsed()}) Starting LSP...`);
@@ -331,6 +349,8 @@ async function main(): Promise<void> {
       if (changeType === 'deleted') {
         editorManager.onFileDeleted(filePath);
       }
+      // Update visible tree on structural changes
+      fileTreeManager.onFileChanged(filePath, changeType);
     });
 
     // Ready

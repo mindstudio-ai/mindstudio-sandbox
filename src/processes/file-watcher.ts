@@ -90,6 +90,20 @@ export function startWatcher(
     }
     onChange(path.relative(workspaceDir, absPath), 'deleted');
   });
+
+  watcher.on('addDir', (absPath) => {
+    if (!shouldEmit(absPath)) {
+      return;
+    }
+    onChange(path.relative(workspaceDir, absPath), 'created');
+  });
+
+  watcher.on('unlinkDir', (absPath) => {
+    if (!shouldEmit(absPath)) {
+      return;
+    }
+    onChange(path.relative(workspaceDir, absPath), 'deleted');
+  });
 }
 
 export function stopWatcher(): void {
