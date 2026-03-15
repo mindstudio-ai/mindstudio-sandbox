@@ -22,8 +22,10 @@ interface BufferedMessage {
 export class HmrRelay {
   private client: WebSocket;
   private upstream: WebSocket;
-  private buffer: BufferedMessage[] = [];
+  private agentBuffer: BufferedMessage[] = [];
+  private pendingClientMessages: BufferedMessage[] = [];
   private buffering = false;
+  private upstreamReady = false;
   private destroyed = false;
   private onDestroy: (() => void) | null = null;
 
@@ -33,13 +35,24 @@ export class HmrRelay {
     log.debug(`Connecting upstream: ${upstreamUrl}`);
     this.upstream = new WebSocket(upstreamUrl);
 
-    // Upstream → client (bufferable)
+    // Wait for upstream to be ready before forwarding
+    this.upstream.on('open', () => {
+      log.debug('Upstream connected');
+      this.upstreamReady = true;
+      // Flush any client messages that arrived before upstream was ready
+      for (const msg of this.pendingClientMessages) {
+        this.upstream.send(msg.data, { binary: msg.isBinary });
+      }
+      this.pendingClientMessages.length = 0;
+    });
+
+    // Upstream → client (bufferable during agent turns)
     this.upstream.on('message', (data, isBinary) => {
       if (this.destroyed) {
         return;
       }
       if (this.buffering) {
-        this.buffer.push({ data, isBinary });
+        this.agentBuffer.push({ data, isBinary });
         return;
       }
       if (this.client.readyState === WebSocket.OPEN) {
@@ -47,9 +60,13 @@ export class HmrRelay {
       }
     });
 
-    // Client → upstream (always passthrough)
+    // Client → upstream (always passthrough, queued until upstream ready)
     this.client.on('message', (data, isBinary) => {
       if (this.destroyed) {
+        return;
+      }
+      if (!this.upstreamReady) {
+        this.pendingClientMessages.push({ data, isBinary });
         return;
       }
       if (this.upstream.readyState === WebSocket.OPEN) {
@@ -74,7 +91,10 @@ export class HmrRelay {
       this.destroy();
     });
 
-    this.upstream.on('error', () => this.destroy());
+    this.upstream.on('error', (err) => {
+      log.error(`Upstream error: ${err.message}`);
+      this.destroy();
+    });
     this.client.on('error', () => this.destroy());
   }
 
@@ -83,7 +103,6 @@ export class HmrRelay {
       return;
     }
     if (this.buffering && !enabled) {
-      // Flush
       this.flush();
     }
     this.buffering = enabled;
@@ -99,7 +118,8 @@ export class HmrRelay {
       return;
     }
     this.destroyed = true;
-    this.buffer.length = 0;
+    this.agentBuffer.length = 0;
+    this.pendingClientMessages.length = 0;
 
     if (this.client.readyState <= WebSocket.OPEN) {
       this.client.close();
@@ -112,16 +132,16 @@ export class HmrRelay {
   }
 
   private flush(): void {
-    if (this.buffer.length === 0) {
+    if (this.agentBuffer.length === 0) {
       return;
     }
-    log.debug(`Flushing ${this.buffer.length} buffered HMR messages`);
-    for (const msg of this.buffer) {
+    log.debug(`Flushing ${this.agentBuffer.length} buffered HMR messages`);
+    for (const msg of this.agentBuffer) {
       if (this.client.readyState === WebSocket.OPEN) {
         this.client.send(msg.data, { binary: msg.isBinary });
       }
     }
-    this.buffer.length = 0;
+    this.agentBuffer.length = 0;
   }
 }
 
@@ -132,7 +152,6 @@ export class HmrRelayManager {
   add(relay: HmrRelay): void {
     this.relays.add(relay);
     relay.onClose(() => this.relays.delete(relay));
-    // Apply current buffering state
     if (this.busy) {
       relay.setBuffering(true);
     }
