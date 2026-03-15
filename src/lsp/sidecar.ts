@@ -7,6 +7,7 @@
 
 import http from 'node:http';
 import type { LspClient } from './client.js';
+import type { ProcessManager } from '../processes/process-manager.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -61,6 +62,7 @@ const MAX_DIAGNOSTICS_CACHE = 200;
 export class LspSidecar {
   private server: http.Server | null = null;
   private lsp: LspClient;
+  private pm: ProcessManager | null = null;
   private diagnosticsCache = new Map<string, DiagnosticItem[]>();
 
   constructor(lspClient: LspClient) {
@@ -142,6 +144,9 @@ export class LspSidecar {
             case '/symbols':
               result = await this.handleSymbols(params);
               break;
+            case '/sync-schema':
+              result = await this.handleSyncSchema();
+              break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Not found' }));
@@ -169,6 +174,11 @@ export class LspSidecar {
     });
   }
 
+  /** Set the process manager so the sidecar can send commands to the tunnel. */
+  setProcessManager(pm: ProcessManager): void {
+    this.pm = pm;
+  }
+
   stop(): void {
     this.server?.close();
   }
@@ -181,6 +191,14 @@ export class LspSidecar {
   }
 
   // --- Endpoint handlers ---
+
+  private async handleSyncSchema(): Promise<{ ok: boolean }> {
+    if (!this.pm || this.pm.getState('tunnel') !== 'running') {
+      throw new Error('Tunnel not running');
+    }
+    this.pm.writeStdin('tunnel', JSON.stringify({ action: 'syncSchema' }));
+    return { ok: true };
+  }
 
   private async handleDiagnostics(
     params: Record<string, unknown>,
