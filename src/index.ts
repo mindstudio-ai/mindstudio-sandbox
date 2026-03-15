@@ -274,7 +274,7 @@ async function main(): Promise<void> {
         apiKey: config.apiKey,
         apiBaseUrl: config.apiBaseUrl,
       },
-      { broadcast },
+      { broadcast, editorState: editorManager },
     );
 
     // 11. Start file watcher

@@ -26,6 +26,7 @@ import { createTunnelActions } from '../processes/tunnel/index.js';
 import {
   createAgentActions,
   getAgentHistory,
+  getAgentActivity,
 } from '../processes/agent/index.js';
 import type { BroadcastBatcher } from './broadcast-batcher.js';
 import type { EditorStateManager } from './editor-state.js';
@@ -357,6 +358,7 @@ export function startServer(port: number, token?: string): Promise<void> {
             chatHistory,
             processes: registry?.getAllInfo() ?? [],
             outputLog: registry?.getMergedLog() ?? [],
+            agentActivity: getAgentActivity(),
             editorState: editorState?.getState() ?? {
               tabs: [],
               activeTab: null,
@@ -374,7 +376,8 @@ export function startServer(port: number, token?: string): Promise<void> {
             chatHistory: [],
             processes: [],
             outputLog: [],
-            editorState: { tabs: [], activeTab: null },
+            agentActivity: getAgentActivity(),
+            editorState: { tabs: [], activeTab: null, expandedDirs: [] },
           }),
         );
       }

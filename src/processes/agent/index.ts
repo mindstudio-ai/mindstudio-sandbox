@@ -6,11 +6,21 @@
  */
 
 import type { ProcessManager } from '../process-manager.js';
+import type { AgentActivity, AgentFileAction } from '../../types.js';
+import type { EditorStateManager } from '../../server/editor-state.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('agent');
 
 type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
+
+/** Maps remy tool names to file actions. */
+const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
+  readFile: 'reading',
+  writeFile: 'writing',
+  editFile: 'editing',
+  multiEdit: 'editing',
+};
 
 /** Maps remy's headless event names to our WebSocket event names. */
 const EVENT_MAP: Record<string, string> = {
@@ -30,6 +40,98 @@ const EVENT_MAP: Record<string, string> = {
 
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, unknown>) => void;
+  editorState: EditorStateManager;
+}
+
+// --- Agent activity tracking ---
+
+let activity: AgentActivity = {
+  activeFile: null,
+  action: null,
+  toolCallId: null,
+};
+/** Files we auto-opened that weren't already open — close them when done. */
+let autoOpenedFile: string | null = null;
+
+export function getAgentActivity(): AgentActivity {
+  return { ...activity };
+}
+
+function setActivity(
+  file: string | null,
+  action: AgentFileAction | null,
+  toolCallId: string | null,
+  cb: AgentCallbacks,
+): void {
+  activity = { activeFile: file, action, toolCallId };
+  cb.broadcast(
+    'agentActivityChanged',
+    activity as unknown as Record<string, unknown>,
+  );
+}
+
+function onToolStart(
+  name: string,
+  id: string,
+  input: Record<string, unknown>,
+  cb: AgentCallbacks,
+): void {
+  const fileAction = FILE_TOOL_ACTIONS[name];
+  if (!fileAction) {
+    return;
+  }
+
+  const filePath = (input.path ?? input.file) as string | undefined;
+  if (!filePath) {
+    return;
+  }
+
+  // Track activity
+  setActivity(filePath, fileAction, id, cb);
+
+  // Auto-open for writes/edits so user sees the change happen
+  if (fileAction === 'writing' || fileAction === 'editing') {
+    const state = cb.editorState.getState();
+    const alreadyOpen = state.tabs.some((t) => t.path === filePath);
+    if (!alreadyOpen) {
+      cb.editorState.openFile(filePath, true);
+      autoOpenedFile = filePath;
+    } else {
+      autoOpenedFile = null;
+    }
+  } else {
+    autoOpenedFile = null;
+  }
+}
+
+function onToolDone(id: string, cb: AgentCallbacks): void {
+  if (activity.toolCallId !== id) {
+    return;
+  }
+
+  // Auto-close if we opened it and it's still a preview tab
+  if (autoOpenedFile) {
+    const state = cb.editorState.getState();
+    const tab = state.tabs.find((t) => t.path === autoOpenedFile);
+    if (tab?.isPreview) {
+      cb.editorState.closeFile(autoOpenedFile);
+    }
+    autoOpenedFile = null;
+  }
+
+  setActivity(null, null, null, cb);
+}
+
+function onTurnEnd(cb: AgentCallbacks): void {
+  if (autoOpenedFile) {
+    const state = cb.editorState.getState();
+    const tab = state.tabs.find((t) => t.path === autoOpenedFile);
+    if (tab?.isPreview) {
+      cb.editorState.closeFile(autoOpenedFile);
+    }
+    autoOpenedFile = null;
+  }
+  setActivity(null, null, null, cb);
 }
 
 export function startAgent(
@@ -67,6 +169,19 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       if (event.event === 'history') {
         resolveHistoryRequest(event.messages ?? []);
         return;
+      }
+
+      // Track agent file activity
+      if (event.event === 'tool_start') {
+        onToolStart(event.name, event.id, event.input ?? {}, cb);
+      } else if (event.event === 'tool_done') {
+        onToolDone(event.id, cb);
+      } else if (
+        event.event === 'turn_done' ||
+        event.event === 'turn_cancelled' ||
+        event.event === 'error'
+      ) {
+        onTurnEnd(cb);
       }
 
       const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;

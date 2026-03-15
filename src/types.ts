@@ -165,6 +165,16 @@ export interface EditorState {
   expandedDirs: string[];
 }
 
+// Agent activity
+
+export type AgentFileAction = 'reading' | 'writing' | 'editing';
+
+export interface AgentActivity {
+  activeFile: string | null;
+  action: AgentFileAction | null;
+  toolCallId: string | null;
+}
+
 // Server state
 
 export type ServerStatus = 'bootstrapping' | 'ready' | 'error';
