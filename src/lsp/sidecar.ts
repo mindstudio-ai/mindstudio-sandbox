@@ -7,6 +7,7 @@
 
 import http from 'node:http';
 import type { LspClient } from './client.js';
+import type { ProcessManager } from '../processes/process-manager.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -61,6 +62,7 @@ const MAX_DIAGNOSTICS_CACHE = 200;
 export class LspSidecar {
   private server: http.Server | null = null;
   private lsp: LspClient;
+  private pm: ProcessManager | null = null;
   private diagnosticsCache = new Map<string, DiagnosticItem[]>();
 
   constructor(lspClient: LspClient) {
@@ -142,6 +144,9 @@ export class LspSidecar {
             case '/symbols':
               result = await this.handleSymbols(params);
               break;
+            case '/restart-process':
+              result = await this.handleRestartProcess(params);
+              break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Not found' }));
@@ -169,6 +174,10 @@ export class LspSidecar {
     });
   }
 
+  setProcessManager(pm: ProcessManager): void {
+    this.pm = pm;
+  }
+
   stop(): void {
     this.server?.close();
   }
@@ -181,6 +190,21 @@ export class LspSidecar {
   }
 
   // --- Endpoint handlers ---
+
+  private async handleRestartProcess(
+    params: Record<string, unknown>,
+  ): Promise<{ ok: boolean }> {
+    const name = params.name as string;
+    if (!name) {
+      throw new Error('Missing "name" parameter');
+    }
+    if (!this.pm) {
+      throw new Error('Process manager not available');
+    }
+    log.info(`Restarting process (via sidecar): ${name}`);
+    await this.pm.restart(name);
+    return { ok: true };
+  }
 
   private async handleDiagnostics(
     params: Record<string, unknown>,

@@ -20,6 +20,14 @@ import {
 } from './handlers/filesystem.js';
 import { search } from './handlers/search.js';
 import { shell } from './handlers/shell.js';
+import {
+  ptyCreate,
+  ptyWrite,
+  ptyResize,
+  ptyClose,
+  ptyGetScrollback,
+  getActiveSessionIds,
+} from './handlers/pty.js';
 import type { ProcessManager } from '../processes/process-manager.js';
 import type { ProcessRegistry } from '../processes/process-registry.js';
 import { createTunnelActions } from '../processes/tunnel/index.js';
@@ -106,6 +114,18 @@ const actions: Record<string, ActionHandler> = {
   getProcesses: async () => {
     return { processes: processManager?.getProcesses() ?? [] };
   },
+  restartProcess: async (p) => {
+    const { name } = p as { name: string };
+    if (!name) {
+      throw new Error('Missing "name" parameter');
+    }
+    if (!processManager) {
+      throw new Error('Process manager not initialized');
+    }
+    log.info(`Restarting process: ${name}`);
+    await processManager.restart(name);
+    return {};
+  },
   getProcessLog: async (p) => {
     const { name } = p as { name: string };
     if (!name) {
@@ -176,6 +196,15 @@ const actions: Record<string, ActionHandler> = {
   getResources: async () => {
     return resourceMonitorRef?.collectNow() ?? {};
   },
+
+  // --- PTY ---
+  ptyCreate: (p) =>
+    ptyCreate(p as { cols?: number; rows?: number; cwd?: string }),
+  ptyWrite: (p) => ptyWrite(p as { sessionId: string; data: string }),
+  ptyResize: (p) =>
+    ptyResize(p as { sessionId: string; cols: number; rows: number }),
+  ptyClose: (p) => ptyClose(p as { sessionId: string }),
+  ptyGetScrollback: (p) => ptyGetScrollback(p as { sessionId: string }),
 
   // Agent and tunnel actions are merged in via setProcessManager()
 };
@@ -359,9 +388,11 @@ export function startServer(port: number, token?: string): Promise<void> {
             processes: registry?.getAllInfo() ?? [],
             outputLog: registry?.getMergedLog() ?? [],
             agentActivity: getAgentActivity(),
+            ptySessionIds: getActiveSessionIds(),
             editorState: editorState?.getState() ?? {
               tabs: [],
               activeTab: null,
+              expandedDirs: [],
             },
           }),
         );
@@ -377,6 +408,7 @@ export function startServer(port: number, token?: string): Promise<void> {
             processes: [],
             outputLog: [],
             agentActivity: getAgentActivity(),
+            ptySessionIds: [],
             editorState: { tabs: [], activeTab: null, expandedDirs: [] },
           }),
         );

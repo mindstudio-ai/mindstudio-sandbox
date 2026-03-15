@@ -37,6 +37,7 @@ import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/handlers/filesystem.js';
 import { initSearch } from './server/handlers/search.js';
 import { initShell } from './server/handlers/shell.js';
+import { initPty, closeAllPty } from './server/handlers/pty.js';
 import { startWatcher, stopWatcher } from './processes/file-watcher.js';
 import {
   initState,
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
     batcher.stop();
     stopAutoSave();
     await saveState();
+    closeAllPty();
     stopWatcher();
     lspClientInstance?.stop();
     await processManager.stopAll();
@@ -212,6 +214,7 @@ async function main(): Promise<void> {
     initFilesystem(config.workspaceDir);
     initSearch(config.workspaceDir);
     initShell(config.workspaceDir, registry);
+    initPty(config.workspaceDir, registry, batcher);
     setProcessManager(processManager);
 
     // Restore persisted state from previous session (if resuming from snapshot)
@@ -232,6 +235,7 @@ async function main(): Promise<void> {
     // Start LSP HTTP sidecar for remy
     const lspSidecar = new LspSidecar(lspClientInstance);
     await lspSidecar.start(4388);
+    lspSidecar.setProcessManager(processManager);
     log.info(`(${elapsed()}) LSP sidecar ready on port 4388`);
 
     // 8. Start dev server

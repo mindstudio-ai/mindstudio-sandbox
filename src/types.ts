@@ -45,7 +45,7 @@ export interface SearchResult {
 
 // Process types
 
-export type ProcessType = 'service' | 'task' | 'shell' | 'system';
+export type ProcessType = 'service' | 'task' | 'shell' | 'system' | 'pty';
 export type ProcessState =
   | 'starting'
   | 'running'
