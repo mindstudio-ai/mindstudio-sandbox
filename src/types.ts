@@ -140,9 +140,27 @@ export interface TunnelEvent {
 export interface AppConfig {
   appId: string;
   name: string;
+  description?: string;
+  roles: Array<{ id: string; name: string }>;
   tables: Array<{ path: string; export: string }>;
-  methods: Array<{ id: string; name: string; path: string; export: string }>;
+  methods: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    path: string;
+    export: string;
+  }>;
   interfaces: Array<{ type: string; path: string }>;
+  scenarios?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    path: string;
+    export: string;
+    roles: string[];
+  }>;
+  /** Raw parsed manifest — includes any fields not in the typed interface. */
+  [key: string]: unknown;
 }
 
 export interface WebConfig {

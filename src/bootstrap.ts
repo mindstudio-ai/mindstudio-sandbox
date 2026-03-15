@@ -206,6 +206,8 @@ export async function readAppConfig(workspaceDir: string): Promise<AppConfig> {
   log.debug(`Reading app config from ${manifestPath}`);
 
   const raw = await fs.readFile(manifestPath, 'utf-8');
+  // Parse the full manifest — AppConfig is the typed subset but we
+  // store the complete object so we can forward it to clients
   const config = JSON.parse(raw) as AppConfig;
 
   log.info(`App: "${config.name}" (${config.appId})`);

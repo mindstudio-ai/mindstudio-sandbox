@@ -286,6 +286,17 @@ async function main(): Promise<void> {
       broadcast('fileChanged', { path: filePath, changeType });
       if (changeType === 'modified' || changeType === 'created') {
         lspSidecar.onFileChanged(filePath).catch(() => {});
+        // Re-read and broadcast manifest when it changes
+        if (filePath === 'mindstudio.json') {
+          readAppConfig(config.workspaceDir)
+            .then((updated) => {
+              setAppConfig(updated);
+              broadcast('manifestChanged', {
+                app: updated as unknown as Record<string, unknown>,
+              });
+            })
+            .catch(() => {});
+        }
       }
       if (changeType === 'deleted') {
         editorManager.onFileDeleted(filePath);
