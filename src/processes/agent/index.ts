@@ -39,6 +39,7 @@ const EVENT_MAP: Record<string, string> = {
 
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, unknown>) => void;
+  onEditsFinished?: () => void;
 }
 
 // --- Agent activity tracking ---
@@ -151,6 +152,14 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
         event.event === 'error'
       ) {
         onTurnEnd(cb);
+      }
+
+      // editsFinished is an internal signal — don't show in chat
+      if (event.name === 'editsFinished') {
+        if (event.event === 'tool_done') {
+          cb.onEditsFinished?.();
+        }
+        return;
       }
 
       const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;

@@ -31,6 +31,7 @@ import {
   setEditorState,
   setResourceMonitor,
   setFileTreeManager,
+  flushHmr,
 } from './server/ws-server.js';
 import { EditorStateManager } from './server/editor-state.js';
 import { FileTreeManager } from './server/file-tree.js';
@@ -296,7 +297,7 @@ async function main(): Promise<void> {
         apiKey: config.apiKey,
         apiBaseUrl: config.apiBaseUrl,
       },
-      { broadcast },
+      { broadcast, onEditsFinished: flushHmr },
     );
 
     // 11. Start file watcher

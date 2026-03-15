@@ -536,10 +536,11 @@ export function broadcast(event: string, data: Record<string, unknown>): void {
       hmrRelayManager.flush();
     }
   }
-  // Also flush on explicit editsFinished tool call from the agent
-  if (event === 'agentToolDone' && data.name === 'editsFinished') {
-    hmrRelayManager.flush();
-  }
+}
+
+/** Flush HMR buffer (called when agent signals edits are finished). */
+export function flushHmr(): void {
+  hmrRelayManager.flush();
 }
 
 export function stopServer(): Promise<void> {
