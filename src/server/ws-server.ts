@@ -526,9 +526,19 @@ export function broadcast(event: string, data: Record<string, unknown>): void {
     }
   }
 
-  // Toggle HMR buffering when agent activity changes
-  if (event === 'agentActivityChanged' && data.busy !== undefined) {
-    hmrRelayManager.onAgentBusyChanged(data.busy as boolean);
+  // HMR buffering: start on first file op, flush on turn end
+  if (event === 'agentActivityChanged') {
+    const fileOps = data.fileOps as unknown[];
+    if (Array.isArray(fileOps) && fileOps.length > 0) {
+      hmrRelayManager.startBuffering();
+    }
+    if (!(data.busy as boolean)) {
+      hmrRelayManager.flush();
+    }
+  }
+  // Also flush on explicit editsFinished tool call from the agent
+  if (event === 'agentToolDone' && data.name === 'editsFinished') {
+    hmrRelayManager.flush();
   }
 }
 

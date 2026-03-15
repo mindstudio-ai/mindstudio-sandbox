@@ -175,20 +175,35 @@ export class HmrRelay {
 
 export class HmrRelayManager {
   private relays = new Set<HmrRelay>();
-  private busy = false;
+  private buffering = false;
 
   add(relay: HmrRelay): void {
     this.relays.add(relay);
     relay.onClose(() => this.relays.delete(relay));
-    if (this.busy) {
+    if (this.buffering) {
       relay.setBuffering(true);
     }
   }
 
-  onAgentBusyChanged(busy: boolean): void {
-    this.busy = busy;
+  /** Start buffering HMR messages (agent began editing files). */
+  startBuffering(): void {
+    if (this.buffering) {
+      return;
+    }
+    this.buffering = true;
     for (const relay of this.relays) {
-      relay.setBuffering(busy);
+      relay.setBuffering(true);
+    }
+  }
+
+  /** Flush buffered messages and resume normal relay. */
+  flush(): void {
+    if (!this.buffering) {
+      return;
+    }
+    this.buffering = false;
+    for (const relay of this.relays) {
+      relay.setBuffering(false);
     }
   }
 
