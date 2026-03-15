@@ -243,6 +243,10 @@ function transformHistory(raw: unknown[]): unknown[] {
         | undefined;
       if (toolCalls) {
         for (const tc of toolCalls) {
+          // Filter out internal-only tools
+          if (tc.name === 'editsFinished') {
+            continue;
+          }
           let toolResult: string | undefined;
           let isError = false;
           for (let j = i + 1; j < raw.length; j++) {
