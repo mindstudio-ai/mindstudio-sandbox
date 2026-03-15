@@ -232,7 +232,6 @@ async function main(): Promise<void> {
     // Start LSP HTTP sidecar for remy
     const lspSidecar = new LspSidecar(lspClientInstance);
     await lspSidecar.start(4388);
-    lspSidecar.setProcessManager(processManager);
     log.info(`(${elapsed()}) LSP sidecar ready on port 4388`);
 
     // 8. Start dev server
