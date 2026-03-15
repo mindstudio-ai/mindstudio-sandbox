@@ -282,6 +282,26 @@ async function main(): Promise<void> {
     log.info(
       `(${elapsed()}) Step 11: Starting file watcher on ${config.workspaceDir}`,
     );
+    // Track table file paths for auto schema sync
+    let tablePaths = new Set(appConfig.tables?.map((t) => t.path) ?? []);
+    let schemaSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function scheduleSyncSchema(): void {
+      if (schemaSyncTimer) {
+        return;
+      }
+      schemaSyncTimer = setTimeout(() => {
+        schemaSyncTimer = null;
+        if (processManager.getState('tunnel') === 'running') {
+          log.info('Table file changed — syncing schema');
+          processManager.writeStdin(
+            'tunnel',
+            JSON.stringify({ action: 'syncSchema' }),
+          );
+        }
+      }, 1000);
+    }
+
     startWatcher(config.workspaceDir, (filePath, changeType) => {
       broadcast('fileChanged', { path: filePath, changeType });
       if (changeType === 'modified' || changeType === 'created') {
@@ -291,11 +311,18 @@ async function main(): Promise<void> {
           readAppConfig(config.workspaceDir)
             .then((updated) => {
               setAppConfig(updated);
+              tablePaths = new Set(updated.tables?.map((t) => t.path) ?? []);
               broadcast('manifestChanged', {
                 app: updated as unknown as Record<string, unknown>,
               });
+              // Manifest changed — sync schema in case tables were added/removed
+              scheduleSyncSchema();
             })
             .catch(() => {});
+        }
+        // Auto sync schema when a table definition file changes
+        if (tablePaths.has(filePath)) {
+          scheduleSyncSchema();
         }
       }
       if (changeType === 'deleted') {
