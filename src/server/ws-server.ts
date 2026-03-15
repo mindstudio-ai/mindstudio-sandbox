@@ -307,7 +307,7 @@ export function startServer(port: number, token?: string): Promise<void> {
     lspWss = new WebSocketServer({ noServer: true });
 
     // HMR WebSocket — relay with buffering during agent turns
-    hmrWss = new WebSocketServer({ noServer: true });
+    hmrWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
     lspWss.on('connection', (ws) => {
       lspLog.info('WebSocket client connected');
 
@@ -501,7 +501,7 @@ export function startServer(port: number, token?: string): Promise<void> {
         hmrWss.handleUpgrade(req, socket, head, (clientWs) => {
           const url = new URL(req.url || '/', 'http://localhost');
           const upstreamUrl = `ws://127.0.0.1:${proxyTarget}${url.pathname}${url.search}`;
-          const relay = new HmrRelay(clientWs, upstreamUrl);
+          const relay = new HmrRelay(clientWs, upstreamUrl, req.headers);
           hmrRelayManager.add(relay);
         });
       }

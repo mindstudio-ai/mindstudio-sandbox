@@ -10,6 +10,7 @@
  */
 
 import WebSocket from 'ws';
+import type { IncomingHttpHeaders } from 'node:http';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('hmr-relay');
@@ -29,11 +30,38 @@ export class HmrRelay {
   private destroyed = false;
   private onDestroy: (() => void) | null = null;
 
-  constructor(clientWs: WebSocket, upstreamUrl: string) {
+  constructor(
+    clientWs: WebSocket,
+    upstreamUrl: string,
+    clientHeaders?: IncomingHttpHeaders,
+  ) {
     this.client = clientWs;
 
-    log.debug(`Connecting upstream: ${upstreamUrl}`);
-    this.upstream = new WebSocket(upstreamUrl);
+    // Forward relevant headers from the original client request
+    const headers: Record<string, string> = {};
+    if (clientHeaders?.origin) {
+      headers['Origin'] = clientHeaders.origin;
+    }
+    if (clientHeaders?.cookie) {
+      headers['Cookie'] = clientHeaders.cookie;
+    }
+    if (clientHeaders?.host) {
+      headers['Host'] = clientHeaders.host;
+    }
+
+    // Forward subprotocol if the client requested one (e.g. "vite-hmr")
+    const protocols =
+      clientHeaders?.['sec-websocket-protocol']
+        ?.split(',')
+        .map((p) => p.trim()) ?? [];
+
+    log.debug(
+      `Connecting upstream: ${upstreamUrl} (protocols: ${protocols.join(', ') || 'none'})`,
+    );
+    this.upstream = new WebSocket(upstreamUrl, protocols, {
+      headers,
+      perMessageDeflate: false,
+    });
 
     // Wait for upstream to be ready before forwarding
     this.upstream.on('open', () => {
