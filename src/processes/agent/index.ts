@@ -205,7 +205,14 @@ function transformHistory(raw: unknown[]): unknown[] {
     }
 
     if (msg.role === 'user') {
-      result.push({ role: 'user', content: msg.content });
+      const userMsg: Record<string, unknown> = {
+        role: 'user',
+        content: msg.content,
+      };
+      if (msg.attachments) {
+        userMsg.attachments = msg.attachments;
+      }
+      result.push(userMsg);
       continue;
     }
 
@@ -290,9 +297,15 @@ export function createAgentActions(
 
   return {
     agentMessage: async (p) => {
-      const { text } = p as { text: string };
+      const { text, attachments } = p as {
+        text: string;
+        attachments?: Array<{ url: string; extractedTextUrl?: string }>;
+      };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
-      send('message', { text });
+      send('message', {
+        text,
+        ...(attachments?.length ? { attachments } : {}),
+      });
       return {};
     },
     agentCancel: async () => {
