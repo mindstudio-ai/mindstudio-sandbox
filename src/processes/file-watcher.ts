@@ -3,6 +3,7 @@ import path from 'node:path';
 import { IGNORED_DIRS, TREE_HIDDEN } from '../utils/paths.js';
 
 let watcher: FSWatcher | null = null;
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 let workspaceDir: string;
 
 // Write suppression to avoid feedback loops
@@ -36,7 +37,7 @@ export function startWatcher(
   workspaceDir = dir;
 
   // Periodically clean stale suppression entries
-  const cleanupTimer = setInterval(() => {
+  cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [filePath, ts] of suppressedPaths) {
       if (now - ts > SUPPRESS_TTL) {
@@ -107,6 +108,10 @@ export function startWatcher(
 }
 
 export function stopWatcher(): void {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
   watcher?.close();
   watcher = null;
 }

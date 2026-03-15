@@ -38,7 +38,7 @@ const EVENT_MAP: Record<string, string> = {
 };
 
 export interface AgentCallbacks {
-  broadcast: (event: string, data: Record<string, unknown>) => void;
+  broadcast: (event: string, data: Record<string, any>) => void;
   onEditsFinished?: () => void;
 }
 
@@ -53,10 +53,7 @@ export function getAgentActivity(): AgentActivity {
 }
 
 function broadcastActivity(cb: AgentCallbacks): void {
-  cb.broadcast(
-    'agentActivityChanged',
-    getAgentActivity() as unknown as Record<string, unknown>,
-  );
+  cb.broadcast('agentActivityChanged', getAgentActivity());
 }
 
 function onToolStart(

@@ -514,7 +514,8 @@ export function startServer(port: number, token?: string): Promise<void> {
   });
 }
 
-export function broadcast(event: string, data: Record<string, unknown>): void {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function broadcast(event: string, data: Record<string, any>): void {
   if (!wss) {
     return;
   }

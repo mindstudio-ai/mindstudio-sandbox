@@ -85,12 +85,15 @@ export class ProcessManager {
     });
     log.info(`"${config.name}" spawned with PID ${child.pid}`);
 
+    const rls: Array<ReturnType<typeof createInterface>> = [];
+
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
       rl.on('line', (line) => {
         this.registry.appendLog(config.name, 'stdout', line);
         config.onStdout?.(line);
       });
+      rls.push(rl);
     }
 
     if (child.stderr) {
@@ -99,9 +102,13 @@ export class ProcessManager {
         this.registry.appendLog(config.name, 'stderr', line);
         config.onStderr?.(line);
       });
+      rls.push(rl);
     }
 
     child.on('exit', (code, signal) => {
+      for (const rl of rls) {
+        rl.close();
+      }
       log.info(
         `"${config.name}" (PID ${child.pid}) exited — code=${code}, signal=${signal}`,
       );

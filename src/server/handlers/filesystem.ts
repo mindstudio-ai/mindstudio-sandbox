@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { DirEntry, TreeEntry } from '../../types.js';
 import { suppressPath } from '../../processes/file-watcher.js';
-import { resolveSafe, TREE_HIDDEN, TREE_COLLAPSED } from '../../utils/paths.js';
+import { resolveSafe } from '../../utils/paths.js';
 
 let workspaceDir: string;
 
@@ -52,38 +51,6 @@ function isBinary(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
-export async function listDir(params: {
-  path: string;
-}): Promise<{ entries: DirEntry[] }> {
-  const dirPath = safe(params.path);
-  const entries = await fs.readdir(dirPath, { withFileTypes: true });
-
-  const results: DirEntry[] = [];
-  for (const entry of entries) {
-    if (TREE_HIDDEN.has(entry.name)) {
-      continue;
-    }
-    const fullPath = path.join(dirPath, entry.name);
-    try {
-      const stat = await fs.stat(fullPath);
-      const dirEntry: DirEntry = {
-        name: entry.name,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: stat.size,
-        modified: stat.mtime.toISOString(),
-      };
-      if (entry.isDirectory() && TREE_COLLAPSED.has(entry.name)) {
-        dirEntry.collapsed = true;
-      }
-      results.push(dirEntry);
-    } catch {
-      // Skip entries we can't stat (broken symlinks, etc.)
-    }
-  }
-
-  return { entries: results };
-}
-
 export async function readFile(params: {
   path: string;
 }): Promise<{ content: string; encoding: string }> {
@@ -127,67 +94,4 @@ export async function renameFile(params: {
   suppressPath(newFilePath);
   await fs.rename(oldFilePath, newFilePath);
   return {};
-}
-
-// TREE_HIDDEN and TREE_COLLAPSED imported from utils/paths.js
-
-/**
- * Build a recursive file tree up to `depth` levels deep.
- * Directories beyond the depth limit are included but without children.
- */
-export async function buildTree(
-  dirPath: string = workspaceDir,
-  relativeTo: string = workspaceDir,
-  depth: number = 3,
-): Promise<TreeEntry[]> {
-  let entries;
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const results: TreeEntry[] = [];
-
-  for (const entry of entries) {
-    if (TREE_HIDDEN.has(entry.name)) {
-      continue;
-    }
-
-    const fullPath = path.join(dirPath, entry.name);
-    const relPath = path.relative(relativeTo, fullPath);
-
-    try {
-      const stat = await fs.stat(fullPath);
-      const node: TreeEntry = {
-        name: entry.name,
-        path: relPath,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: stat.size,
-        modified: stat.mtime.toISOString(),
-      };
-
-      if (entry.isDirectory()) {
-        if (TREE_COLLAPSED.has(entry.name)) {
-          node.collapsed = true;
-        } else if (depth > 1) {
-          node.children = await buildTree(fullPath, relativeTo, depth - 1);
-        }
-      }
-
-      results.push(node);
-    } catch {
-      // Skip entries we can't stat
-    }
-  }
-
-  // Sort: directories first, then alphabetical
-  results.sort((a, b) => {
-    if (a.type !== b.type) {
-      return a.type === 'directory' ? -1 : 1;
-    }
-    return a.name.localeCompare(b.name);
-  });
-
-  return results;
 }

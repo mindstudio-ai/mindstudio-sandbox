@@ -15,7 +15,7 @@ type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
 export interface TunnelCallbacks {
   onSessionStarted: (proxyPort: number) => void;
-  broadcast: (event: string, data: Record<string, unknown>) => void;
+  broadcast: (event: string, data: Record<string, any>) => void;
 }
 
 export function startTunnel(

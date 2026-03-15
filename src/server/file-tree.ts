@@ -12,6 +12,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { TreeEntry } from '../types.js';
 import { TREE_HIDDEN, TREE_COLLAPSED } from '../utils/paths.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('file-tree');
 
 const REBUILD_DEBOUNCE_MS = 50;
 
@@ -79,8 +82,10 @@ export class FileTreeManager {
       try {
         await this.buildVisibleTree();
         this.onChange(this.cachedTree);
-      } catch {
-        // Filesystem error during rebuild — keep stale cache
+      } catch (err) {
+        log.debug(
+          `Tree rebuild failed: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }, REBUILD_DEBOUNCE_MS);
   }

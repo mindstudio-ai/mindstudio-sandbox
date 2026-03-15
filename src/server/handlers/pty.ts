@@ -9,6 +9,7 @@
 import * as pty from 'node-pty';
 import type { ProcessRegistry } from '../../processes/process-registry.js';
 import type { BroadcastBatcher } from '../broadcast-batcher.js';
+import { generateId } from '../../utils/paths.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('pty');
@@ -42,7 +43,7 @@ export async function ptyCreate(params: {
   rows?: number;
   cwd?: string;
 }): Promise<{ sessionId: string }> {
-  const sessionId = `pty:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const sessionId = generateId('pty');
   const cols = params.cols ?? 80;
   const rows = params.rows ?? 24;
   const cwd = params.cwd ?? workspaceDir;

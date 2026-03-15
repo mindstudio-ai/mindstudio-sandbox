@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { resolveSafe } from '../../utils/paths.js';
+import { resolveSafe, generateId } from '../../utils/paths.js';
 import type { ProcessRegistry } from '../../processes/process-registry.js';
 
 let workspaceDir: string;
@@ -35,7 +35,7 @@ export async function shell(params: {
   const cwd = params.cwd ? resolveSafe(workspaceDir, params.cwd) : workspaceDir;
 
   const timeout = params.timeout ?? 30000;
-  const shellId = `shell:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const shellId = generateId('shell');
 
   registry?.register(shellId, 'shell', params.command);
 

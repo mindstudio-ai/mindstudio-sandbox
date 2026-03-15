@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     getExpandedDirs: () => editorManager.getExpandedDirs(),
     onChange: (tree) => {
       broadcast('fileTreeChanged', {
-        fileTree: tree as unknown as Record<string, unknown>,
+        fileTree: tree,
       });
     },
   });
@@ -112,10 +112,7 @@ async function main(): Promise<void> {
   const resourceMonitor = new ResourceMonitor({
     registry,
     onSnapshot: (snapshot) => {
-      broadcast(
-        'resourceSnapshot',
-        snapshot as unknown as Record<string, unknown>,
-      );
+      broadcast('resourceSnapshot', snapshot);
     },
   });
 
@@ -335,7 +332,7 @@ async function main(): Promise<void> {
               setAppConfig(updated);
               tablePaths = new Set(updated.tables?.map((t) => t.path) ?? []);
               broadcast('manifestChanged', {
-                app: updated as unknown as Record<string, unknown>,
+                app: updated,
               });
               // Manifest changed — sync schema in case tables were added/removed
               scheduleSyncSchema();
