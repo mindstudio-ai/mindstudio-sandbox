@@ -2,12 +2,11 @@
  * Agent process — manages the remy AI coding agent.
  *
  * Handles startup config, stdout NDJSON event parsing + mapping,
- * chat history retrieval, and WS action handlers.
+ * chat history retrieval, activity tracking, and WS action handlers.
  */
 
 import type { ProcessManager } from '../process-manager.js';
 import type { AgentActivity, AgentFileAction } from '../../types.js';
-import type { EditorStateManager } from '../../server/editor-state.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('agent');
@@ -40,46 +39,23 @@ const EVENT_MAP: Record<string, string> = {
 
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, unknown>) => void;
-  editorState: EditorStateManager;
 }
 
 // --- Agent activity tracking ---
+// Tracks all in-flight file operations. The server broadcasts facts;
+// the frontend decides how to render them (tree icons, overlays, etc.)
 
-let activity: AgentActivity = {
-  activeFile: null,
-  action: null,
-  toolCallId: null,
-};
-/** Files we auto-opened that weren't already open — close them when done. */
-let autoOpenedFile: string | null = null;
+let activity: AgentActivity = { busy: false, fileOps: [] };
 
 export function getAgentActivity(): AgentActivity {
-  return { ...activity };
+  return { busy: activity.busy, fileOps: [...activity.fileOps] };
 }
 
-function setActivity(
-  file: string | null,
-  action: AgentFileAction | null,
-  toolCallId: string | null,
-  cb: AgentCallbacks,
-): void {
-  activity = { activeFile: file, action, toolCallId };
+function broadcastActivity(cb: AgentCallbacks): void {
   cb.broadcast(
     'agentActivityChanged',
-    activity as unknown as Record<string, unknown>,
+    getAgentActivity() as unknown as Record<string, unknown>,
   );
-}
-
-function closeAutoOpened(cb: AgentCallbacks): void {
-  if (!autoOpenedFile) {
-    return;
-  }
-  const state = cb.editorState.getState();
-  const tab = state.tabs.find((t) => t.path === autoOpenedFile);
-  if (tab?.isPreview) {
-    cb.editorState.closeFile(autoOpenedFile);
-  }
-  autoOpenedFile = null;
 }
 
 function onToolStart(
@@ -98,35 +74,26 @@ function onToolStart(
     return;
   }
 
-  // If switching to a different file, close the previous auto-opened one
-  if (autoOpenedFile && autoOpenedFile !== filePath) {
-    closeAutoOpened(cb);
-  }
-
-  // Track activity
-  setActivity(filePath, fileAction, id, cb);
-
-  // Auto-open so user sees the file the agent is working on
-  const state = cb.editorState.getState();
-  const alreadyOpen = state.tabs.some((t) => t.path === filePath);
-  if (!alreadyOpen) {
-    cb.editorState.openFile(filePath, true);
-    autoOpenedFile = filePath;
-  }
+  activity.fileOps.push({ toolCallId: id, path: filePath, action: fileAction });
+  broadcastActivity(cb);
 }
 
 function onToolDone(id: string, cb: AgentCallbacks): void {
-  if (activity.toolCallId !== id) {
-    return;
+  const idx = activity.fileOps.findIndex((op) => op.toolCallId === id);
+  if (idx !== -1) {
+    activity.fileOps.splice(idx, 1);
+    broadcastActivity(cb);
   }
-  // Don't close the file here — keep it open until the agent moves
-  // to a different file or the turn ends. Prevents flash-open-close.
-  setActivity(null, null, null, cb);
+}
+
+function onTurnStart(cb: AgentCallbacks): void {
+  activity = { busy: true, fileOps: [] };
+  broadcastActivity(cb);
 }
 
 function onTurnEnd(cb: AgentCallbacks): void {
-  closeAutoOpened(cb);
-  setActivity(null, null, null, cb);
+  activity = { busy: false, fileOps: [] };
+  broadcastActivity(cb);
 }
 
 export function startAgent(
@@ -166,11 +133,18 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
         return;
       }
 
-      // Track agent file activity
+      // Track agent activity
       if (event.event === 'tool_start') {
+        // First tool_start of a turn marks the agent as busy
+        if (!activity.busy) {
+          onTurnStart(cb);
+        }
         onToolStart(event.name, event.id, event.input ?? {}, cb);
       } else if (event.event === 'tool_done') {
         onToolDone(event.id, cb);
+      } else if (event.event === 'text' && !activity.busy) {
+        // Agent started responding with text (no tools yet)
+        onTurnStart(cb);
       } else if (
         event.event === 'turn_done' ||
         event.event === 'turn_cancelled' ||
@@ -253,7 +227,6 @@ function transformHistory(raw: unknown[]): unknown[] {
         | undefined;
       if (toolCalls) {
         for (const tc of toolCalls) {
-          // Find the matching tool result in subsequent messages
           let toolResult: string | undefined;
           let isError = false;
           for (let j = i + 1; j < raw.length; j++) {
@@ -263,7 +236,6 @@ function transformHistory(raw: unknown[]): unknown[] {
               isError = (next.isToolError as boolean) ?? false;
               break;
             }
-            // Stop searching if we hit a non-tool-result message
             if (next.role !== 'user' || !next.toolCallId) {
               break;
             }

@@ -169,10 +169,15 @@ export interface EditorState {
 
 export type AgentFileAction = 'reading' | 'writing' | 'editing';
 
+export interface AgentFileOp {
+  toolCallId: string;
+  path: string;
+  action: AgentFileAction;
+}
+
 export interface AgentActivity {
-  activeFile: string | null;
-  action: AgentFileAction | null;
-  toolCallId: string | null;
+  busy: boolean;
+  fileOps: AgentFileOp[];
 }
 
 // Server state
