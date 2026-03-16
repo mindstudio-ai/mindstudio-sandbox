@@ -34,6 +34,8 @@ export interface TreeEntry extends DirEntry {
   children?: TreeEntry[];
   /** If true, this directory exists but its contents are not included (e.g. node_modules). */
   collapsed?: boolean;
+  /** Human-readable name from frontmatter (e.g., YAML `name` field in .md files). */
+  displayName?: string;
 }
 
 export interface SearchResult {
