@@ -22,6 +22,8 @@ import type { LspClient } from '../lsp/client.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './handlers/pty.js';
 
+export type ViewMode = 'code' | 'spec';
+
 export interface ServerContext {
   status: ServerStatus;
   appConfig: AppConfig | null;
@@ -35,6 +37,7 @@ export interface ServerContext {
   specFileTreeManager: SpecFileTreeManager | null;
   projectHasCode: boolean;
   lspClient: LspClient | null;
+  viewMode: ViewMode;
 }
 
 export const ctx: ServerContext = {
@@ -50,6 +53,7 @@ export const ctx: ServerContext = {
   specFileTreeManager: null,
   projectHasCode: false,
   lspClient: null,
+  viewMode: 'code',
 };
 
 // --- Init frame ---

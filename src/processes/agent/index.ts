@@ -7,6 +7,7 @@
 
 import type { ProcessManager } from '../ProcessManager.js';
 import { projectHasCode } from '../../server/states/_helpers/getProjectHasCode.js';
+import { ctx } from '../../server/context.js';
 
 export type AgentFileAction = 'reading' | 'writing' | 'editing';
 
@@ -328,10 +329,21 @@ export function createAgentActions(
         attachments?: Array<{ url: string; extractedTextUrl?: string }>;
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
+
+      // Gather view context so remy knows what the user is looking at
+      const activeEditor =
+        ctx.viewMode === 'spec' ? ctx.specEditorState : ctx.editorState;
+      const editorState = activeEditor?.getState();
+
       send('message', {
         text,
         projectHasCode: projectHasCode(),
         ...(attachments?.length ? { attachments } : {}),
+        viewContext: {
+          mode: ctx.viewMode,
+          openFiles: editorState?.tabs.map((t) => t.path) ?? [],
+          activeFile: editorState?.activeTab ?? null,
+        },
       });
       return {};
     },

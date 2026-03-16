@@ -150,6 +150,16 @@ export const handlers: Record<string, ActionHandler> = {
     return {};
   },
 
+  // --- View mode ---
+  setViewMode: async (p) => {
+    const { mode } = p as { mode: string };
+    if (mode !== 'code' && mode !== 'spec') {
+      throw new Error('Invalid mode — expected "code" or "spec"');
+    }
+    ctx.viewMode = mode;
+    return {};
+  },
+
   // --- Resources ---
   getResources: async () => {
     return ctx.resourceMonitor?.collectNow() ?? {};
