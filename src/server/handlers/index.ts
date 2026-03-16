@@ -27,12 +27,25 @@ export type ActionHandler = (
 export const handlers: Record<string, ActionHandler> = {
   // --- Filesystem ---
   readFile: (p) => readFile(p as { path: string }),
-  writeFile: (p) => writeFile(p as { path: string; content: string }),
+  writeFile: async (p) => {
+    const params = p as { path: string; content: string };
+    const result = await writeFile(params);
+    // Watcher events are suppressed for server-initiated writes,
+    // so manually trigger file tree rebuilds. Use 'created' since
+    // FileTreeManager ignores 'modified' (no structural change) —
+    // but this could be a new file. Both tree managers handle
+    // redundant 'created' fine (they rebuild from disk).
+    ctx.fileTreeManager?.onFileChanged(params.path, 'created');
+    ctx.specFileTreeManager?.onFileChanged(params.path, 'created');
+    return result;
+  },
   deleteFile: async (p) => {
     const params = p as { path: string };
     const result = await deleteFile(params);
     ctx.editorState?.onFileDeleted(params.path);
     ctx.specEditorState?.onFileDeleted(params.path);
+    ctx.fileTreeManager?.onFileChanged(params.path, 'deleted');
+    ctx.specFileTreeManager?.onFileChanged(params.path, 'deleted');
     return result;
   },
   renameFile: async (p) => {
@@ -40,6 +53,10 @@ export const handlers: Record<string, ActionHandler> = {
     const result = await renameFile(params);
     ctx.editorState?.onFileRenamed(params.oldPath, params.newPath);
     ctx.specEditorState?.onFileRenamed(params.oldPath, params.newPath);
+    ctx.fileTreeManager?.onFileChanged(params.oldPath, 'deleted');
+    ctx.fileTreeManager?.onFileChanged(params.newPath, 'created');
+    ctx.specFileTreeManager?.onFileChanged(params.oldPath, 'deleted');
+    ctx.specFileTreeManager?.onFileChanged(params.newPath, 'created');
     return result;
   },
   shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
