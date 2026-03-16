@@ -139,7 +139,12 @@ export class SnapshotManager {
 
     const env = { ...process.env, GIT_INDEX_FILE: TMP_INDEX };
 
-    // Stage all files (respects .gitignore)
+    // Seed the temp index from HEAD so git has a valid base
+    if (this.exec('git read-tree HEAD', { env }) === null) {
+      return false;
+    }
+
+    // Stage all workspace files (respects .gitignore)
     if (this.exec('git add -A', { env }) === null) {
       return false;
     }
@@ -205,7 +210,7 @@ export class SnapshotManager {
       }) as string;
     } catch (err: unknown) {
       const execErr = err as { stderr?: string; message?: string };
-      log.debug(
+      log.warn(
         `git command failed: ${cmd} — ${execErr.stderr?.trim() || execErr.message}`,
       );
       return null;
