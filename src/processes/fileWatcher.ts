@@ -5,7 +5,12 @@ import path from 'node:path';
 const IGNORED_DIRS = ['node_modules', '.git', '.vite'] as const;
 
 // Entries hidden entirely from the file tree.
-export const TREE_HIDDEN = new Set(['.git', '.vite', '.sandbox-state.json']);
+export const TREE_HIDDEN = new Set([
+  '.git',
+  '.vite',
+  '.sandbox-state.json',
+  '.remy-session.json',
+]);
 
 // Directories shown in the file tree but not expanded (collapsed).
 export const TREE_COLLAPSED = new Set(['node_modules']);

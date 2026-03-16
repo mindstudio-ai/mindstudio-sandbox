@@ -58,6 +58,7 @@ export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
   onEditsFinished?: () => void;
   onSetViewMode?: (mode: string) => void;
+  onTurnDone?: () => void;
 }
 
 // --- Agent activity tracking ---
@@ -109,6 +110,7 @@ function onTurnStart(cb: AgentCallbacks): void {
 
 function onTurnEnd(cb: AgentCallbacks): void {
   activity = { busy: false, fileOps: [] };
+  cb.onTurnDone?.();
   broadcastActivity(cb);
 }
 

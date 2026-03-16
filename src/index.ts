@@ -49,6 +49,7 @@ import {
   markDirty,
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
+import { SnapshotManager } from './snapshot.js';
 import type { AppConfig, WebConfig } from './types.js';
 
 const log = createLogger('cnc');
@@ -151,6 +152,7 @@ async function startServices(
   appConfig: AppConfig,
   webConfig: WebConfig | null,
   progress: (step: string, message: string) => void,
+  snapshotManager: SnapshotManager,
 ): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
   const { processManager, registry } = managers;
 
@@ -205,7 +207,12 @@ async function startServices(
       apiKey: config.apiKey,
       apiBaseUrl: config.apiBaseUrl,
     },
-    { broadcast, onEditsFinished: flushHmr, onSetViewMode: setViewMode },
+    {
+      broadcast,
+      onEditsFinished: flushHmr,
+      onSetViewMode: setViewMode,
+      onTurnDone: () => snapshotManager.scheduleSnapshot(),
+    },
   );
 
   return { lspClient, lspSidecar };
@@ -320,6 +327,7 @@ async function main(): Promise<void> {
 
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
+  const snapshotManager = new SnapshotManager(config.workspaceDir);
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) {
@@ -332,6 +340,8 @@ async function main(): Promise<void> {
     managers.batcher.stop();
     stopAutoSave();
     await saveState();
+    await snapshotManager.snapshot();
+    snapshotManager.stop();
     closeAllPty();
     stopWatcher();
     lspClientRef?.stop();
@@ -389,6 +399,7 @@ async function main(): Promise<void> {
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
     configureGit(config.workspaceDir);
+    await snapshotManager.restore();
 
     // 7. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
@@ -442,11 +453,15 @@ async function main(): Promise<void> {
       appConfig,
       webConfig,
       progress,
+      snapshotManager,
     );
     lspClientRef = lspClient;
 
     // 13. File watcher
     setupFileWatcher(config, managers, appConfig, lspSidecar);
+
+    // 14. Start periodic snapshots
+    snapshotManager.start();
 
     // Ready
     setStatus('ready');
