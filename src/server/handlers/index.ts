@@ -15,7 +15,7 @@ import {
   ptyClose,
   ptyGetScrollback,
 } from './pty.js';
-import { ctx } from '../context.js';
+import { ctx, setViewMode } from '../context.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('handlers');
@@ -32,12 +32,14 @@ export const handlers: Record<string, ActionHandler> = {
     const params = p as { path: string };
     const result = await deleteFile(params);
     ctx.editorState?.onFileDeleted(params.path);
+    ctx.specEditorState?.onFileDeleted(params.path);
     return result;
   },
   renameFile: async (p) => {
     const params = p as { oldPath: string; newPath: string };
     const result = await renameFile(params);
     ctx.editorState?.onFileRenamed(params.oldPath, params.newPath);
+    ctx.specEditorState?.onFileRenamed(params.oldPath, params.newPath);
     return result;
   },
   shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
@@ -153,10 +155,7 @@ export const handlers: Record<string, ActionHandler> = {
   // --- View mode ---
   setViewMode: async (p) => {
     const { mode } = p as { mode: string };
-    if (mode !== 'code' && mode !== 'spec') {
-      throw new Error('Invalid mode — expected "code" or "spec"');
-    }
-    ctx.viewMode = mode;
+    setViewMode(mode);
     return {};
   },
 

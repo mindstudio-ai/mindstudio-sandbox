@@ -201,6 +201,40 @@ export async function cloneAppRepo(
   }
 }
 
+export function configureGit(workspaceDir: string): void {
+  run('git config user.name "MindStudio"', {
+    cwd: workspaceDir,
+    label: 'git config user.name',
+  });
+  run('git config user.email "noreply@mindstudio.ai"', {
+    cwd: workspaceDir,
+    label: 'git config user.email',
+  });
+  // Prevent git from ever opening an interactive editor (would hang in sandbox)
+  run('git config core.editor true', {
+    cwd: workspaceDir,
+    label: 'git config core.editor',
+  });
+  // Prevent git from using a pager (less may not be installed, would hang)
+  run('git config core.pager cat', {
+    cwd: workspaceDir,
+    label: 'git config core.pager',
+  });
+  // Avoid "dubious ownership" errors in container environments
+  run('git config --global safe.directory "*"', {
+    label: 'git config safe.directory',
+  });
+  // Unshallow so remy can see full history for diffs and commits
+  try {
+    run('git fetch --unshallow', {
+      cwd: workspaceDir,
+      label: 'git fetch --unshallow',
+    });
+  } catch {
+    log.info('git fetch --unshallow skipped (repo already has full history)');
+  }
+}
+
 export async function readAppConfig(workspaceDir: string): Promise<AppConfig> {
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
   log.debug(`Reading app config from ${manifestPath}`);

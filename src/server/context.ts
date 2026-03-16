@@ -22,7 +22,7 @@ import type { LspClient } from '../lsp/client.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './handlers/pty.js';
 
-export type ViewMode = 'code' | 'spec';
+export type ViewMode = 'intake' | 'spec' | 'code';
 
 export interface ServerContext {
   status: ServerStatus;
@@ -40,6 +40,27 @@ export interface ServerContext {
   viewMode: ViewMode;
 }
 
+const VALID_VIEW_MODES: ViewMode[] = ['intake', 'spec', 'code'];
+
+/** Callback fired when viewMode changes — wired up by index.ts. */
+let onViewModeChanged: ((mode: ViewMode) => void) | null = null;
+
+export function setViewModeCallback(cb: (mode: ViewMode) => void): void {
+  onViewModeChanged = cb;
+}
+
+/** Update the view mode, broadcast to clients, and persist. */
+export function setViewMode(mode: string): void {
+  if (!VALID_VIEW_MODES.includes(mode as ViewMode)) {
+    throw new Error(`Invalid mode — expected "intake", "spec", or "code"`);
+  }
+  if (ctx.viewMode === mode) {
+    return;
+  }
+  ctx.viewMode = mode as ViewMode;
+  onViewModeChanged?.(ctx.viewMode);
+}
+
 export const ctx: ServerContext = {
   status: 'bootstrapping',
   appConfig: null,
@@ -53,7 +74,7 @@ export const ctx: ServerContext = {
   specFileTreeManager: null,
   projectHasCode: false,
   lspClient: null,
-  viewMode: 'code',
+  viewMode: 'intake',
 };
 
 // --- Init frame ---
@@ -91,6 +112,7 @@ export async function buildInitFrame(
       activeTab: null,
     },
     projectHasCode: ctx.projectHasCode,
+    viewMode: ctx.viewMode,
   };
 }
 
@@ -111,5 +133,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specFileTree: [],
     specEditorState: { tabs: [], activeTab: null },
     projectHasCode: ctx.projectHasCode,
+    viewMode: ctx.viewMode,
   };
 }

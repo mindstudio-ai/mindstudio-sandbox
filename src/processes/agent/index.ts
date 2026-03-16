@@ -57,6 +57,7 @@ const EVENT_MAP: Record<string, string> = {
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
   onEditsFinished?: () => void;
+  onSetViewMode?: (mode: string) => void;
 }
 
 // --- Agent activity tracking ---
@@ -168,10 +169,19 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
         onTurnEnd(cb);
       }
 
-      // editsFinished is an internal signal — don't show in chat
+      // Internal signals — don't show in chat
       if (event.name === 'editsFinished') {
         if (event.event === 'tool_done') {
           cb.onEditsFinished?.();
+        }
+        return;
+      }
+      if (event.name === 'setViewMode') {
+        if (event.event === 'tool_start') {
+          const mode = (event.input as Record<string, unknown>)?.mode;
+          if (typeof mode === 'string') {
+            cb.onSetViewMode?.(mode);
+          }
         }
         return;
       }
@@ -331,8 +341,13 @@ export function createAgentActions(
       log.info(`Sending message: ${text.slice(0, 100)}...`);
 
       // Gather view context so remy knows what the user is looking at
+      const viewMode = ctx.viewMode;
       const activeEditor =
-        ctx.viewMode === 'spec' ? ctx.specEditorState : ctx.editorState;
+        viewMode === 'spec'
+          ? ctx.specEditorState
+          : viewMode === 'code'
+            ? ctx.editorState
+            : null;
       const editorState = activeEditor?.getState();
 
       send('message', {
@@ -340,7 +355,7 @@ export function createAgentActions(
         projectHasCode: projectHasCode(),
         ...(attachments?.length ? { attachments } : {}),
         viewContext: {
-          mode: ctx.viewMode,
+          mode: viewMode,
           openFiles: editorState?.tabs.map((t) => t.path) ?? [],
           activeFile: editorState?.activeTab ?? null,
         },

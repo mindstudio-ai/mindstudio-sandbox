@@ -7,6 +7,7 @@ import {
   installLsp,
   writeTunnelConfig,
   cloneAppRepo,
+  configureGit,
   readAppConfig,
   readWebConfig,
   installDependencies,
@@ -27,7 +28,7 @@ import {
   setProxyTarget,
   flushHmr,
 } from './server/index.js';
-import { ctx } from './server/context.js';
+import { ctx, setViewMode, setViewModeCallback } from './server/context.js';
 import { handlers } from './server/handlers/index.js';
 import { EditorStateManager } from './server/states/EditorStateManager.js';
 import { FileTreeManager } from './server/states/FileTreeManager.js';
@@ -204,7 +205,7 @@ async function startServices(
       apiKey: config.apiKey,
       apiBaseUrl: config.apiBaseUrl,
     },
-    { broadcast, onEditsFinished: flushHmr },
+    { broadcast, onEditsFinished: flushHmr, onSetViewMode: setViewMode },
   );
 
   return { lspClient, lspSidecar };
@@ -365,6 +366,10 @@ async function main(): Promise<void> {
   ctx.specEditorState = managers.specEditorManager;
   ctx.specFileTreeManager = managers.specFileTreeManager;
   ctx.resourceMonitor = managers.resourceMonitor;
+  setViewModeCallback((mode) => {
+    broadcast('viewModeChanged', { viewMode: mode });
+    markDirty();
+  });
   log.info(`Server listening on port ${config.port}`);
 
   const progress = (step: string, message: string) => {
@@ -383,6 +388,7 @@ async function main(): Promise<void> {
     // 6. Prepare workspace
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
+    configureGit(config.workspaceDir);
 
     // 7. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
