@@ -9,8 +9,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { TreeEntry } from '../../types.js';
-import { TREE_HIDDEN } from '../../utils/paths.js';
 import { createLogger } from '../../logger.js';
+import { TREE_HIDDEN } from '../../processes/fileWatcher.js';
 
 const log = createLogger('spec-file-tree');
 
