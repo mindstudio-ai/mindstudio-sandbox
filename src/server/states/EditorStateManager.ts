@@ -11,7 +11,18 @@
  */
 
 import path from 'node:path';
-import type { EditorTab, EditorState, AppConfig } from '../types.js';
+import type { AppConfig } from '../../types.js';
+
+export interface EditorTab {
+  path: string;
+  isPreview: boolean;
+}
+
+export interface EditorState {
+  tabs: EditorTab[];
+  activeTab: string | null;
+  expandedDirs: string[];
+}
 
 type ChangeCallback = (state: EditorState) => void;
 

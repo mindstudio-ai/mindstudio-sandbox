@@ -39,6 +39,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 
 let currentLevel: LogLevel = 'info';
 const listeners = new Set<(entry: LogEntry) => void>();
+const startTime = Date.now();
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
@@ -63,7 +64,8 @@ export function createLogger(module: string): Logger {
       return;
     }
 
-    const formatted = `[${level}] [${module}] ${msg}`;
+    const ms = Date.now() - startTime;
+    const formatted = `+${ms}ms [${level}] [${module}] ${msg}`;
 
     switch (level) {
       case 'error':

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolveSafe, generateId } from '../../utils/paths.js';
-import type { ProcessRegistry } from '../../processes/process-registry.js';
+import type { ProcessRegistry } from '../../processes/ProcessRegistry.js';
 
 let workspaceDir: string;
 let registry: ProcessRegistry | null = null;

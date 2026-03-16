@@ -1,234 +1,43 @@
+/**
+ * WebSocket server — HTTP/WS lifecycle, upgrade routing, broadcast.
+ *
+ * Three WebSocket servers on a single HTTP port:
+ *   /ws   — C&C (command & control) for the frontend
+ *   /lsp  — TypeScript language server bridge for Monaco
+ *   *     — HMR relay with buffering during agent turns
+ */
+
 import http from 'node:http';
 import net from 'node:net';
 import { URL } from 'node:url';
 import httpProxy from 'http-proxy';
 import { WebSocketServer, WebSocket } from 'ws';
-import type {
-  WsRequest,
-  WsResponse,
-  WsEvent,
-  ServerStatus,
-  AppConfig,
-} from '../types.js';
-import {
-  readFile,
-  writeFile,
-  deleteFile,
-  renameFile,
-} from './handlers/filesystem.js';
-import { search } from './handlers/search.js';
-import { shell } from './handlers/shell.js';
-import {
-  ptyCreate,
-  ptyWrite,
-  ptyResize,
-  ptyClose,
-  ptyGetScrollback,
-  getActiveSessionIds,
-} from './handlers/pty.js';
-import type { ProcessManager } from '../processes/process-manager.js';
-import type { ProcessRegistry } from '../processes/process-registry.js';
-import { createTunnelActions } from '../processes/tunnel/index.js';
-import {
-  createAgentActions,
-  getAgentHistory,
-  getAgentActivity,
-} from '../processes/agent/index.js';
-import type { BroadcastBatcher } from './broadcast-batcher.js';
-import type { EditorStateManager } from './editor-state.js';
-import type { ResourceMonitor } from '../processes/resource-monitor.js';
-import type { FileTreeManager } from './file-tree.js';
-import type { LspClient } from '../lsp/client.js';
-import { HmrRelay, HmrRelayManager } from './hmr-relay.js';
+import type { WsRequest, WsResponse, WsEvent, ServerStatus } from '../types.js';
+import { ctx, buildInitFrame, buildFallbackInitFrame } from './context.js';
+import { handlers } from './handlers/index.js';
+import { HmrRelay, HmrRelayManager } from './server/HmrRelay.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
 const lspLog = createLogger('lsp-ws');
 
-type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
-
 let sandboxToken: string = '';
 let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
-let appConfig: AppConfig | null = null;
-let processManager: ProcessManager | null = null;
-let batcher: BroadcastBatcher | null = null;
-let registry: ProcessRegistry | null = null;
-let editorState: EditorStateManager | null = null;
-let resourceMonitorRef: ResourceMonitor | null = null;
-let fileTreeManagerRef: FileTreeManager | null = null;
-
-/** Store the app config so it can be sent in the initial frame. */
-export function setAppConfig(config: AppConfig): void {
-  appConfig = config;
-}
-
-/** Store the process manager and wire up process-specific actions. */
-export function setProcessManager(pm: ProcessManager): void {
-  processManager = pm;
-  // Merge process-specific actions now that pm is available
-  Object.assign(actions, createTunnelActions(pm));
-  Object.assign(actions, createAgentActions(pm));
-}
-
-/** Store the batcher for batched broadcasts. */
-export function setBatcher(b: BroadcastBatcher): void {
-  batcher = b;
-}
-
-/** Set the registry so init frame can access process info. */
-export function setRegistry(reg: ProcessRegistry): void {
-  registry = reg;
-}
-
-/** Set the editor state manager for tab actions + init frame. */
-export function setEditorState(editor: EditorStateManager): void {
-  editorState = editor;
-}
-
-/** Set the resource monitor for on-demand snapshots. */
-export function setResourceMonitor(monitor: ResourceMonitor): void {
-  resourceMonitorRef = monitor;
-}
-
-/** Set the file tree manager for init frame + tree broadcasts. */
-export function setFileTreeManager(ftm: FileTreeManager): void {
-  fileTreeManagerRef = ftm;
-}
-
-const actions: Record<string, ActionHandler> = {
-  // --- Filesystem ---
-  readFile: (p) => readFile(p as { path: string }),
-  writeFile: (p) => writeFile(p as { path: string; content: string }),
-  deleteFile: async (p) => {
-    const params = p as { path: string };
-    const result = await deleteFile(params);
-    editorState?.onFileDeleted(params.path);
-    return result;
-  },
-  renameFile: async (p) => {
-    const params = p as { oldPath: string; newPath: string };
-    const result = await renameFile(params);
-    editorState?.onFileRenamed(params.oldPath, params.newPath);
-    return result;
-  },
-  search: (p) => search(p as Parameters<typeof search>[0]),
-  shell: (p) => shell(p as { command: string; cwd?: string; timeout?: number }),
-
-  // --- Processes ---
-  getProcesses: async () => {
-    return { processes: processManager?.getProcesses() ?? [] };
-  },
-  restartProcess: async (p) => {
-    const { name } = p as { name: string };
-    if (!name) {
-      throw new Error('Missing "name" parameter');
-    }
-    if (!processManager) {
-      throw new Error('Process manager not initialized');
-    }
-    log.info(`Restarting process: ${name}`);
-    await processManager.restart(name);
-    return {};
-  },
-  getProcessLog: async (p) => {
-    const { name } = p as { name: string };
-    if (!name) {
-      throw new Error('Missing "name" parameter');
-    }
-    return { log: processManager?.getProcessLog(name) ?? [] };
-  },
-
-  // --- Editor ---
-  openFile: async (p) => {
-    const { path, preview } = p as { path: string; preview?: boolean };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.openFile(path, preview ?? false);
-    return {};
-  },
-  closeFile: async (p) => {
-    const { path } = p as { path: string };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.closeFile(path);
-    return {};
-  },
-  setActiveTab: async (p) => {
-    const { path } = p as { path: string };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.setActiveTab(path);
-    return {};
-  },
-  reorderTabs: async (p) => {
-    const { paths } = p as { paths: string[] };
-    if (!Array.isArray(paths)) {
-      throw new Error('Missing "paths" parameter (array of file paths)');
-    }
-    editorState?.reorderTabs(paths);
-    return {};
-  },
-  expandDir: async (p) => {
-    const { path } = p as { path: string };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.expandDir(path);
-    return {};
-  },
-  collapseDir: async (p) => {
-    const { path } = p as { path: string };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.collapseDir(path);
-    return {};
-  },
-  toggleDir: async (p) => {
-    const { path } = p as { path: string };
-    if (!path) {
-      throw new Error('Missing "path" parameter');
-    }
-    editorState?.toggleDir(path);
-    return {};
-  },
-
-  // --- Resources ---
-  getResources: async () => {
-    return resourceMonitorRef?.collectNow() ?? {};
-  },
-
-  // --- PTY ---
-  ptyCreate: (p) =>
-    ptyCreate(p as { cols?: number; rows?: number; cwd?: string }),
-  ptyWrite: (p) => ptyWrite(p as { sessionId: string; data: string }),
-  ptyResize: (p) =>
-    ptyResize(p as { sessionId: string; cols: number; rows: number }),
-  ptyClose: (p) => ptyClose(p as { sessionId: string }),
-  ptyGetScrollback: (p) => ptyGetScrollback(p as { sessionId: string }),
-
-  // Agent and tunnel actions are merged in via setProcessManager()
-};
 
 let httpServer: http.Server;
 let wss: WebSocketServer;
 let lspWss: WebSocketServer;
 let hmrWss: WebSocketServer;
 const hmrRelayManager = new HmrRelayManager();
-let lspClient: LspClient | null = null;
-let status: ServerStatus = 'bootstrapping';
 
 export function getStatus(): ServerStatus {
-  return status;
+  return ctx.status;
 }
 
 export function setStatus(s: ServerStatus): void {
-  log.info(`Status: ${status} → ${s}`);
-  status = s;
+  log.info(`Status: ${ctx.status} → ${s}`);
+  ctx.status = s;
 }
 
 /** Set the tunnel proxy port for reverse proxying preview/HMR traffic. */
@@ -246,11 +55,6 @@ export function setProxyTarget(port: number): void {
     // Handled per-request below
   });
   log.info(`Preview proxy target set to localhost:${port}`);
-}
-
-/** Set the shared LSP client for WebSocket bridge and sidecar. */
-export function setLspClient(client: LspClient): void {
-  lspClient = client;
 }
 
 function verifyToken(url: string | undefined): boolean {
@@ -282,7 +86,7 @@ export function startServer(port: number, token?: string): Promise<void> {
     httpServer = http.createServer((req, res) => {
       if (req.url === '/health' || req.url?.startsWith('/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status, proxyTarget }));
+        res.end(JSON.stringify({ status: ctx.status, proxyTarget }));
         return;
       }
 
@@ -308,10 +112,12 @@ export function startServer(port: number, token?: string): Promise<void> {
 
     // HMR WebSocket — relay with buffering during agent turns
     hmrWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+
+    // --- LSP bridge ---
     lspWss.on('connection', (ws) => {
       lspLog.info('WebSocket client connected');
 
-      if (!lspClient?.isRunning) {
+      if (!ctx.lspClient?.isRunning) {
         lspLog.error('Language server not running, closing connection');
         ws.close(1013, 'Language server not running');
         return;
@@ -322,7 +128,10 @@ export function startServer(port: number, token?: string): Promise<void> {
           const msg = JSON.parse(data.toString());
           if (msg.id !== undefined && msg.method) {
             try {
-              const result = await lspClient!.request(msg.method, msg.params);
+              const result = await ctx.lspClient!.request(
+                msg.method,
+                msg.params,
+              );
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
               }
@@ -342,7 +151,7 @@ export function startServer(port: number, token?: string): Promise<void> {
               }
             }
           } else {
-            lspClient!.notify(msg.method, msg.params);
+            ctx.lspClient!.notify(msg.method, msg.params);
           }
         } catch {
           lspLog.warn('Failed to parse WebSocket message');
@@ -351,7 +160,7 @@ export function startServer(port: number, token?: string): Promise<void> {
 
       const unsubs: Array<() => void> = [];
       const forwardNotification = (method: string) => {
-        const unsub = lspClient!.onNotification(method, (params) => {
+        const unsub = ctx.lspClient!.onNotification(method, (params) => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
           }
@@ -371,6 +180,7 @@ export function startServer(port: number, token?: string): Promise<void> {
       });
     });
 
+    // --- C&C connection ---
     wss.on('connection', async (ws) => {
       log.info(`C&C client connected (total: ${wss.clients.size})`);
 
@@ -380,48 +190,15 @@ export function startServer(port: number, token?: string): Promise<void> {
         );
       });
 
-      // Send initial frame with everything the client needs to bootstrap
+      // Send initial frame
       try {
-        const chatHistory = processManager
-          ? await getAgentHistory(processManager)
-          : [];
-        ws.send(
-          JSON.stringify({
-            event: 'init',
-            status,
-            previewAvailable: proxy !== null,
-            app: appConfig,
-            fileTree: fileTreeManagerRef?.getTree() ?? [],
-            chatHistory,
-            processes: registry?.getAllInfo() ?? [],
-            outputLog: registry?.getMergedLog() ?? [],
-            agentActivity: getAgentActivity(),
-            ptySessionIds: getActiveSessionIds(),
-            editorState: editorState?.getState() ?? {
-              tabs: [],
-              activeTab: null,
-              expandedDirs: [],
-            },
-          }),
-        );
+        const frame = await buildInitFrame(proxy !== null);
+        ws.send(JSON.stringify(frame));
       } catch {
-        ws.send(
-          JSON.stringify({
-            event: 'init',
-            status,
-            previewAvailable: proxy !== null,
-            app: appConfig,
-            fileTree: [],
-            chatHistory: [],
-            processes: [],
-            outputLog: [],
-            agentActivity: getAgentActivity(),
-            ptySessionIds: [],
-            editorState: { tabs: [], activeTab: null, expandedDirs: [] },
-          }),
-        );
+        ws.send(JSON.stringify(buildFallbackInitFrame(proxy !== null)));
       }
 
+      // Request dispatch
       ws.on('message', async (raw) => {
         let request: WsRequest;
         try {
@@ -437,7 +214,7 @@ export function startServer(port: number, token?: string): Promise<void> {
           return;
         }
 
-        const handler = actions[request.action];
+        const handler = handlers[request.action];
         if (!handler) {
           const resp: WsResponse = {
             requestId: request.requestId,
@@ -467,7 +244,7 @@ export function startServer(port: number, token?: string): Promise<void> {
       });
     });
 
-    // Handle all WebSocket upgrades — route by path
+    // --- WebSocket upgrade routing ---
     httpServer.on('upgrade', (req, socket: net.Socket, head) => {
       const pathname = new URL(req.url || '/', 'http://localhost').pathname;
       log.debug(`WebSocket upgrade: ${pathname}`);

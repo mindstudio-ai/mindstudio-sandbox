@@ -1,4 +1,6 @@
-import { loadConfig } from './config.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { loadConfig, type Config } from './config.js';
 import {
   installTunnel,
   installAgent,
@@ -10,38 +12,34 @@ import {
   installDependencies,
   setBootstrapRegistry,
 } from './bootstrap.js';
-import { ProcessRegistry } from './processes/process-registry.js';
-import { ProcessManager } from './processes/process-manager.js';
-import { startTunnel } from './processes/tunnel/index.js';
-import { startAgent } from './processes/agent/index.js';
-import { startDevServer } from './processes/dev-server/index.js';
-import { ResourceMonitor } from './processes/resource-monitor.js';
-import { BroadcastBatcher } from './server/broadcast-batcher.js';
+import { ProcessRegistry } from './processes/ProcessRegistry.js';
+import { ProcessManager } from './processes/ProcessManager.js';
+import { startTunnel, createTunnelActions } from './processes/tunnel/index.js';
+import { startAgent, createAgentActions } from './processes/agent/index.js';
+import { startDevServer } from './processes/devServer/index.js';
+import { ResourceMonitor } from './processes/ResourceMonitor.js';
+import { BroadcastBatcher } from './server/server/BroadcastBatcher.js';
 import {
   startServer,
   broadcast,
   stopServer,
   setStatus,
   setProxyTarget,
-  setAppConfig,
-  setProcessManager,
-  setLspClient,
-  setBatcher,
-  setRegistry,
-  setEditorState,
-  setResourceMonitor,
-  setFileTreeManager,
   flushHmr,
-} from './server/ws-server.js';
-import { EditorStateManager } from './server/editor-state.js';
-import { FileTreeManager } from './server/file-tree.js';
+} from './server/index.js';
+import { ctx } from './server/context.js';
+import { handlers } from './server/handlers/index.js';
+import { EditorStateManager } from './server/states/EditorStateManager.js';
+import { FileTreeManager } from './server/states/FileTreeManager.js';
+import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.js';
+import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.js';
+import { getProjectHasCode } from './server/states/_helpers/getProjectHasCode.js';
 import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/handlers/filesystem.js';
-import { initSearch } from './server/handlers/search.js';
 import { initShell } from './server/handlers/shell.js';
 import { initPty, closeAllPty } from './server/handlers/pty.js';
-import { startWatcher, stopWatcher } from './processes/file-watcher.js';
+import { startWatcher, stopWatcher } from './processes/fileWatcher.js';
 import {
   initState,
   restoreState,
@@ -50,31 +48,26 @@ import {
   markDirty,
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
-import path from 'node:path';
+import type { AppConfig, WebConfig } from './types.js';
 
 const log = createLogger('cnc');
 
-const bootStart = Date.now();
+// ---------------------------------------------------------------------------
+// State manager construction
+// ---------------------------------------------------------------------------
 
-function elapsed(): string {
-  return `+${Date.now() - bootStart}ms`;
+interface Managers {
+  batcher: BroadcastBatcher;
+  registry: ProcessRegistry;
+  processManager: ProcessManager;
+  fileTreeManager: FileTreeManager;
+  editorManager: EditorStateManager;
+  specFileTreeManager: SpecFileTreeManager;
+  specEditorManager: SpecEditorStateManager;
+  resourceMonitor: ResourceMonitor;
 }
 
-async function main(): Promise<void> {
-  log.info('========================================');
-  log.info(`C&C Server starting at ${new Date().toISOString()}`);
-  log.info(`Node ${process.version}, PID ${process.pid}`);
-  log.info(`cwd: ${process.cwd()}`);
-  log.info('========================================');
-
-  // 1. Parse config (also sets LOG_LEVEL)
-  log.info(`(${elapsed()}) Step 1: Loading config...`);
-  const config = loadConfig();
-  log.info(
-    `(${elapsed()}) Config loaded — port=${config.port}, workspace=${config.workspaceDir}`,
-  );
-
-  // Create process registry + batcher early so bootstrap can register
+function createStateManagers(config: Config): Managers {
   const batcher = new BroadcastBatcher({
     flush: (event, batch) => broadcast(event, { batch }),
   });
@@ -90,25 +83,32 @@ async function main(): Promise<void> {
     },
   });
 
-  // Create file tree manager
   const fileTreeManager = new FileTreeManager({
     workspaceDir: config.workspaceDir,
     getExpandedDirs: () => editorManager.getExpandedDirs(),
     onChange: (tree) => {
-      broadcast('fileTreeChanged', {
-        fileTree: tree,
-      });
+      broadcast('fileTreeChanged', { fileTree: tree });
     },
   });
 
-  // Create editor state manager — tree rebuilds on expand/collapse
   const editorManager = new EditorStateManager((state) => {
     broadcast('editorStateChanged', { editorState: state });
     markDirty();
     fileTreeManager.onExpandedDirsChanged();
   });
 
-  // Start resource monitor — polls every 5s, broadcasts to clients
+  const specFileTreeManager = new SpecFileTreeManager({
+    workspaceDir: config.workspaceDir,
+    onChange: (tree) => {
+      broadcast('specFileTreeChanged', { specFileTree: tree });
+    },
+  });
+
+  const specEditorManager = new SpecEditorStateManager((state) => {
+    broadcast('specEditorStateChanged', { specEditorState: state });
+    markDirty();
+  });
+
   const resourceMonitor = new ResourceMonitor({
     registry,
     onSnapshot: (snapshot) => {
@@ -116,40 +116,227 @@ async function main(): Promise<void> {
     },
   });
 
-  // Register system pseudo-process for C&C server logs
+  // System pseudo-process for C&C server logs
   registry.register('system', 'system', 'cnc-server');
   registry.setState('system', 'running');
-
   onLog((entry) => {
     const stream =
       entry.level === 'error' || entry.level === 'warn' ? 'stderr' : 'stdout';
     registry.appendLog('system', stream, `[${entry.module}] ${entry.message}`);
   });
 
-  // Wire registry into bootstrap and process manager
   setBootstrapRegistry(registry);
   const processManager = new ProcessManager(registry);
-  let lspClientInstance: LspClient | null = null;
 
-  // Graceful shutdown
+  return {
+    batcher,
+    registry,
+    processManager,
+    fileTreeManager,
+    editorManager,
+    specFileTreeManager,
+    specEditorManager,
+    resourceMonitor,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Service startup (LSP, dev server, tunnel, agent)
+// ---------------------------------------------------------------------------
+
+async function startServices(
+  config: Config,
+  managers: Managers,
+  appConfig: AppConfig,
+  webConfig: WebConfig | null,
+  progress: (step: string, message: string) => void,
+): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
+  const { processManager, registry } = managers;
+
+  // TypeScript language server
+  log.info('Starting LSP...');
+  const lspClient = new LspClient();
+  await lspClient.start(config.workspaceDir, registry);
+  ctx.lspClient = lspClient;
+
+  // LSP HTTP sidecar for remy
+  const lspSidecar = new LspSidecar(lspClient);
+  await lspSidecar.start(4388);
+  lspSidecar.setProcessManager(processManager);
+  log.info('LSP sidecar ready on port 4388');
+
+  // Dev server
+  const devPort = webConfig?.web.devPort ?? 5173;
+  const devCommand = webConfig?.web.devCommand ?? 'npm run dev';
+  const webDir = webConfig
+    ? path.resolve(
+        config.workspaceDir,
+        path.dirname(
+          appConfig.interfaces.find((i) => i.type === 'web')?.path ?? '',
+        ),
+      )
+    : null;
+
+  if (webDir) {
+    progress('devServer', `Starting dev server: ${devCommand}`);
+    startDevServer(processManager, { command: devCommand, cwd: webDir });
+  } else {
+    log.info('No web interface, skipping dev server');
+  }
+
+  // Tunnel
+  progress('tunnel', 'Starting dev tunnel...');
+  startTunnel(
+    processManager,
+    { workspaceDir: config.workspaceDir, devPort },
+    {
+      onSessionStarted: (port) => setProxyTarget(port),
+      broadcast,
+    },
+  );
+
+  // Agent
+  progress('agent', 'Starting coding agent...');
+  startAgent(
+    processManager,
+    {
+      workspaceDir: config.workspaceDir,
+      apiKey: config.apiKey,
+      apiBaseUrl: config.apiBaseUrl,
+    },
+    { broadcast, onEditsFinished: flushHmr },
+  );
+
+  return { lspClient, lspSidecar };
+}
+
+// ---------------------------------------------------------------------------
+// File watcher
+// ---------------------------------------------------------------------------
+
+function setupFileWatcher(
+  config: Config,
+  managers: Managers,
+  appConfig: AppConfig,
+  lspSidecar: LspSidecar,
+): void {
+  const {
+    processManager,
+    editorManager,
+    specEditorManager,
+    fileTreeManager,
+    specFileTreeManager,
+  } = managers;
+
+  let tablePaths = new Set(appConfig.tables?.map((t) => t.path) ?? []);
+  let schemaSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  let currentProjectHasCode = ctx.projectHasCode;
+
+  function scheduleSyncSchema(): void {
+    if (schemaSyncTimer) {
+      return;
+    }
+    schemaSyncTimer = setTimeout(() => {
+      schemaSyncTimer = null;
+      if (processManager.getState('tunnel') === 'running') {
+        log.info('Table file changed — syncing schema');
+        processManager.writeStdin(
+          'tunnel',
+          JSON.stringify({ action: 'syncSchema' }),
+        );
+      }
+    }, 1000);
+  }
+
+  log.info(`Starting file watcher on ${config.workspaceDir}`);
+
+  startWatcher(config.workspaceDir, (filePath, changeType) => {
+    broadcast('fileChanged', { path: filePath, changeType });
+
+    if (changeType === 'modified' || changeType === 'created') {
+      lspSidecar.onFileChanged(filePath).catch(() => {});
+
+      // Re-read and broadcast manifest when it changes
+      if (filePath === 'mindstudio.json') {
+        readAppConfig(config.workspaceDir)
+          .then((updated) => {
+            ctx.appConfig = updated;
+            tablePaths = new Set(updated.tables?.map((t) => t.path) ?? []);
+            broadcast('manifestChanged', { app: updated });
+            scheduleSyncSchema();
+
+            // Check if projectHasCode changed
+            const newProjectHasCode = getProjectHasCode(updated);
+            if (newProjectHasCode !== currentProjectHasCode) {
+              currentProjectHasCode = newProjectHasCode;
+              ctx.projectHasCode = newProjectHasCode;
+              broadcast('projectHasCodeChanged', {
+                projectHasCode: newProjectHasCode,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+
+      if (tablePaths.has(filePath)) {
+        scheduleSyncSchema();
+      }
+    }
+
+    if (changeType === 'deleted') {
+      editorManager.onFileDeleted(filePath);
+    }
+
+    fileTreeManager.onFileChanged(filePath, changeType);
+
+    // Spec file tree updates
+    if (filePath.startsWith('src/')) {
+      specFileTreeManager.onFileChanged(filePath, changeType);
+      if (changeType === 'deleted') {
+        specEditorManager.onFileDeleted(filePath);
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  log.info(
+    `Starting — Node ${process.version}, PID ${process.pid}, cwd ${process.cwd()}`,
+  );
+
+  // 1. Config
+  const config = loadConfig();
+  log.info(
+    `Config loaded — port=${config.port}, workspace=${config.workspaceDir}`,
+  );
+
+  // 2. Create state managers
+  const managers = createStateManagers(config);
+
+  // 3. Graceful shutdown
+  let lspClientRef: LspClient | null = null;
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) {
       return;
     }
     shuttingDown = true;
-    log.info(`(${elapsed()}) Shutting down...`);
-    registry.setState('system', 'stopped');
-    resourceMonitor.stop();
-    batcher.stop();
+    log.info('Shutting down...');
+    managers.registry.setState('system', 'stopped');
+    managers.resourceMonitor.stop();
+    managers.batcher.stop();
     stopAutoSave();
     await saveState();
     closeAllPty();
     stopWatcher();
-    lspClientInstance?.stop();
-    await processManager.stopAll();
+    lspClientRef?.stop();
+    await managers.processManager.stopAll();
     await stopServer();
-    log.info(`(${elapsed()}) Shutdown complete`);
+    log.info('Shutdown complete');
     process.exit(0);
   };
 
@@ -169,207 +356,104 @@ async function main(): Promise<void> {
     log.error(`Unhandled rejection: ${reason}`);
   });
 
-  // 2. Start HTTP/WS server immediately (health returns "bootstrapping")
-  log.info(`(${elapsed()}) Step 2: Starting HTTP/WS server...`);
+  // 4. Start HTTP/WS server (health returns "bootstrapping")
   await startServer(config.port, config.sandboxToken);
-  setBatcher(batcher);
-  setRegistry(registry);
-  setEditorState(editorManager);
-  setFileTreeManager(fileTreeManager);
-  setResourceMonitor(resourceMonitor);
-  log.info(`(${elapsed()}) Server listening on port ${config.port}`);
+  ctx.batcher = managers.batcher;
+  ctx.registry = managers.registry;
+  ctx.editorState = managers.editorManager;
+  ctx.fileTreeManager = managers.fileTreeManager;
+  ctx.specEditorState = managers.specEditorManager;
+  ctx.specFileTreeManager = managers.specFileTreeManager;
+  ctx.resourceMonitor = managers.resourceMonitor;
+  log.info(`Server listening on port ${config.port}`);
 
   const progress = (step: string, message: string) => {
-    log.info(`(${elapsed()}) [${step}] ${message}`);
+    log.info(`[${step}] ${message}`);
     broadcast('bootstrapProgress', { step, message });
   };
 
   try {
-    // 3. Install tunnel and agent
-    log.info(`(${elapsed()}) Step 3: Installing tunnel and agent...`);
+    // 5. Install binaries
     await Promise.all([
       installTunnel(progress),
       installAgent(progress),
       installLsp(progress),
     ]);
-    log.info(`(${elapsed()}) Tunnel and agent install complete`);
 
-    // 4. Write tunnel config
-    log.info(`(${elapsed()}) Step 4: Writing tunnel config...`);
+    // 6. Prepare workspace
     await writeTunnelConfig(config);
-    log.info(`(${elapsed()}) Tunnel config written`);
-
-    // 5. Clone app repo (skip if already exists)
-    log.info(`(${elapsed()}) Step 5: Cloning app repo...`);
     await cloneAppRepo(config, progress);
-    log.info(`(${elapsed()}) App repo ready`);
 
-    // 6. Read app config
-    log.info(`(${elapsed()}) Step 6: Reading app config...`);
+    // 7. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
     const webConfig = await readWebConfig(config.workspaceDir, appConfig);
-    setAppConfig(appConfig);
-    log.info(`(${elapsed()}) App: ${appConfig.name} (${appConfig.appId})`);
-
-    const devPort = webConfig?.web.devPort ?? 5173;
-    const devCommand = webConfig?.web.devCommand ?? 'npm run dev';
+    ctx.appConfig = appConfig;
+    ctx.projectHasCode = getProjectHasCode(appConfig);
     log.info(
-      `(${elapsed()}) Dev server: port=${devPort}, command="${devCommand}"`,
+      `App: ${appConfig.name} (${appConfig.appId}), projectHasCode: ${ctx.projectHasCode}`,
     );
 
-    // 7. Install dependencies
-    log.info(`(${elapsed()}) Step 7: Installing dependencies...`);
+    // 8. Install dependencies
     await installDependencies(config.workspaceDir, progress);
-    log.info(`(${elapsed()}) Dependencies installed`);
 
-    // Init handlers
-    log.debug(`(${elapsed()}) Initializing handlers...`);
+    // 9. Init handlers
     initFilesystem(config.workspaceDir);
-    initSearch(config.workspaceDir);
-    initShell(config.workspaceDir, registry);
-    initPty(config.workspaceDir, registry, batcher);
-    setProcessManager(processManager);
+    initShell(config.workspaceDir, managers.registry);
+    initPty(config.workspaceDir, managers.registry, managers.batcher);
+    ctx.processManager = managers.processManager;
+    Object.assign(handlers, createTunnelActions(managers.processManager));
+    Object.assign(handlers, createAgentActions(managers.processManager));
 
-    // Restore persisted state from previous session (if resuming from snapshot)
-    initState(config.workspaceDir, registry, editorManager);
+    // 10. Restore state
+    initState(
+      config.workspaceDir,
+      managers.registry,
+      managers.editorManager,
+      managers.specEditorManager,
+    );
     await restoreState();
 
-    // On fresh sessions, pre-expand directories so the user sees their code
-    if (editorManager.isEmpty()) {
-      editorManager.expandFromAppConfig(appConfig);
+    if (managers.editorManager.isEmpty()) {
+      managers.editorManager.expandFromAppConfig(appConfig);
+    }
+    if (managers.specEditorManager.isEmpty()) {
+      try {
+        await fs.access(path.join(config.workspaceDir, 'src', 'app.md'));
+        managers.specEditorManager.openFile('src/app.md', false);
+      } catch {
+        // src/app.md doesn't exist
+      }
     }
 
-    // Build initial visible tree
-    await fileTreeManager.buildVisibleTree();
+    // 11. Build initial file trees
+    await managers.fileTreeManager.buildVisibleTree();
+    await managers.specFileTreeManager.buildTree();
 
-    // Start TypeScript language server
-    log.info(`(${elapsed()}) Starting LSP...`);
-    lspClientInstance = new LspClient();
-    await lspClientInstance.start(config.workspaceDir, registry);
-    setLspClient(lspClientInstance);
-
-    // Start LSP HTTP sidecar for remy
-    const lspSidecar = new LspSidecar(lspClientInstance);
-    await lspSidecar.start(4388);
-    lspSidecar.setProcessManager(processManager);
-    log.info(`(${elapsed()}) LSP sidecar ready on port 4388`);
-
-    // 8. Start dev server
-    const webDir = webConfig
-      ? path.resolve(
-          config.workspaceDir,
-          path.dirname(
-            appConfig.interfaces.find((i) => i.type === 'web')?.path ?? '',
-          ),
-        )
-      : null;
-
-    if (webDir) {
-      log.info(`(${elapsed()}) Step 8: Starting dev server in ${webDir}...`);
-      progress('devServer', `Starting dev server: ${devCommand}`);
-      startDevServer(processManager, { command: devCommand, cwd: webDir });
-    } else {
-      log.info(`(${elapsed()}) Step 8: No web interface, skipping dev server`);
-    }
-
-    // 9. Start tunnel
-    log.info(`(${elapsed()}) Step 9: Starting dev tunnel...`);
-    progress('tunnel', 'Starting dev tunnel...');
-    startTunnel(
-      processManager,
-      { workspaceDir: config.workspaceDir, devPort },
-      {
-        onSessionStarted: (port) => setProxyTarget(port),
-        broadcast,
-      },
+    // 12. Start services
+    const { lspClient, lspSidecar } = await startServices(
+      config,
+      managers,
+      appConfig,
+      webConfig,
+      progress,
     );
+    lspClientRef = lspClient;
 
-    // 10. Start agent
-    log.info(`(${elapsed()}) Step 10: Starting agent...`);
-    progress('agent', 'Starting coding agent...');
-    startAgent(
-      processManager,
-      {
-        workspaceDir: config.workspaceDir,
-        apiKey: config.apiKey,
-        apiBaseUrl: config.apiBaseUrl,
-      },
-      { broadcast, onEditsFinished: flushHmr },
-    );
-
-    // 11. Start file watcher
-    log.info(
-      `(${elapsed()}) Step 11: Starting file watcher on ${config.workspaceDir}`,
-    );
-    // Track table file paths for auto schema sync
-    let tablePaths = new Set(appConfig.tables?.map((t) => t.path) ?? []);
-    let schemaSyncTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function scheduleSyncSchema(): void {
-      if (schemaSyncTimer) {
-        return;
-      }
-      schemaSyncTimer = setTimeout(() => {
-        schemaSyncTimer = null;
-        if (processManager.getState('tunnel') === 'running') {
-          log.info('Table file changed — syncing schema');
-          processManager.writeStdin(
-            'tunnel',
-            JSON.stringify({ action: 'syncSchema' }),
-          );
-        }
-      }, 1000);
-    }
-
-    startWatcher(config.workspaceDir, (filePath, changeType) => {
-      broadcast('fileChanged', { path: filePath, changeType });
-      if (changeType === 'modified' || changeType === 'created') {
-        lspSidecar.onFileChanged(filePath).catch(() => {});
-        // Re-read and broadcast manifest when it changes
-        if (filePath === 'mindstudio.json') {
-          readAppConfig(config.workspaceDir)
-            .then((updated) => {
-              setAppConfig(updated);
-              tablePaths = new Set(updated.tables?.map((t) => t.path) ?? []);
-              broadcast('manifestChanged', {
-                app: updated,
-              });
-              // Manifest changed — sync schema in case tables were added/removed
-              scheduleSyncSchema();
-            })
-            .catch(() => {});
-        }
-        // Auto sync schema when a table definition file changes
-        if (tablePaths.has(filePath)) {
-          scheduleSyncSchema();
-        }
-      }
-      if (changeType === 'deleted') {
-        editorManager.onFileDeleted(filePath);
-      }
-      // Update visible tree on structural changes
-      fileTreeManager.onFileChanged(filePath, changeType);
-    });
+    // 13. File watcher
+    setupFileWatcher(config, managers, appConfig, lspSidecar);
 
     // Ready
     setStatus('ready');
     progress('ready', 'C&C server is ready');
-    log.info(`(${elapsed()}) ========================================`);
-    log.info(`(${elapsed()}) READY — Bootstrap complete`);
-    log.info(`(${elapsed()}) ========================================`);
+    log.info('Bootstrap complete');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Bootstrap failed';
-    const stack = err instanceof Error ? err.stack : undefined;
-    log.error(`(${elapsed()}) ========================================`);
-    log.error(`(${elapsed()}) BOOTSTRAP ERROR: ${message}`);
-    if (stack) {
-      log.error(stack);
+    log.error(`Bootstrap failed: ${message}`);
+    if (err instanceof Error && err.stack) {
+      log.error(err.stack);
     }
-    log.error(`(${elapsed()}) ========================================`);
     setStatus('error');
     broadcast('bootstrapProgress', { step: 'error', message });
-
-    log.error('Exiting with code 1');
     process.exit(1);
   }
 }

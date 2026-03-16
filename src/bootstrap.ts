@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { Config } from './config.js';
 import type { AppConfig, WebConfig } from './types.js';
-import type { ProcessRegistry } from './processes/process-registry.js';
+import type { ProcessRegistry } from './processes/ProcessRegistry.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('bootstrap');

@@ -1,12 +1,25 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type {
-  ManagedProcessConfig,
+  ProcessRegistry,
   ProcessState,
   ProcessInfo,
   ProcessLogEntry,
-} from '../types.js';
-import type { ProcessRegistry } from './process-registry.js';
+} from './ProcessRegistry.js';
+
+export interface ManagedProcessConfig {
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env?: Record<string, string>;
+  stdin?: boolean;
+  restartOnCrash: boolean;
+  maxRestarts: number;
+  critical?: boolean;
+  onStdout?: (line: string) => void;
+  onStderr?: (line: string) => void;
+}
 import { createLogger } from '../logger.js';
 
 const log = createLogger('process-manager');

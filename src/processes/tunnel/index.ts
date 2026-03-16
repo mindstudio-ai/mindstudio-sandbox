@@ -5,7 +5,7 @@
  * for scenarios, schema sync, and role impersonation.
  */
 
-import type { ProcessManager } from '../process-manager.js';
+import type { ProcessManager } from '../ProcessManager.js';
 import { parseTunnelLine } from './events.js';
 import { createLogger } from '../../logger.js';
 

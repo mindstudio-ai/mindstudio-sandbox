@@ -1,4 +1,7 @@
-import type { TunnelEvent } from '../../types.js';
+export interface TunnelEvent {
+  event: string;
+  [key: string]: unknown;
+}
 
 export function parseTunnelLine(line: string): TunnelEvent | null {
   try {

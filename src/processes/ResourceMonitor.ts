@@ -9,11 +9,23 @@
 
 import fsSync from 'node:fs';
 import os from 'node:os';
-import type {
-  ProcessResourceMetrics,
-  SystemResourceMetrics,
-} from '../types.js';
-import type { ProcessRegistry } from './process-registry.js';
+export interface ProcessResourceMetrics {
+  rss: number | null;
+  heapUsed: number | null;
+  heapTotal: number | null;
+  cpu: number | null;
+}
+
+export interface SystemResourceMetrics {
+  timestamp: number;
+  container: {
+    memoryLimit: number | null;
+    memoryUsage: number | null;
+    memoryPercent: number | null;
+  };
+  processes: Record<string, ProcessResourceMetrics>;
+}
+import type { ProcessRegistry } from './ProcessRegistry.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('resource-monitor');

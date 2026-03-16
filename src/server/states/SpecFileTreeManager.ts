@@ -1,45 +1,40 @@
 /**
- * Server-owned file tree manager.
+ * Spec file tree manager.
  *
- * Maintains the visible file tree — the set of entries that should be
- * rendered given the current expandedDirs. Only expanded branches are
- * read from disk. On every expand/collapse or file change, the tree is
- * rebuilt (debounced) and broadcast to clients. Frontend just renders
- * what it receives.
+ * Simplified variant of FileTreeManager that always fully recurses,
+ * scoped to src/. No expandedDirs concept — the spec sidebar shows
+ * all files in flat sections. Same TreeEntry shape for consistency.
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { TreeEntry } from '../types.js';
-import { TREE_HIDDEN, TREE_COLLAPSED } from '../utils/paths.js';
-import { createLogger } from '../logger.js';
+import type { TreeEntry } from '../../types.js';
+import { TREE_HIDDEN } from '../../utils/paths.js';
+import { createLogger } from '../../logger.js';
 
-const log = createLogger('file-tree');
+const log = createLogger('spec-file-tree');
 
 const REBUILD_DEBOUNCE_MS = 50;
 
-export interface FileTreeManagerOpts {
+export interface SpecFileTreeManagerOpts {
   workspaceDir: string;
-  getExpandedDirs: () => Set<string>;
   onChange: (tree: TreeEntry[]) => void;
 }
 
-export class FileTreeManager {
+export class SpecFileTreeManager {
   private workspaceDir: string;
-  private getExpandedDirs: () => Set<string>;
   private onChange: (tree: TreeEntry[]) => void;
   private cachedTree: TreeEntry[] = [];
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(opts: FileTreeManagerOpts) {
+  constructor(opts: SpecFileTreeManagerOpts) {
     this.workspaceDir = opts.workspaceDir;
-    this.getExpandedDirs = opts.getExpandedDirs;
     this.onChange = opts.onChange;
   }
 
-  /** Build the full visible tree from disk and cache it. */
-  async buildVisibleTree(): Promise<TreeEntry[]> {
-    this.cachedTree = await this.readDir('.', this.getExpandedDirs());
+  /** Build the full src/ tree from disk and cache it. */
+  async buildTree(): Promise<TreeEntry[]> {
+    this.cachedTree = await this.readDir('src');
     return this.cachedTree;
   }
 
@@ -48,29 +43,19 @@ export class FileTreeManager {
     return this.cachedTree;
   }
 
-  /** Called when expandedDirs changes — schedule rebuild. */
-  onExpandedDirsChanged(): void {
-    this.scheduleRebuild();
-  }
-
-  /** Called on file watcher events — rebuild if the affected dir is visible. */
+  /** Called on file watcher events — rebuild if the path is under src/ and structural. */
   onFileChanged(
     filePath: string,
     changeType: 'created' | 'modified' | 'deleted',
   ): void {
-    // Only structural changes (create/delete) need a tree rebuild.
-    // Modified files don't change the tree structure.
+    if (!filePath.startsWith('src/')) {
+      return;
+    }
+    // Only structural changes (create/delete) need a tree rebuild
     if (changeType === 'modified') {
       return;
     }
-
-    const parentDir = path.dirname(filePath);
-    const expandedDirs = this.getExpandedDirs();
-
-    // Visible if parent is root or parent is expanded
-    if (parentDir === '.' || expandedDirs.has(parentDir)) {
-      this.scheduleRebuild();
-    }
+    this.scheduleRebuild();
   }
 
   private scheduleRebuild(): void {
@@ -80,7 +65,7 @@ export class FileTreeManager {
     this.rebuildTimer = setTimeout(async () => {
       this.rebuildTimer = null;
       try {
-        await this.buildVisibleTree();
+        await this.buildTree();
         this.onChange(this.cachedTree);
       } catch (err) {
         log.debug(
@@ -90,11 +75,8 @@ export class FileTreeManager {
     }, REBUILD_DEBOUNCE_MS);
   }
 
-  /** Read a directory and build TreeEntry[] for its children. */
-  private async readDir(
-    relDir: string,
-    expandedDirs: Set<string>,
-  ): Promise<TreeEntry[]> {
+  /** Read a directory and build TreeEntry[] for its children. Always recurses. */
+  private async readDir(relDir: string): Promise<TreeEntry[]> {
     const absDir = path.resolve(this.workspaceDir, relDir);
     let entries;
     try {
@@ -110,8 +92,7 @@ export class FileTreeManager {
         continue;
       }
 
-      const relPath =
-        relDir === '.' ? entry.name : path.join(relDir, entry.name);
+      const relPath = path.join(relDir, entry.name);
       const fullPath = path.join(absDir, entry.name);
 
       try {
@@ -125,11 +106,7 @@ export class FileTreeManager {
         };
 
         if (entry.isDirectory()) {
-          if (TREE_COLLAPSED.has(entry.name)) {
-            node.collapsed = true;
-          } else if (expandedDirs.has(relPath)) {
-            node.children = await this.readDir(relPath, expandedDirs);
-          }
+          node.children = await this.readDir(relPath);
         }
 
         results.push(node);

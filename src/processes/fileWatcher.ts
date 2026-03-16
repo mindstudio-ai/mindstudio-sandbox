@@ -1,6 +1,14 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
-import { IGNORED_DIRS, TREE_HIDDEN } from '../utils/paths.js';
+
+// Directories excluded from file watching.
+const IGNORED_DIRS = ['node_modules', '.git', '.vite'] as const;
+
+// Entries hidden entirely from the file tree.
+export const TREE_HIDDEN = new Set(['.git', '.vite', '.sandbox-state.json']);
+
+// Directories shown in the file tree but not expanded (collapsed).
+export const TREE_COLLAPSED = new Set(['node_modules']);
 
 let watcher: FSWatcher | null = null;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;

@@ -7,7 +7,7 @@
 
 import http from 'node:http';
 import type { LspClient } from './client.js';
-import type { ProcessManager } from '../processes/process-manager.js';
+import type { ProcessManager } from '../processes/ProcessManager.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');

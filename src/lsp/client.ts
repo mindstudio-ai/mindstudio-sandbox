@@ -10,7 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { ProcessRegistry } from '../processes/process-registry.js';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-client');

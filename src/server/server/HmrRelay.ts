@@ -11,7 +11,7 @@
 
 import WebSocket from 'ws';
 import type { IncomingHttpHeaders } from 'node:http';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../../logger.js';
 
 const log = createLogger('hmr-relay');
 

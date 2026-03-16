@@ -5,7 +5,7 @@
  * stdout/stderr are captured automatically by the process registry.
  */
 
-import type { ProcessManager } from '../process-manager.js';
+import type { ProcessManager } from '../ProcessManager.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('dev-server');

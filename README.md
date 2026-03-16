@@ -1,8 +1,6 @@
 # MindStudio Sandbox — C&C Server
 
-The command & control server that runs inside hosted MindStudio sandbox
-containers. Manages the dev environment, exposes a WebSocket API for
-the web editor, and reverse-proxies the live preview.
+The command & control server that runs inside hosted MindStudio sandbox containers. Manages the dev environment, exposes a WebSocket API for the web editor, and reverse-proxies the live preview.
 
 ## Architecture
 
@@ -26,47 +24,53 @@ Inside the container, the C&C server manages:
 - **File watcher** — broadcasts filesystem changes to connected clients
 - **TypeScript language server** — shared between Monaco editor and remy
 
-### Process Registry
+## Project Structure
 
-Every process — bootstrap tasks, long-lived services, shell commands,
-and system logs — is tracked in a unified process registry with:
+```
+src/
+  index.ts                          — entry point, bootstrap orchestration
+  config.ts                         — environment variable parsing
+  types.ts                          — shared types (WS protocol, filesystem, app config)
+  logger.ts                         — centralized logger with levels + elapsed time
+  state.ts                          — persistent state (survives hibernate/resume)
+  bootstrap.ts                      — install/clone/build commands
 
-- Lifecycle metadata (state, PID, start/end time, exit code, restart history)
-- Per-process log buffers (1000 lines each)
-- State-change events broadcast to all connected clients
+  server/
+    context.ts                      — shared server context + init frame construction
+    handlers/
+      index.ts                      — action handler registry (routes WS actions)
+      filesystem.ts                 — file operations (readFile, writeFile, etc.)
+      shell.ts                      — shell command execution
+      pty.ts                        — PTY terminal sessions
+    states/
+      EditorStateManager.ts         — code editor tabs + expanded dirs
+      SpecEditorStateManager.ts     — spec editor tabs
+      FileTreeManager.ts            — code file tree (lazy, expandedDirs-gated)
+      SpecFileTreeManager.ts        — spec file tree (always fully expanded)
+      _helpers/
+        getProjectHasCode.ts        — derives projectHasCode from manifest
+    server/
+      BroadcastBatcher.ts           — batched WS event delivery (100ms flush)
+      HmrRelay.ts                   — HMR WebSocket relay with buffering
 
-Process types: `service` (long-lived), `task` (bootstrap one-shot),
-`shell` (ad-hoc commands), `system` (C&C server logs).
+  lsp/
+    client.ts                       — language server JSON-RPC multiplexer
+    sidecar.ts                      — language server HTTP API for remy
 
-### Editor State
+  processes/
+    ProcessRegistry.ts              — unified process metadata + per-process logs
+    ProcessManager.ts               — long-lived child process lifecycle
+    ResourceMonitor.ts              — memory/CPU metrics collection
+    fileWatcher.ts                  — chokidar file watcher
+    agent/index.ts                  — remy agent process management
+    tunnel/
+      index.ts                      — dev tunnel process management
+      events.ts                     — tunnel NDJSON event parser
+    devServer/index.ts              — dev server process management
 
-The server owns editor **tab state** — which files are open, their
-order, and which tab is active. The frontend renders tabs from this
-state and sends actions to mutate it (`openFile`, `closeFile`,
-`setActiveTab`, `reorderTabs`). Both user actions and the remy agent
-can manipulate tabs.
-
-The server does NOT manage buffer content, cursor position, undo
-history, or selections — those live in Monaco on the frontend. The
-filesystem is the source of truth for file content; the server manages
-the workspace layout.
-
-Tabs come in two flavors:
-- **Preview tabs** (`isPreview: true`) — single-click in file tree.
-  Replaced by the next preview-open (only one preview tab at a time).
-- **Pinned tabs** (`isPreview: false`) — double-click or explicit open.
-  Stay open until explicitly closed.
-
-Tab state persists across WebSocket reconnects (sent in the init frame)
-and across sandbox hibernate/resume (written to `.sandbox-state.json`).
-Tabs are automatically updated when files are deleted or renamed.
-
-### Logging
-
-All logging goes through a centralized logger with levels (`debug`,
-`info`, `warn`, `error`). Set `LOG_LEVEL` env var to control verbosity
-(default: `info`). Logs flow into the process registry and are
-broadcast to WebSocket clients as batched `processOutput` events.
+  utils/
+    paths.ts                        — shared path utilities
+```
 
 ## Connecting from the Frontend
 
@@ -76,13 +80,28 @@ broadcast to WebSocket clients as batched `processOutput` events.
 const ws = new WebSocket(`wss://${cncDomain}/ws?token=${sandboxToken}`);
 ```
 
-`cncDomain` and `sandboxToken` come from the platform API when a sandbox
-session is started.
+`cncDomain` and `sandboxToken` come from the platform API when a sandbox session is started.
 
-### 2. Send requests
+### 2. Message types
 
-Every request has a `requestId` (client-generated), an `action`, and
-`params`. The server responds with the same `requestId`.
+Every incoming WebSocket message is JSON. There are three types:
+
+```typescript
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.requestId) {
+    handleResponse(msg);        // reply to a request you sent
+  } else if (msg.batch) {
+    handleBatchedEvent(msg);    // batched: processOutput, processStateChanged
+  } else if (msg.event) {
+    handleEvent(msg);           // single pushed event
+  }
+};
+```
+
+### 3. Send requests
+
+Every request has a `requestId` (client-generated), an `action`, and `params`. The server responds with the same `requestId`.
 
 ```typescript
 function send(ws, action, params) {
@@ -101,665 +120,312 @@ function send(ws, action, params) {
 }
 ```
 
-### 3. Handle the initial frame
+### 4. Handle the init frame
 
-The first message on connect is an `init` event with everything you
-need to bootstrap the UI — no round-trips required:
+The first message on connect is an `init` event with everything needed to bootstrap the UI — no round-trips required:
 
 ```json
 {
   "event": "init",
   "status": "ready",
   "previewAvailable": true,
-  "app": {
-    "appId": "7c4d99f7-...",
-    "name": "Haiku Generator",
-    "methods": [{ "id": "generate-haiku", "name": "Generate Haiku", "path": "...", "export": "..." }],
-    "tables": [{ "path": "...", "export": "Haikus" }],
-    "interfaces": [{ "type": "web", "path": "dist/interfaces/web/web.json" }]
-  },
-  "fileTree": [
-    {
-      "name": "dist", "path": "dist", "type": "directory", "size": 160, "modified": "...",
-      "children": [...]
-    },
-    { "name": "mindstudio.json", "path": "mindstudio.json", "type": "file", "size": 1073, "modified": "..." }
-  ],
-  "chatHistory": [
-    { "role": "user", "content": "add a delete method for haikus" },
-    { "role": "assistant", "content": "I'll update the table schema.", "toolCalls": [...] }
-  ],
-  "processes": [
-    { "name": "devServer", "type": "service", "state": "running", "pid": 12345, "startedAt": 1710000000000, ... },
-    { "name": "tunnel", "type": "service", "state": "running", "pid": 12346, ... },
-    { "name": "agent", "type": "service", "state": "running", "pid": 12347, ... },
-    { "name": "bootstrap:npm-install", "type": "task", "state": "completed", "exitCode": 0, "duration": 4523, ... }
-  ],
-  "outputLog": [
-    { "process": "system", "stream": "stdout", "line": "[cnc] Server listening on port 4387", "ts": 1710000000000 },
-    { "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms", "ts": 1710000000100 }
-  ],
-  "editorState": {
-    "tabs": [
-      { "path": "src/App.tsx", "isPreview": false },
-      { "path": "mindstudio.json", "isPreview": true }
-    ],
-    "activeTab": "src/App.tsx"
-  }
+  "app": { "appId": "...", "name": "...", "methods": [...], "tables": [...], "interfaces": [...] },
+  "fileTree": [...],
+  "specFileTree": [...],
+  "chatHistory": [...],
+  "processes": [...],
+  "outputLog": [...],
+  "editorState": { "tabs": [...], "activeTab": "...", "expandedDirs": [...] },
+  "specEditorState": { "tabs": [...], "activeTab": "..." },
+  "projectHasCode": false,
+  "agentActivity": { "busy": false, "fileOps": [] },
+  "ptySessionIds": []
 }
 ```
 
-| Field | Contents |
-|-------|----------|
-| `status` | Server status: `"bootstrapping"`, `"ready"`, or `"error"` |
-| `previewAvailable` | Whether the preview proxy is ready |
-| `app` | Parsed `mindstudio.json` — app name, methods, tables, interfaces |
-| `fileTree` | Recursive file tree (3 levels deep), directories first, alphabetical. Excludes `node_modules`, `.git`, `.vite`. |
-| `chatHistory` | Agent conversation history fetched from remy. Empty array if agent isn't running or no messages yet. This is the raw LLM-level message format from remy's session. |
-| `processes` | All tracked processes with lifecycle metadata (see Process Registry above) |
-| `outputLog` | Merged log across all processes, sorted by timestamp (last 5000 lines) |
-| `editorState` | Open tabs and active tab (see Editor State below) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `"bootstrapping" \| "ready" \| "error"` | Server lifecycle status |
+| `previewAvailable` | `boolean` | Whether the preview proxy is ready |
+| `app` | `AppConfig` | Parsed `mindstudio.json` |
+| `fileTree` | `TreeEntry[]` | Code file tree (based on expanded dirs) |
+| `specFileTree` | `TreeEntry[]` | Spec file tree (`src/` — always fully expanded) |
+| `chatHistory` | `Message[]` | Agent conversation history from remy |
+| `processes` | `ProcessInfo[]` | All tracked processes |
+| `outputLog` | `ProcessLogEntry[]` | Merged log (last 5000 lines) |
+| `editorState` | `EditorState` | Code editor tabs + active tab + expanded dirs |
+| `specEditorState` | `SpecEditorState` | Spec editor tabs + active tab |
+| `projectHasCode` | `boolean` | Whether manifest declares methods or interfaces |
+| `agentActivity` | `AgentActivity` | Current agent file operations |
+| `ptySessionIds` | `string[]` | Active PTY terminal sessions |
 
-Each tree entry has `name`, `path` (relative), `type`, `size`, `modified`,
-and `children` (for directories within the depth limit). Use `listDir`
-to lazily load deeper levels.
+## Actions (Client → Server)
 
-### 4. Listen for pushed events
+### Filesystem
 
-The server broadcasts events that have an `event` field (no `requestId`).
-Filter these from responses:
+| Action | Params | Description |
+|--------|--------|-------------|
+| `readFile` | `{ path }` | Read file contents. Returns `{ content, encoding }` |
+| `writeFile` | `{ path, content }` | Write/create a file. Parent dirs created automatically |
+| `deleteFile` | `{ path }` | Delete a file or directory (recursive) |
+| `renameFile` | `{ oldPath, newPath }` | Move or rename a file |
+| `shell` | `{ command, cwd?, timeout? }` | Run a shell command. Returns `{ exitCode, stdout, stderr }` |
+
+### Code Editor
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `openFile` | `{ path, preview? }` | Open a tab. `preview: true` = replaceable single-click tab |
+| `closeFile` | `{ path }` | Close a tab |
+| `setActiveTab` | `{ path }` | Switch active tab |
+| `reorderTabs` | `{ paths }` | Reorder tabs (drag-and-drop) |
+| `expandDir` | `{ path }` | Expand a directory in the file tree |
+| `collapseDir` | `{ path }` | Collapse a directory |
+| `toggleDir` | `{ path }` | Toggle a directory's expanded state |
+
+### Spec Editor
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `specOpenFile` | `{ path, preview? }` | Open a tab in the spec editor |
+| `specCloseFile` | `{ path }` | Close a spec tab |
+| `specSetActiveTab` | `{ path }` | Switch active spec tab |
+
+### Agent
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `agentMessage` | `{ text, attachments? }` | Send a message to the agent. Streams response as events |
+| `agentCancel` | `{}` | Cancel current agent turn |
+| `agentClear` | `{}` | Clear conversation, start fresh session |
+
+### Processes
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `getProcesses` | `{}` | Get all tracked processes |
+| `restartProcess` | `{ name }` | Restart a process |
+| `getProcessLog` | `{ name }` | Get per-process log buffer (up to 1000 lines) |
+| `getResources` | `{}` | Get memory/CPU metrics snapshot |
+
+### Tunnel
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `tunnelRunScenario` | `{ scenarioId }` | Run a scenario (truncate + seed + impersonate) |
+| `tunnelSyncSchema` | `{}` | Re-sync table definitions from disk |
+| `tunnelListScenarios` | `{}` | Request current scenario list |
+| `tunnelImpersonate` | `{ roles }` | Set role overrides for method execution |
+| `tunnelClearImpersonation` | `{}` | Clear role overrides |
+| `tunnelListRoles` | `{}` | Request available roles |
+
+### PTY
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `ptyCreate` | `{ cols?, rows?, cwd? }` | Create a new terminal session |
+| `ptyWrite` | `{ sessionId, data }` | Write to a terminal |
+| `ptyResize` | `{ sessionId, cols, rows }` | Resize a terminal |
+| `ptyClose` | `{ sessionId }` | Close a terminal session |
+| `ptyGetScrollback` | `{ sessionId }` | Get terminal scrollback buffer |
+
+## Events (Server → Client)
+
+### File System
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `fileChanged` | `{ path, changeType }` | File created/modified/deleted (by agent, git, etc.) |
+| `fileTreeChanged` | `{ fileTree }` | Code file tree updated (structural changes) |
+| `specFileTreeChanged` | `{ specFileTree }` | Spec file tree updated (`src/` structural changes) |
+| `manifestChanged` | `{ app }` | `mindstudio.json` changed — updated AppConfig |
+
+### Editor State
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `editorStateChanged` | `{ editorState }` | Code editor tabs/active changed. **Replace local state entirely.** |
+| `specEditorStateChanged` | `{ specEditorState }` | Spec editor tabs/active changed. **Replace local state entirely.** |
+| `projectHasCodeChanged` | `{ projectHasCode }` | `projectHasCode` flag changed (compiler added methods/interfaces) |
+
+### Agent
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `agentReady` | | Agent initialized and ready |
+| `agentThinking` | `{ text }` | Internal reasoning (streaming chunks) |
+| `agentText` | `{ text }` | Visible response text (streaming chunks) |
+| `agentToolStart` | `{ id, name, input }` | Tool execution started |
+| `agentToolDone` | `{ id, name, result, isError }` | Tool execution completed |
+| `agentTurnDone` | | Agent finished responding |
+| `agentTurnCancelled` | | Turn cancelled (via `agentCancel`) |
+| `agentError` | `{ error }` | Agent error |
+| `agentSessionRestored` | `{ messageCount }` | Previous session restored on startup |
+| `agentSessionCleared` | | Session cleared (via `agentClear`) |
+| `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` |
+
+### Processes (batched)
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `processOutput` | `{ batch }` | Log lines from tracked processes. Batched every 100ms |
+| `processStateChanged` | `{ batch }` | Process state transitions. Batched every 100ms |
+| `resourceSnapshot` | `{ timestamp, container, processes }` | Memory/CPU metrics (every 5s) |
+
+### Tunnel
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `tunnelEvent` | `{ event, ... }` | All tunnel events forwarded as-is |
+
+Key tunnel events: `session-started` (enable preview, get scenarios), `schema-synced`, `scenario-start`, `scenario-complete`, `impersonated`, `roles-list`, `method-start`, `method-complete`, `connection-warning`, `connection-restored`, `session-expired`, `error`.
+
+### Bootstrap
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `bootstrapProgress` | `{ step, message }` | Bootstrap status updates. Steps: `installTunnel`, `installAgent`, `installLsp`, `cloneApp`, `installDeps`, `devServer`, `tunnel`, `agent`, `ready`, `error` |
+
+### PTY
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `ptyOutput` | `{ sessionId, data }` | Terminal output |
+| `ptyClosed` | `{ sessionId, exitCode }` | Terminal session closed |
+
+## Editor State
+
+The server owns all editor state. The frontend renders it and sends actions to mutate it.
+
+### Code editor state
 
 ```typescript
-ws.addEventListener('message', (event) => {
-  const msg = JSON.parse(event.data);
-  if (msg.event) {
-    // Pushed event — handle by type
-  } else if (msg.requestId) {
-    // Response to a request
-  }
+{
+  tabs: Array<{ path: string; isPreview: boolean }>;
+  activeTab: string | null;
+  expandedDirs: string[];
+}
+```
+
+- **Preview tabs** (`isPreview: true`) — single-click in file tree. Replaced by the next preview-open.
+- **Pinned tabs** (`isPreview: false`) — double-click or explicit open. Stay open until closed.
+- **Expanded dirs** — paths of expanded directories in the file tree.
+
+### Spec editor state
+
+```typescript
+{
+  tabs: Array<{ path: string; isPreview: boolean }>;
+  activeTab: string | null;
+}
+```
+
+Same tab semantics, no expanded dirs (spec sidebar is flat sections).
+
+### `projectHasCode`
+
+Derived from the manifest — `true` when methods or interfaces are declared. Sent in the init frame and via `projectHasCodeChanged` events. The frontend uses this to control whether the Code view toggle is enabled.
+
+### State flow
+
+1. On init, replace local state entirely with the init frame values
+2. Send actions to mutate (`openFile`, `closeFile`, etc.)
+3. Listen for `editorStateChanged` / `specEditorStateChanged` — always replace local state with the broadcast
+4. Both user actions and the agent can trigger state changes
+
+## TypeScript Language Server
+
+### WebSocket connection
+
+```
+wss://{cncDomain}/lsp
+```
+
+No auth token required. Carries raw JSON-RPC (Language Server Protocol) messages.
+
+### Monaco setup
+
+```typescript
+import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
+import { MonacoLanguageClient } from 'monaco-languageclient';
+import { CloseAction, ErrorAction } from 'vscode-languageclient';
+
+// 1. Disable Monaco's built-in TypeScript worker
+monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+  noSemanticValidation: true,
+  noSyntaxValidation: true,
 });
+
+// 2. Connect
+const ws = new WebSocket(`wss://${cncDomain}/lsp`);
+ws.onopen = () => {
+  const socket = toSocket(ws);
+  const reader = new WebSocketMessageReader(socket);
+  const writer = new WebSocketMessageWriter(socket);
+
+  // 3. Create language client
+  const client = new MonacoLanguageClient({
+    name: 'TypeScript Language Client',
+    clientOptions: {
+      documentSelector: [
+        { scheme: 'file', language: 'typescript' },
+        { scheme: 'file', language: 'typescriptreact' },
+        { scheme: 'file', language: 'javascript' },
+        { scheme: 'file', language: 'javascriptreact' },
+      ],
+      errorHandler: {
+        error: () => ({ action: ErrorAction.Continue }),
+        closed: () => ({ action: CloseAction.Restart }),
+      },
+    },
+    connectionProvider: {
+      get: () => Promise.resolve({ reader, writer }),
+    },
+  });
+
+  client.start();
+};
 ```
 
-**Note:** `processOutput` and `processStateChanged` events are batched —
-they arrive as `{ event: "...", batch: [...] }` with an array of entries,
-flushed every 100ms. All other events are sent individually.
+### File URIs
 
-## Actions
+The language server uses `file://` URIs rooted at the workspace:
 
-### `listDir`
-
-List directory contents.
-
-```json
-{ "requestId": "...", "action": "listDir", "params": { "path": "." } }
+```typescript
+const WORKSPACE_DIR = '/home/vercel-sandbox/workspace';
+const uri = monaco.Uri.parse(`file://${WORKSPACE_DIR}/${relativePath}`);
+const model = monaco.editor.createModel(content, 'typescript', uri);
 ```
 
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "entries": [
-      { "name": "src", "type": "directory", "size": 160, "modified": "2026-03-13T..." },
-      { "name": "package.json", "type": "file", "size": 432, "modified": "2026-03-13T..." }
-    ]
-  }
-}
+### Available features
+
+Autocomplete, diagnostics (pushed automatically), hover, go-to-definition, find references, rename, code actions, signature help, document symbols.
+
+### Required packages
+
+```bash
+npm install monaco-languageclient vscode-ws-jsonrpc
 ```
-
-### `readFile`
-
-Read file contents. Text files return `encoding: "utf-8"`, binary files
-return base64.
-
-```json
-{ "requestId": "...", "action": "readFile", "params": { "path": "src/App.tsx" } }
-```
-
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "content": "import React from 'react';\n...",
-    "encoding": "utf-8"
-  }
-}
-```
-
-### `writeFile`
-
-Write or create a file. Parent directories are created automatically.
-
-```json
-{ "requestId": "...", "action": "writeFile", "params": { "path": "src/App.tsx", "content": "..." } }
-```
-
-### `deleteFile`
-
-Delete a file or directory (recursive).
-
-```json
-{ "requestId": "...", "action": "deleteFile", "params": { "path": "src/old.ts" } }
-```
-
-### `renameFile`
-
-Move or rename a file.
-
-```json
-{ "requestId": "...", "action": "renameFile", "params": { "oldPath": "src/a.ts", "newPath": "src/b.ts" } }
-```
-
-### `search`
-
-Search file contents using ripgrep (falls back to grep).
-
-```json
-{
-  "requestId": "...",
-  "action": "search",
-  "params": {
-    "query": "useState",
-    "glob": "*.tsx",
-    "caseSensitive": false,
-    "maxResults": 50
-  }
-}
-```
-
-`glob` and `caseSensitive` are optional. `maxResults` defaults to 100.
-Results always exclude `node_modules/`, `.git/`, and `.vite/`.
-
-### `shell`
-
-Run an arbitrary shell command. Tracked as a `shell` process in the
-registry (visible in `getProcesses`, auto-removed after 5 minutes).
-
-```json
-{
-  "requestId": "...",
-  "action": "shell",
-  "params": {
-    "command": "git status --porcelain",
-    "timeout": 10000
-  }
-}
-```
-
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "exitCode": 0,
-    "stdout": " M src/App.tsx\n",
-    "stderr": ""
-  }
-}
-```
-
-`timeout` is in milliseconds, defaults to 30000. `cwd` is optional
-(relative to workspace root). While the command runs, stdout/stderr
-lines are streamed as batched `processOutput` events.
-
-### `agentMessage`
-
-Send a message to the AI coding agent. Response is an immediate ack —
-the agent's output streams as pushed events (see below).
-
-```json
-{ "requestId": "...", "action": "agentMessage", "params": { "text": "add a delete method for haikus" } }
-```
-
-Then listen for `agentThinking`, `agentText`, `agentToolStart`,
-`agentToolDone`, and `agentTurnDone` events.
-
-### `agentCancel`
-
-Cancel the current agent turn. Aborts the in-progress response
-gracefully — partial output is saved to the session.
-
-```json
-{ "requestId": "...", "action": "agentCancel", "params": {} }
-```
-
-Listen for `agentTurnCancelled` to confirm.
-
-### `agentClear`
-
-Clear the agent's conversation history and start a fresh session.
-
-```json
-{ "requestId": "...", "action": "agentClear", "params": {} }
-```
-
-Listen for `agentSessionCleared` to confirm.
-
-### `getProcesses`
-
-Get all tracked processes with their current state and metadata.
-
-```json
-{ "requestId": "...", "action": "getProcesses", "params": {} }
-```
-
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "processes": [
-      {
-        "name": "devServer",
-        "type": "service",
-        "command": "npm run dev",
-        "state": "running",
-        "startedAt": 1710000000000,
-        "endedAt": null,
-        "duration": null,
-        "exitCode": null,
-        "signal": null,
-        "restartCount": 0,
-        "restartHistory": [],
-        "pid": 12345
-      }
-    ]
-  }
-}
-```
-
-### `getProcessLog`
-
-Get the per-process log buffer (up to 1000 lines).
-
-```json
-{ "requestId": "...", "action": "getProcessLog", "params": { "name": "tunnel" } }
-```
-
-Response:
-```json
-{
-  "requestId": "...",
-  "success": true,
-  "data": {
-    "log": [
-      { "stream": "stdout", "line": "{\"event\":\"session-started\",...}", "ts": 1710000000000 },
-      { "stream": "stderr", "line": "[INFO] api POST /dev/manage/start → 200 (142ms)", "ts": 1710000000001 }
-    ]
-  }
-}
-```
-
-### `tunnelRunScenario`
-
-Run a scenario by ID. Truncates all tables, executes the seed function,
-and applies the scenario's roles. Listen for `tunnelEvent` with
-`scenario-start` and `scenario-complete` events.
-
-```json
-{ "requestId": "...", "action": "tunnelRunScenario", "params": { "scenarioId": "sample-haikus" } }
-```
-
-### `tunnelSyncSchema`
-
-Re-sync table definitions from disk (re-reads `mindstudio.json`).
-Listen for `tunnelEvent` with `schema-synced`.
-
-```json
-{ "requestId": "...", "action": "tunnelSyncSchema", "params": {} }
-```
-
-### `tunnelListScenarios`
-
-Request the current list of scenarios (re-reads `mindstudio.json`).
-Listen for `tunnelEvent` with `scenarios-list`.
-
-```json
-{ "requestId": "...", "action": "tunnelListScenarios", "params": {} }
-```
-
-### `tunnelImpersonate`
-
-Set a role override. Subsequent method executions will use these roles
-instead of the session's default. Listen for `tunnelEvent` with
-`impersonated`.
-
-```json
-{ "requestId": "...", "action": "tunnelImpersonate", "params": { "roles": ["ap", "admin"] } }
-```
-
-### `tunnelClearImpersonation`
-
-Clear the role override, reverting to the session's default roles.
-Listen for `tunnelEvent` with `impersonated` (roles will be `null`).
-
-```json
-{ "requestId": "...", "action": "tunnelClearImpersonation", "params": {} }
-```
-
-### `tunnelListRoles`
-
-Request the available roles from `mindstudio.json`. Listen for
-`tunnelEvent` with `roles-list`.
-
-```json
-{ "requestId": "...", "action": "tunnelListRoles", "params": {} }
-```
-
-### `openFile`
-
-Open a file as a tab in the editor. If the file is already open,
-activates it. Pass `preview: true` for a preview tab (replaced by the
-next preview-open, like single-click in a file tree). Omit or pass
-`false` for a pinned tab (like double-click).
-
-```json
-{ "requestId": "...", "action": "openFile", "params": { "path": "src/App.tsx", "preview": false } }
-```
-
-### `closeFile`
-
-Close a tab. If the closed tab was active, an adjacent tab is activated.
-
-```json
-{ "requestId": "...", "action": "closeFile", "params": { "path": "src/App.tsx" } }
-```
-
-### `setActiveTab`
-
-Switch the active tab without opening or closing anything.
-
-```json
-{ "requestId": "...", "action": "setActiveTab", "params": { "path": "src/App.tsx" } }
-```
-
-### `reorderTabs`
-
-Reorder tabs (e.g. after drag-and-drop). Pass the full array of tab
-paths in the new order.
-
-```json
-{ "requestId": "...", "action": "reorderTabs", "params": { "paths": ["mindstudio.json", "src/App.tsx", "src/tables/haikus.ts"] } }
-```
-
-## Pushed Events
-
-Events are broadcast to all connected clients. They have an `event`
-field and no `requestId`.
-
-### `processOutput` (batched)
-
-Lines of stdout/stderr from tracked processes. Delivered as batched
-arrays every 100ms.
-
-```json
-{
-  "event": "processOutput",
-  "batch": [
-    { "process": "devServer", "stream": "stdout", "line": "VITE v7.3.1 ready in 320ms", "ts": 1710000000000 },
-    { "process": "system", "stream": "stdout", "line": "[cnc] Bootstrap complete", "ts": 1710000000005 }
-  ]
-}
-```
-
-`process` can be any registered name: `devServer`, `tunnel`, `agent`,
-`system` (C&C server logs), `bootstrap:*` (task names), `shell:*`
-(ad-hoc command IDs).
-
-### `processStateChanged` (batched)
-
-A process transitioned state. Delivered as batched arrays.
-
-```json
-{
-  "event": "processStateChanged",
-  "batch": [
-    {
-      "name": "devServer",
-      "type": "service",
-      "prevState": "starting",
-      "state": "running",
-      "pid": 12345,
-      "restartCount": 0,
-      "timestamp": 1710000000000
-    }
-  ]
-}
-```
-
-States: `starting`, `running`, `crashed`, `stopped`, `completed`.
-
-### `fileChanged`
-
-A file was created, modified, or deleted outside of the WebSocket
-(e.g., by git, npm install, or the dev server). Not fired for changes
-made via `writeFile` / `deleteFile` / `renameFile` actions.
-
-```json
-{ "event": "fileChanged", "path": "src/App.tsx", "changeType": "modified" }
-```
-
-`changeType` is `"created"`, `"modified"`, or `"deleted"`.
-
-### `editorStateChanged`
-
-The editor tab state changed (tab opened, closed, reordered, or active
-tab switched). The payload contains the full editor state — replace
-your local state with it.
-
-```json
-{
-  "event": "editorStateChanged",
-  "editorState": {
-    "tabs": [
-      { "path": "src/App.tsx", "isPreview": false },
-      { "path": "src/tables/haikus.ts", "isPreview": true }
-    ],
-    "activeTab": "src/App.tsx"
-  }
-}
-```
-
-This event also fires when files are deleted or renamed (tabs are
-updated automatically), and can be triggered by the agent opening
-files for the user.
-
-### `tunnelEvent`
-
-A parsed JSON event from the dev tunnel's headless output. All tunnel
-stdout events are forwarded as-is with `event: "tunnelEvent"` added.
-
-```json
-{ "event": "tunnelEvent", "event": "session-started", "sessionId": "...", "proxyPort": 3835, "proxyUrl": "http://...", "scenarios": [...] }
-```
-
-**Lifecycle events:**
-- `starting` — tunnel initializing (`appId`, `name`)
-- `session-started` — platform session active (`sessionId`, `releaseId`, `branch`, `proxyPort`, `proxyUrl`, `webInterfaceUrl`, `scenarios`)
-- `stopping` — graceful shutdown initiated
-- `stopped` — cleanup complete, process exiting
-
-**Schema & data events:**
-- `schema-synced` — table schemas synced (`created`, `altered`, `errors`)
-- `scenario-start` — scenario being applied (`id`, `name`)
-- `scenario-complete` — scenario finished (`id`, `success`, `duration`, `roles`)
-- `scenarios-list` — response to `tunnelListScenarios` (`scenarios`)
-
-**Method execution events:**
-- `method-start` — method execution started (`id`, `method`)
-- `method-complete` — method execution finished (`id`, `success`, `duration`, `error?`)
-
-**Role impersonation events:**
-- `impersonated` — role override applied (`roles` array) or cleared (`roles: null`)
-- `roles-list` — response to `tunnelListRoles` (`roles: [{ id, name }]`)
-
-**Connection events:**
-- `connection-warning` — lost platform connection (`message`)
-- `connection-restored` — reconnected
-- `session-expired` — platform expired the session (tunnel exits with code 1)
-
-**Error events:**
-- `error` — fatal tunnel error (`message`)
-
-**Scenario discovery:** The `session-started` event includes a
-`scenarios` array with `{ id, name, description, roles }` for each
-available scenario. Use this to populate a scenario picker UI. Call
-`tunnelListScenarios` to refresh if `mindstudio.json` changes.
-
-**Role impersonation:** Use `tunnelListRoles` to get available roles,
-then `tunnelImpersonate` to set overrides. Method executions will run
-with the impersonated roles until `tunnelClearImpersonation` is called.
-The `scenario-complete` event also returns the roles applied by that
-scenario.
-
-### `bootstrapProgress`
-
-Status updates during sandbox bootstrap.
-
-```json
-{ "event": "bootstrapProgress", "step": "installDeps", "message": "Installing dependencies..." }
-```
-
-Steps in order: `installTunnel`, `installAgent`, `installLsp`, `cloneApp`,
-`installDeps`, `devServer`, `tunnel`, `agent`, `ready`, or `error`.
-
-### Agent Events
-
-These stream while the agent is processing a message (after
-`agentMessage` action). They map 1:1 from remy's headless protocol.
-
-| Event | Fields | Description |
-|-------|--------|-------------|
-| `agentReady` | | Agent process initialized and ready for messages |
-| `agentThinking` | `text` | Agent's internal reasoning (streaming chunks) |
-| `agentText` | `text` | Agent's visible response text (streaming chunks) |
-| `agentToolStart` | `id`, `name`, `input` | Agent started executing a tool |
-| `agentToolDone` | `id`, `name`, `result`, `isError` | Agent tool execution completed |
-| `agentTurnDone` | | Agent finished responding to a message |
-| `agentTurnCancelled` | | Agent turn was cancelled (via `agentCancel`) |
-| `agentError` | `error` | Agent encountered an error |
-| `agentSessionRestored` | `messageCount` | Agent restored a previous session on startup |
-| `agentSessionCleared` | | Agent session was cleared (via `agentClear`) |
-
-## LSP HTTP Sidecar (port 4388)
-
-An internal HTTP API that wraps the TypeScript language server for the
-remy agent. Same language server instance as Monaco — shared via the
-LspClient multiplexer.
-
-All endpoints accept POST with JSON body. File paths are relative to
-the workspace root. Line/column numbers are 1-indexed.
-
-| Endpoint | Request | Response |
-|----------|---------|----------|
-| `/diagnostics` | `{ file }` | `{ diagnostics: [{ file, line, column, severity, message, code }] }` |
-| `/definition` | `{ file, line, column }` | `{ definitions: [{ file, line, column }] }` |
-| `/references` | `{ file, line, column }` | `{ references: [{ file, line, column }] }` |
-| `/hover` | `{ file, line, column }` | `{ type, documentation }` |
-| `/symbols` | `{ file }` | `{ symbols: [{ name, kind, line }] }` |
-
-The `/diagnostics` endpoint waits up to 2s for the language server to
-push diagnostics after opening/updating the file. File changes from
-the file watcher automatically sync to the language server.
-
-See `LSP-FRONTEND-SPEC.md` for Monaco WebSocket integration.
 
 ## Live Preview
-
-The preview iframe points at the same domain as the C&C server, but
-any path other than `/ws`, `/lsp`, and `/health`:
 
 ```html
 <iframe src={`https://${cncDomain}/`} />
 ```
 
-This is reverse-proxied to the dev server (via the tunnel proxy, which
-injects `window.__MINDSTUDIO__` for the frontend SDK). The preview
-supports HMR — edits to files trigger hot reload automatically.
-
-The preview is available once the tunnel emits `session-started` (watch
-for the `tunnelEvent` pushed event). Before that, requests return a
-503 "Preview starting..." page.
+Reverse-proxied to the dev server. Available once `tunnelEvent` with `session-started` arrives. Before that, returns 503. Supports HMR.
 
 ## Scenarios & Roles
 
-MindStudio Apps v2 have **roles** (app-level access control) and
-**scenarios** (seed scripts that set up the dev database into a specific
-state). Both are declared in `mindstudio.json` and managed through the
-dev tunnel.
+**Roles** are string identifiers (e.g., `"admin"`, `"ap"`) checked at runtime via `auth.requireRole()`. During development, use `tunnelImpersonate` to set role overrides.
 
-### Roles
-
-Roles are simple string identifiers (e.g. `"admin"`, `"ap"`,
-`"requester"`) that control what a user can see and do within an app.
-Methods check roles at runtime via `auth.requireRole()` and
-`auth.hasRole()` from the `@mindstudio-ai/agent` SDK.
-
-During development, **role impersonation** lets you see the app from
-any role's perspective without switching accounts. Use
-`tunnelImpersonate` to set role overrides — subsequent method executions
-will run with those roles. Use `tunnelClearImpersonation` to revert.
-Use `tunnelListRoles` to discover available roles.
-
-### Scenarios
-
-Scenarios solve the problem of testing role-based, stateful UIs. Instead
-of manually creating data through the app every time, you run a scenario
-and get a repeatable, well-defined starting point.
-
-A scenario is a TypeScript function that seeds the database using the
-same `@mindstudio-ai/agent` SDK that methods use (`db.push()`, etc.).
-Each scenario declares which roles to impersonate after seeding, so you
-immediately see the app from the right perspective.
-
-**Running a scenario** (via `tunnelRunScenario`) does three things:
-1. **Truncate** — clears all tables (blank canvas)
-2. **Seed** — executes the scenario function (creates data)
-3. **Impersonate** — sets the scenario's roles
-
-Scenarios are declared in `mindstudio.json`:
-
-```json
-{
-  "scenarios": [
-    {
-      "id": "ap-overdue-invoices",
-      "name": "AP: Overdue Invoices",
-      "description": "AP user with two invoices past due date",
-      "path": "dist/methods/.scenarios/apOverdueInvoices.ts",
-      "export": "apOverdueInvoices",
-      "roles": ["ap"]
-    }
-  ]
-}
-```
-
-The `session-started` tunnel event includes the full scenario list for
-populating a picker UI. Use `tunnelListScenarios` to refresh if the
-manifest changes.
-
-**Use cases:** testing role-based UI visibility, demo data for
-stakeholders, deterministic starting points for development, visual
-regression testing across roles and data states.
+**Scenarios** are seed scripts that set up the dev database. Running a scenario (`tunnelRunScenario`) truncates all tables, executes the seed function, and applies the scenario's roles. Scenarios are declared in `mindstudio.json` and listed in the `session-started` tunnel event.
 
 ## Health Check
 
 ```
-GET /health
+GET /health → { "status": "ready", "proxyTarget": 3835 }
 ```
-
-Returns:
-```json
-{ "status": "bootstrapping", "proxyTarget": null }
-```
-
-`status` is `"bootstrapping"`, `"ready"`, or `"error"`.
-`proxyTarget` is the tunnel proxy port (number) once available, or `null`.
 
 ## Error Handling
 
@@ -768,68 +434,27 @@ Failed requests return:
 { "requestId": "...", "success": false, "error": "Path escapes workspace" }
 ```
 
-All file paths are relative to the workspace root. Paths that try to
-escape the workspace (e.g., `../../etc/passwd`) are rejected.
+All file paths are relative to the workspace root. Paths that escape the workspace are rejected.
 
 ## Environment Variables
 
-Required to start the server:
-
-| Var | Purpose |
-|-----|---------|
-| `GIT_REPO_URL` | App git repo to clone |
-| `MINDSTUDIO_API_KEY` | Developer's MindStudio API key (for tunnel + agent) |
-| `USER_ID` | Developer's user ID (for tunnel) |
-| `API_BASE_URL` | Platform API URL (default: `https://api.mindstudio.ai`) |
-| `PORT` | Server port (default: `4387`) |
-| `SANDBOX_TOKEN` | WebSocket auth token (optional, no auth if unset) |
-| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` (default: `info`) |
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `GIT_REPO_URL` | App git repo to clone | required |
+| `MINDSTUDIO_API_KEY` | Developer's API key (for tunnel + agent) | required |
+| `USER_ID` | Developer's user ID (for tunnel) | required |
+| `API_BASE_URL` | Platform API URL | `https://api.mindstudio.ai` |
+| `PORT` | Server port | `4387` |
+| `SANDBOX_TOKEN` | WebSocket auth token | none (no auth) |
+| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` | `info` |
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Run against the example app
 GIT_REPO_URL=test MINDSTUDIO_API_KEY=test USER_ID=test PORT=4387 npx tsx src/index.ts
-
-# Type-check
-npx tsc --noEmit
-
-# Build
-npm run build
+npx tsc --noEmit   # type-check
+npm run build       # compile
 ```
 
-The `example/` directory contains a sample MindStudio app (Haiku
-Generator) for local testing.
-
-## Project Structure
-
-```
-src/
-  index.ts              — entry point, orchestrates bootstrap + services
-  config.ts             — environment variable parsing
-  types.ts              — shared TypeScript types
-  logger.ts             — centralized logger with levels + onLog hook
-  state.ts              — persistent state (process snapshots to disk)
-  bootstrap.ts          — sync install/clone/build commands
-  server/
-    ws-server.ts        — HTTP + WebSocket server, actions, init frame
-    broadcast-batcher.ts — batched WS event delivery (100ms flush)
-    editor-state.ts     — server-owned tab state (open files, active tab)
-    handlers/
-      filesystem.ts     — file operations (listDir, readFile, writeFile, etc.)
-      search.ts         — ripgrep/grep search
-      shell.ts          — shell command execution
-  lsp/
-    client.ts           — language server JSON-RPC multiplexer
-    sidecar.ts          — language server HTTP API for remy
-  processes/
-    process-registry.ts — unified process metadata + per-process logs
-    process-manager.ts  — long-lived child process lifecycle
-    file-watcher.ts     — chokidar file watcher
-    tunnel-events.ts    — tunnel NDJSON event parser
-  utils/
-    paths.ts            — shared path utilities
-```
+The `example/` directory contains a sample MindStudio app for local testing.

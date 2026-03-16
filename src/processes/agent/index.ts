@@ -5,8 +5,21 @@
  * chat history retrieval, activity tracking, and WS action handlers.
  */
 
-import type { ProcessManager } from '../process-manager.js';
-import type { AgentActivity, AgentFileAction } from '../../types.js';
+import type { ProcessManager } from '../ProcessManager.js';
+import { projectHasCode } from '../../server/states/_helpers/getProjectHasCode.js';
+
+export type AgentFileAction = 'reading' | 'writing' | 'editing';
+
+export interface AgentFileOp {
+  toolCallId: string;
+  path: string;
+  action: AgentFileAction;
+}
+
+export interface AgentActivity {
+  busy: boolean;
+  fileOps: AgentFileOp[];
+}
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('agent');
@@ -19,6 +32,9 @@ const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
   writeFile: 'writing',
   editFile: 'editing',
   multiEdit: 'editing',
+  readSpec: 'reading',
+  writeSpec: 'writing',
+  editSpec: 'editing',
 };
 
 /** Maps remy's headless event names to our WebSocket event names. */
@@ -314,6 +330,7 @@ export function createAgentActions(
       log.info(`Sending message: ${text.slice(0, 100)}...`);
       send('message', {
         text,
+        projectHasCode: projectHasCode(),
         ...(attachments?.length ? { attachments } : {}),
       });
       return {};

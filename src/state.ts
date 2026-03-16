@@ -12,9 +12,18 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import type { ProcessSnapshot, EditorState } from './types.js';
-import type { ProcessRegistry } from './processes/process-registry.js';
-import type { EditorStateManager } from './server/editor-state.js';
+import type {
+  ProcessRegistry,
+  ProcessSnapshot,
+} from './processes/ProcessRegistry.js';
+import type {
+  EditorStateManager,
+  EditorState,
+} from './server/states/EditorStateManager.js';
+import type {
+  SpecEditorStateManager,
+  SpecEditorState,
+} from './server/states/SpecEditorStateManager.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('state');
@@ -22,6 +31,7 @@ const log = createLogger('state');
 interface SandboxState {
   processSnapshots: ProcessSnapshot[];
   editorState?: EditorState;
+  specEditorState?: SpecEditorState;
 }
 
 const FLUSH_DEBOUNCE_MS = 30_000;
@@ -29,6 +39,7 @@ const FLUSH_DEBOUNCE_MS = 30_000;
 let statePath: string = '/tmp/sandbox-state.json';
 let registry: ProcessRegistry | null = null;
 let editorManager: EditorStateManager | null = null;
+let specEditorManager: SpecEditorStateManager | null = null;
 let dirty = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -54,6 +65,7 @@ function flushSync(): void {
     const state: SandboxState = {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
+      specEditorState: specEditorManager?.getState(),
     };
     fsSync.writeFileSync(statePath, JSON.stringify(state), 'utf-8');
     dirty = false;
@@ -78,10 +90,12 @@ export function initState(
   workspaceDir: string,
   reg: ProcessRegistry,
   editor: EditorStateManager,
+  specEditor: SpecEditorStateManager,
 ): void {
   statePath = path.join(workspaceDir, '.sandbox-state.json');
   registry = reg;
   editorManager = editor;
+  specEditorManager = specEditor;
 }
 
 // --- Save / Restore ---
@@ -95,6 +109,7 @@ export async function saveState(): Promise<void> {
     const state: SandboxState = {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
+      specEditorState: specEditorManager?.getState(),
     };
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
@@ -119,6 +134,9 @@ export async function restoreState(): Promise<boolean> {
       registry.hydrate(saved.processSnapshots);
       if (saved.editorState && editorManager) {
         editorManager.hydrate(saved.editorState);
+      }
+      if (saved.specEditorState && specEditorManager) {
+        specEditorManager.hydrate(saved.specEditorState);
       }
       log.info(
         `Restored (${saved.processSnapshots.length} process snapshots) ← ${statePath}`,
