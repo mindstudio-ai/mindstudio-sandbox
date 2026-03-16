@@ -16,7 +16,11 @@ import {
 import { ProcessRegistry } from './processes/ProcessRegistry.js';
 import { ProcessManager } from './processes/ProcessManager.js';
 import { startTunnel, createTunnelActions } from './processes/tunnel/index.js';
-import { startAgent, createAgentActions } from './processes/agent/index.js';
+import {
+  startAgent,
+  createAgentActions,
+  sendToolResult,
+} from './processes/agent/index.js';
 import { startDevServer } from './processes/devServer/index.js';
 import { ResourceMonitor } from './processes/ResourceMonitor.js';
 import { BroadcastBatcher } from './server/server/BroadcastBatcher.js';
@@ -210,7 +214,13 @@ async function startServices(
     {
       broadcast,
       onEditsFinished: flushHmr,
-      onSetViewMode: setViewMode,
+      onExternalTool: (id, name, input) => {
+        if (name === 'setViewMode') {
+          setViewMode(input.mode as string);
+          sendToolResult(processManager, id, 'ok');
+        }
+        // promptUser: handled by frontend via promptUserResponse WS action
+      },
       onTurnDone: () => snapshotManager.scheduleSnapshot(),
     },
   );

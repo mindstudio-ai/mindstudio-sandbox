@@ -54,11 +54,32 @@ const EVENT_MAP: Record<string, string> = {
   session_cleared: 'agentSessionCleared',
 };
 
+/** Tools where the sandbox handles execution and sends results back to remy. */
+const EXTERNAL_TOOLS = new Set(['setViewMode', 'promptUser']);
+
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
   onEditsFinished?: () => void;
-  onSetViewMode?: (mode: string) => void;
+  onExternalTool?: (
+    id: string,
+    name: string,
+    input: Record<string, unknown>,
+  ) => void;
   onTurnDone?: () => void;
+}
+
+/** Send a tool result back to remy for an external tool call. */
+export function sendToolResult(
+  pm: ProcessManager,
+  id: string,
+  result: string,
+): void {
+  if (pm.getState('agent') !== 'running') {
+    log.error(`sendToolResult: agent not running (id=${id})`);
+    return;
+  }
+  log.info(`Sending tool_result for ${id}`);
+  pm.writeStdin('agent', JSON.stringify({ action: 'tool_result', id, result }));
 }
 
 // --- Agent activity tracking ---
@@ -171,21 +192,22 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
         onTurnEnd(cb);
       }
 
-      // Internal signals — don't show in chat
+      // editsFinished is an internal signal — don't show in chat
       if (event.name === 'editsFinished') {
         if (event.event === 'tool_done') {
           cb.onEditsFinished?.();
         }
         return;
       }
-      if (event.name === 'setViewMode') {
-        if (event.event === 'tool_start') {
-          const mode = (event.input as Record<string, unknown>)?.mode;
-          if (typeof mode === 'string') {
-            cb.onSetViewMode?.(mode);
-          }
-        }
-        return;
+
+      // External tools: sandbox handles them and sends results back to remy.
+      // Still broadcast to frontend (needed for promptUser UI, tool_done transitions).
+      if (EXTERNAL_TOOLS.has(event.name) && event.event === 'tool_start') {
+        cb.onExternalTool?.(
+          event.id,
+          event.name,
+          (event.input as Record<string, unknown>) ?? {},
+        );
       }
 
       const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;

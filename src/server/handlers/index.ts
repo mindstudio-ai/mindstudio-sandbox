@@ -8,6 +8,7 @@
 
 import { readFile, writeFile, deleteFile, renameFile } from './filesystem.js';
 import { shell } from './shell.js';
+import { sendToolResult } from '../../processes/agent/index.js';
 import {
   ptyCreate,
   ptyWrite,
@@ -165,6 +166,22 @@ export const handlers: Record<string, ActionHandler> = {
   setViewMode: async (p) => {
     const { mode } = p as { mode: string };
     setViewMode(mode);
+    return {};
+  },
+
+  // --- External tool responses ---
+  promptUserResponse: async (p) => {
+    const { id, answers } = p as {
+      id: string;
+      answers: Record<string, unknown>;
+    };
+    if (!id) {
+      throw new Error('Missing "id" parameter');
+    }
+    if (!ctx.processManager) {
+      throw new Error('Agent not running');
+    }
+    sendToolResult(ctx.processManager, id, JSON.stringify(answers));
     return {};
   },
 
