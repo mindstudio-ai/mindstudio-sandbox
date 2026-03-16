@@ -38,6 +38,9 @@ export interface ServerContext {
   projectHasCode: boolean;
   lspClient: LspClient | null;
   viewMode: ViewMode;
+  onFileChanged:
+    | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
+    | null;
 }
 
 const VALID_VIEW_MODES: ViewMode[] = ['intake', 'spec', 'code'];
@@ -75,6 +78,7 @@ export const ctx: ServerContext = {
   projectHasCode: false,
   lspClient: null,
   viewMode: 'intake',
+  onFileChanged: null,
 };
 
 // --- Init frame ---

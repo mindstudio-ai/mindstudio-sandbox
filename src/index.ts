@@ -256,9 +256,13 @@ function setupFileWatcher(
     }, 1000);
   }
 
-  log.info(`Starting file watcher on ${config.workspaceDir}`);
-
-  startWatcher(config.workspaceDir, (filePath, changeType) => {
+  // Shared handler for all file change events — called by both the
+  // file watcher (for external/user changes) and the writeFile/deleteFile/
+  // renameFile handlers (where watcher events are suppressed).
+  function handleFileChanged(
+    filePath: string,
+    changeType: 'created' | 'modified' | 'deleted',
+  ): void {
     broadcast('fileChanged', { path: filePath, changeType });
 
     if (changeType === 'modified' || changeType === 'created') {
@@ -293,6 +297,7 @@ function setupFileWatcher(
 
     if (changeType === 'deleted') {
       editorManager.onFileDeleted(filePath);
+      specEditorManager.onFileDeleted(filePath);
     }
 
     fileTreeManager.onFileChanged(filePath, changeType);
@@ -300,11 +305,14 @@ function setupFileWatcher(
     // Spec file tree updates
     if (filePath.startsWith('src/')) {
       specFileTreeManager.onFileChanged(filePath, changeType);
-      if (changeType === 'deleted') {
-        specEditorManager.onFileDeleted(filePath);
-      }
     }
-  });
+  }
+
+  // Expose so handlers can call it for suppressed writes
+  ctx.onFileChanged = handleFileChanged;
+
+  log.info(`Starting file watcher on ${config.workspaceDir}`);
+  startWatcher(config.workspaceDir, handleFileChanged);
 }
 
 // ---------------------------------------------------------------------------
