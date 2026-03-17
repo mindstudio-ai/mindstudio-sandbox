@@ -1,6 +1,0 @@
-{
-  "web": {
-    "devCommand": "npm run dev",
-    "devPort": 5173
-  }
-}
