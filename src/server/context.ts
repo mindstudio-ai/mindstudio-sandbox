@@ -11,6 +11,7 @@
 
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
+import { getSyncStatus } from '../syncStatus.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import type { BroadcastBatcher } from './server/BroadcastBatcher.js';
@@ -27,7 +28,14 @@ import {
 } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './handlers/pty.js';
 
-export type ViewMode = 'intake' | 'spec' | 'code';
+export type ViewMode =
+  | 'intake'
+  | 'preview'
+  | 'spec'
+  | 'code'
+  | 'databases'
+  | 'scenarios'
+  | 'logs';
 
 export interface ServerContext {
   status: ServerStatus;
@@ -47,9 +55,18 @@ export interface ServerContext {
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
+  onUserSave: ((path: string) => void) | null;
 }
 
-const VALID_VIEW_MODES: ViewMode[] = ['intake', 'spec', 'code'];
+const VALID_VIEW_MODES: ViewMode[] = [
+  'intake',
+  'preview',
+  'spec',
+  'code',
+  'databases',
+  'scenarios',
+  'logs',
+];
 
 /** Callback fired when viewMode changes — wired up by index.ts. */
 let onViewModeChanged: ((mode: ViewMode) => void) | null = null;
@@ -86,6 +103,7 @@ export const ctx: ServerContext = {
   lspClient: null,
   viewMode: 'intake',
   onFileChanged: null,
+  onUserSave: null,
 };
 
 // --- Init frame ---
@@ -125,6 +143,7 @@ export async function buildInitFrame(
     },
     projectHasCode: ctx.projectHasCode,
     viewMode: ctx.viewMode,
+    syncStatus: getSyncStatus(),
     pendingExternalTools: getPendingExternalTools(),
   };
 }
@@ -148,6 +167,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specEditorState: { tabs: [], activeTab: null },
     projectHasCode: ctx.projectHasCode,
     viewMode: ctx.viewMode,
+    syncStatus: getSyncStatus(),
     pendingExternalTools: getPendingExternalTools(),
   };
 }

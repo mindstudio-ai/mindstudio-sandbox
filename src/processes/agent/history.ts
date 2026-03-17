@@ -24,6 +24,11 @@ export function transformHistory(raw: unknown[]): unknown[] {
       continue;
     }
 
+    if (msg.hidden) {
+      // Internal prompt — skip from chat display
+      continue;
+    }
+
     if (msg.role === 'user') {
       const userMsg: Record<string, unknown> = {
         role: 'user',

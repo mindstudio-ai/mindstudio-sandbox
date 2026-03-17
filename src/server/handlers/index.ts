@@ -35,6 +35,7 @@ export const handlers: Record<string, ActionHandler> = {
     // so manually fire the shared handler. Use 'created' since
     // FileTreeManager ignores 'modified' — this could be a new file.
     ctx.onFileChanged?.(params.path, 'created');
+    ctx.onUserSave?.(params.path);
     return result;
   },
   deleteFile: async (p) => {

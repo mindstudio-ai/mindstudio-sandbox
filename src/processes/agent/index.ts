@@ -77,7 +77,11 @@ const EVENT_MAP: Record<string, string> = {
 };
 
 /** Tools where the sandbox handles execution and sends results back to remy. */
-const EXTERNAL_TOOLS = new Set(['setViewMode', 'promptUser']);
+const EXTERNAL_TOOLS = new Set([
+  'setViewMode',
+  'promptUser',
+  'clearSyncStatus',
+]);
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -345,6 +349,16 @@ export function createAgentActions(
           openFiles: editorState?.tabs.map((t) => t.path) ?? [],
           activeFile: editorState?.activeTab ?? null,
         },
+      });
+      return {};
+    },
+    agentSync: async () => {
+      log.info('Triggering spec/code sync');
+      send('message', {
+        text: '',
+        runCommand: 'sync',
+        projectHasCode: ctx.projectHasCode,
+        viewContext: { mode: ctx.viewMode, openFiles: [], activeFile: null },
       });
       return {};
     },

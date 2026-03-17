@@ -54,6 +54,13 @@ import {
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
 import { SnapshotManager } from './snapshot.js';
+import {
+  initSyncStatus,
+  getSyncStatus,
+  markSpecDirty,
+  markCodeDirty,
+  clearSyncStatus,
+} from './syncStatus.js';
 import type { AppConfig, WebConfig } from './types.js';
 
 const log = createLogger('cnc');
@@ -226,6 +233,11 @@ async function startServices(
         if (name === 'setViewMode') {
           setViewMode(input.mode as string);
           sendToolResult(processManager, id, 'ok');
+        } else if (name === 'clearSyncStatus') {
+          if (clearSyncStatus()) {
+            broadcast('syncStatusChanged', getSyncStatus());
+          }
+          sendToolResult(processManager, id, 'ok');
         }
         // promptUser: handled by frontend via promptUserResponse WS action
       },
@@ -303,6 +315,19 @@ function setupFileWatcher(
 
   // Expose so handlers can call it for suppressed writes
   ctx.onFileChanged = handleFileChanged;
+
+  // Track user saves for sync status
+  ctx.onUserSave = (filePath: string) => {
+    if (filePath.startsWith('src/')) {
+      if (markSpecDirty()) {
+        broadcast('syncStatusChanged', getSyncStatus());
+      }
+    } else if (filePath.startsWith('dist/')) {
+      if (markCodeDirty()) {
+        broadcast('syncStatusChanged', getSyncStatus());
+      }
+    }
+  };
 
   log.info(`Starting file watcher on ${config.workspaceDir}`);
   startWatcher(config.workspaceDir, handleFileChanged);
@@ -402,7 +427,10 @@ async function main(): Promise<void> {
     configureGit(config.workspaceDir);
     await snapshotManager.restore();
 
-    // 7. Read app config
+    // 7. Init sync status (after snapshot restore so file is available)
+    initSyncStatus(config.workspaceDir);
+
+    // 8. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
     const webConfig = await readWebConfig(config.workspaceDir, appConfig);
     ctx.appConfig = appConfig;

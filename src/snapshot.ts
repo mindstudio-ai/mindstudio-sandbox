@@ -177,6 +177,7 @@ export class SnapshotManager {
     // Force-add ignored state files
     this.exec('git add --force .sandbox-state.json', { env });
     this.exec('git add --force .remy-session.json', { env });
+    this.exec('git add --force .sync-status.json', { env });
 
     // Write tree object from temp index
     const treeSha = this.exec('git write-tree', { env })?.trim();
