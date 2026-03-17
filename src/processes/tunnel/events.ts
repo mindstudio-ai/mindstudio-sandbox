@@ -1,7 +1,64 @@
-export interface TunnelEvent {
-  event: string;
-  [key: string]: unknown;
+export interface TunnelRole {
+  id: string;
+  name: string;
+  description?: string;
 }
+
+export interface TunnelScenario {
+  id: string;
+  name: string;
+  description?: string;
+  path: string;
+  roles: string[];
+}
+
+export type TunnelEvent =
+  | { event: 'session-starting'; appId: string; name: string }
+  | {
+      event: 'session-started';
+      sessionId: string;
+      releaseId: string;
+      branch: string;
+      proxyPort: number | null;
+      proxyUrl: string | null;
+      webInterfaceUrl: string;
+      roles: TunnelRole[];
+      scenarios: TunnelScenario[];
+    }
+  | { event: 'session-stopping' }
+  | { event: 'session-stopped' }
+  | { event: 'session-expired' }
+  | { event: 'method-started'; id: string; method: string }
+  | {
+      event: 'method-completed';
+      id: string;
+      success: boolean;
+      duration: number;
+      error?: string;
+    }
+  | { event: 'scenario-started'; id: string; name: string }
+  | {
+      event: 'scenario-completed';
+      id: string;
+      success: boolean;
+      duration: number;
+      roles: string[];
+      error?: string;
+    }
+  | { event: 'schema-sync-started' }
+  | {
+      event: 'schema-sync-completed';
+      created: string[];
+      altered: string[];
+      errors: string[];
+    }
+  | { event: 'impersonation-changed'; roles: string[] | null }
+  | { event: 'connection-lost'; message: string }
+  | { event: 'connection-restored' }
+  | { event: 'config-changed' }
+  | { event: 'config-error'; message: string }
+  | { event: 'command-error'; message: string }
+  | { event: 'error'; message: string };
 
 export function parseTunnelLine(line: string): TunnelEvent | null {
   try {

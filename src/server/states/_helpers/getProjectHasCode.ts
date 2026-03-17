@@ -14,24 +14,13 @@ import { createLogger } from '../../../logger.js';
 
 const log = createLogger('project-phase');
 
-let _projectHasCode = false;
-
-/** Whether the project has compiled code (methods/interfaces in manifest). */
-export function projectHasCode(): boolean {
-  return _projectHasCode;
-}
-
 /**
  * Derive projectHasCode from the app manifest.
  * Returns true if methods or interfaces are declared.
  */
 export function getProjectHasCode(appConfig: AppConfig): boolean {
-  const result =
+  return (
     (appConfig.methods?.length ?? 0) > 0 ||
-    (appConfig.interfaces?.length ?? 0) > 0;
-  if (result !== _projectHasCode) {
-    log.info(`projectHasCode: ${_projectHasCode} → ${result}`);
-    _projectHasCode = result;
-  }
-  return result;
+    (appConfig.interfaces?.length ?? 0) > 0
+  );
 }

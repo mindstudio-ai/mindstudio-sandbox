@@ -2,7 +2,7 @@
  * Tunnel process — manages the mindstudio-local dev tunnel.
  *
  * Handles startup config, stdout event parsing, and WS action handlers
- * for scenarios, schema sync, and role impersonation.
+ * for scenarios and role impersonation.
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
@@ -13,8 +13,18 @@ const log = createLogger('tunnel');
 
 type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
+export interface TunnelSessionState {
+  sessionId: string;
+  releaseId: string;
+  branch: string;
+  proxyPort: number | null;
+  proxyUrl: string | null;
+  webInterfaceUrl: string;
+}
+
 export interface TunnelCallbacks {
-  onSessionStarted: (proxyPort: number) => void;
+  onSessionStarted: (session: TunnelSessionState) => void;
+  onSessionEnded: () => void;
   broadcast: (event: string, data: Record<string, any>) => void;
 }
 
@@ -56,20 +66,96 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
   cb.broadcast('tunnelEvent', tunnelEvent);
 
   switch (tunnelEvent.event) {
-    case 'session-started':
-      if (typeof tunnelEvent.proxyPort === 'number') {
-        log.info(`Proxy port: ${tunnelEvent.proxyPort}`);
-        cb.onSessionStarted(tunnelEvent.proxyPort);
-      }
+    case 'session-starting':
+      log.info(`Session starting: ${tunnelEvent.name} (${tunnelEvent.appId})`);
+      break;
+    case 'session-started': {
+      const {
+        sessionId,
+        releaseId,
+        branch,
+        proxyPort,
+        proxyUrl,
+        webInterfaceUrl,
+      } = tunnelEvent;
+      log.info(`Session started: proxy=${proxyPort}`);
+      cb.onSessionStarted({
+        sessionId,
+        releaseId,
+        branch,
+        proxyPort,
+        proxyUrl,
+        webInterfaceUrl,
+      });
+      break;
+    }
+    case 'session-stopping':
+      log.info('Session stopping');
+      cb.onSessionEnded();
+      break;
+    case 'session-stopped':
+      log.info('Session stopped');
+      cb.onSessionEnded();
       break;
     case 'session-expired':
       log.error('Session expired by platform');
+      cb.onSessionEnded();
       break;
-    case 'connection-warning':
-      log.warn(`Connection warning: ${tunnelEvent.message}`);
+    case 'method-started':
+      log.debug(`Method started: ${tunnelEvent.method} (${tunnelEvent.id})`);
+      break;
+    case 'method-completed':
+      if (tunnelEvent.success) {
+        log.debug(
+          `Method completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
+        );
+      } else {
+        log.warn(
+          `Method failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
+        );
+      }
+      break;
+    case 'scenario-started':
+      log.info(`Scenario started: ${tunnelEvent.name} (${tunnelEvent.id})`);
+      break;
+    case 'scenario-completed':
+      if (tunnelEvent.success) {
+        log.info(
+          `Scenario completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
+        );
+      } else {
+        log.warn(
+          `Scenario failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
+        );
+      }
+      break;
+    case 'schema-sync-started':
+      log.info('Schema sync started');
+      break;
+    case 'schema-sync-completed':
+      log.info(
+        `Schema sync completed: created=${tunnelEvent.created.length}, altered=${tunnelEvent.altered.length}, errors=${tunnelEvent.errors.length}`,
+      );
+      break;
+    case 'impersonation-changed':
+      log.info(
+        `Impersonation changed: ${tunnelEvent.roles ? tunnelEvent.roles.join(', ') : 'cleared'}`,
+      );
+      break;
+    case 'connection-lost':
+      log.warn(`Connection lost: ${tunnelEvent.message}`);
       break;
     case 'connection-restored':
       log.info('Connection restored');
+      break;
+    case 'config-changed':
+      log.info('Config changed — session restarting');
+      break;
+    case 'config-error':
+      log.warn(`Config error: ${tunnelEvent.message}`);
+      break;
+    case 'command-error':
+      log.warn(`Command error: ${tunnelEvent.message}`);
       break;
     case 'error':
       log.error(`Error: ${tunnelEvent.message}`);
@@ -95,15 +181,7 @@ export function createTunnelActions(
         throw new Error('Missing "scenarioId" parameter');
       }
       log.info(`Running scenario: ${scenarioId}`);
-      send('runScenario', { scenarioId });
-      return {};
-    },
-    tunnelSyncSchema: async () => {
-      send('syncSchema');
-      return {};
-    },
-    tunnelListScenarios: async () => {
-      send('listScenarios');
+      send('run-scenario', { scenarioId });
       return {};
     },
     tunnelImpersonate: async (p) => {
@@ -117,11 +195,7 @@ export function createTunnelActions(
     },
     tunnelClearImpersonation: async () => {
       log.info('Clearing role impersonation');
-      send('clearImpersonation');
-      return {};
-    },
-    tunnelListRoles: async () => {
-      send('listRoles');
+      send('clear-impersonation');
       return {};
     },
   };

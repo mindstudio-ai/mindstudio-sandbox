@@ -10,6 +10,7 @@
  */
 
 import type { AppConfig, ServerStatus } from '../types.js';
+import type { TunnelSessionState } from '../processes/tunnel/index.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import type { BroadcastBatcher } from './server/BroadcastBatcher.js';
@@ -31,6 +32,7 @@ export type ViewMode = 'intake' | 'spec' | 'code';
 export interface ServerContext {
   status: ServerStatus;
   appConfig: AppConfig | null;
+  tunnelSession: TunnelSessionState | null;
   processManager: ProcessManager | null;
   batcher: BroadcastBatcher | null;
   registry: ProcessRegistry | null;
@@ -71,6 +73,7 @@ export function setViewMode(mode: string): void {
 export const ctx: ServerContext = {
   status: 'bootstrapping',
   appConfig: null,
+  tunnelSession: null,
   processManager: null,
   batcher: null,
   registry: null,
@@ -103,6 +106,7 @@ export async function buildInitFrame(
     status: ctx.status,
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
+    tunnelSession: ctx.tunnelSession,
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
     chatHistory,
     processes: ctx.registry?.getAllInfo() ?? [],
@@ -132,6 +136,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     status: ctx.status,
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
+    tunnelSession: ctx.tunnelSession,
     fileTree: [],
     chatHistory: [],
     processes: [],

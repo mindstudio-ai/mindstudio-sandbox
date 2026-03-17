@@ -197,7 +197,15 @@ async function startServices(
     processManager,
     { workspaceDir: config.workspaceDir, devPort },
     {
-      onSessionStarted: (port) => setProxyTarget(port),
+      onSessionStarted: (session) => {
+        if (session.proxyPort != null) {
+          setProxyTarget(session.proxyPort);
+        }
+        ctx.tunnelSession = session;
+      },
+      onSessionEnded: () => {
+        ctx.tunnelSession = null;
+      },
       broadcast,
     },
   );
@@ -239,32 +247,13 @@ function setupFileWatcher(
   lspSidecar: LspSidecar,
 ): void {
   const {
-    processManager,
     editorManager,
     specEditorManager,
     fileTreeManager,
     specFileTreeManager,
   } = managers;
 
-  let tablePaths = new Set(appConfig.tables?.map((t) => t.path) ?? []);
-  let schemaSyncTimer: ReturnType<typeof setTimeout> | null = null;
   let currentProjectHasCode = ctx.projectHasCode;
-
-  function scheduleSyncSchema(): void {
-    if (schemaSyncTimer) {
-      return;
-    }
-    schemaSyncTimer = setTimeout(() => {
-      schemaSyncTimer = null;
-      if (processManager.getState('tunnel') === 'running') {
-        log.info('Table file changed — syncing schema');
-        processManager.writeStdin(
-          'tunnel',
-          JSON.stringify({ action: 'syncSchema' }),
-        );
-      }
-    }, 1000);
-  }
 
   // Shared handler for all file change events — called by both the
   // file watcher (for external/user changes) and the writeFile/deleteFile/
@@ -283,9 +272,7 @@ function setupFileWatcher(
         readAppConfig(config.workspaceDir)
           .then((updated) => {
             ctx.appConfig = updated;
-            tablePaths = new Set(updated.tables?.map((t) => t.path) ?? []);
             broadcast('manifestChanged', { app: updated });
-            scheduleSyncSchema();
 
             // Check if projectHasCode changed
             const newProjectHasCode = getProjectHasCode(updated);
@@ -298,10 +285,6 @@ function setupFileWatcher(
             }
           })
           .catch(() => {});
-      }
-
-      if (tablePaths.has(filePath)) {
-        scheduleSyncSchema();
       }
     }
 
