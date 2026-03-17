@@ -79,7 +79,33 @@ export function sendToolResult(
     return;
   }
   log.info(`Sending tool_result for ${id}`);
+  pendingExternalTools.delete(id);
   pm.writeStdin('agent', JSON.stringify({ action: 'tool_result', id, result }));
+}
+
+// --- Pending external tool tracking ---
+// Tracks external tool calls that are waiting for a result (e.g., promptUser
+// waiting for user input). Included in the init frame so reconnecting
+// clients can re-render pending forms.
+
+export interface PendingExternalTool {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+const pendingExternalTools = new Map<string, PendingExternalTool>();
+
+export function getPendingExternalTools(): PendingExternalTool[] {
+  return Array.from(pendingExternalTools.values());
+}
+
+export function hasPendingExternalTools(): boolean {
+  return pendingExternalTools.size > 0;
+}
+
+export function clearPendingExternalTools(): void {
+  pendingExternalTools.clear();
 }
 
 // --- Agent activity tracking ---
@@ -131,6 +157,7 @@ function onTurnStart(cb: AgentCallbacks): void {
 
 function onTurnEnd(cb: AgentCallbacks): void {
   activity = { busy: false, fileOps: [] };
+  pendingExternalTools.clear();
   cb.onTurnDone?.();
   broadcastActivity(cb);
 }
@@ -202,12 +229,18 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 
       // External tools: sandbox handles them and sends results back to remy.
       // Still broadcast to frontend (needed for promptUser UI, tool_done transitions).
-      if (EXTERNAL_TOOLS.has(event.name) && event.event === 'tool_start') {
-        cb.onExternalTool?.(
-          event.id,
-          event.name,
-          (event.input as Record<string, unknown>) ?? {},
-        );
+      if (EXTERNAL_TOOLS.has(event.name)) {
+        if (event.event === 'tool_start') {
+          const input = (event.input as Record<string, unknown>) ?? {};
+          pendingExternalTools.set(event.id, {
+            id: event.id,
+            name: event.name,
+            input,
+          });
+          cb.onExternalTool?.(event.id, event.name, input);
+        } else if (event.event === 'tool_done') {
+          pendingExternalTools.delete(event.id);
+        }
       }
 
       const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;
@@ -363,6 +396,15 @@ export function createAgentActions(
         attachments?: Array<{ url: string; extractedTextUrl?: string }>;
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
+
+      // If remy is blocked waiting for an external tool result (e.g., a
+      // promptUser that was never answered), cancel the current turn first
+      // so remy can accept the new message.
+      if (hasPendingExternalTools()) {
+        log.info('Cancelling pending external tools before sending message');
+        clearPendingExternalTools();
+        send('cancel');
+      }
 
       // Gather view context so remy knows what the user is looking at
       const viewMode = ctx.viewMode;

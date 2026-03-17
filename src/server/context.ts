@@ -19,7 +19,11 @@ import type { FileTreeManager } from './states/FileTreeManager.js';
 import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
-import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
+import {
+  getAgentHistory,
+  getAgentActivity,
+  getPendingExternalTools,
+} from '../processes/agent/index.js';
 import { getActiveSessionIds } from './handlers/pty.js';
 
 export type ViewMode = 'intake' | 'spec' | 'code';
@@ -117,6 +121,7 @@ export async function buildInitFrame(
     },
     projectHasCode: ctx.projectHasCode,
     viewMode: ctx.viewMode,
+    pendingExternalTools: getPendingExternalTools(),
   };
 }
 
@@ -138,5 +143,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specEditorState: { tabs: [], activeTab: null },
     projectHasCode: ctx.projectHasCode,
     viewMode: ctx.viewMode,
+    pendingExternalTools: getPendingExternalTools(),
   };
 }
