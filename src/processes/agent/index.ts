@@ -214,7 +214,10 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       name: event.name,
       input,
     });
-    cb.onExternalTool?.(event.id, event.name, input);
+    // Only trigger external tool handling on the final tool_start (no partial flag)
+    if (!event.partial) {
+      cb.onExternalTool?.(event.id, event.name, input);
+    }
   } else if (event.event === 'tool_done' && EXTERNAL_TOOLS.has(event.name)) {
     pendingExternalTools.delete(event.id);
   }

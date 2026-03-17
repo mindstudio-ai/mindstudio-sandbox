@@ -8,6 +8,7 @@ export type AgentEvent =
       id: string;
       name: string;
       input: Record<string, unknown>;
+      partial?: boolean;
     }
   | { event: 'tool_input_delta'; id: string; name: string; result: string }
   | {
