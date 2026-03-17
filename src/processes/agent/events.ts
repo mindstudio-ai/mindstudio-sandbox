@@ -9,6 +9,7 @@ export type AgentEvent =
       name: string;
       input: Record<string, unknown>;
     }
+  | { event: 'tool_input_delta'; id: string; name: string; result: string }
   | {
       event: 'tool_done';
       id: string;
