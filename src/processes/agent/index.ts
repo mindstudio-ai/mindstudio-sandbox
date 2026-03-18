@@ -224,6 +224,14 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     if (!event.partial) {
       cb.onExternalTool?.(event.id, event.name, input);
     }
+  } else if (
+    event.event === 'tool_input_delta' &&
+    pendingExternalTools.has(event.id)
+  ) {
+    // Update pending entry with latest streamed content so init frame
+    // captures the full content if the client reconnects mid-stream.
+    const pending = pendingExternalTools.get(event.id)!;
+    pending.input = { ...pending.input, content: event.result };
   } else if (event.event === 'tool_done' && EXTERNAL_TOOLS.has(event.name)) {
     pendingExternalTools.delete(event.id);
   }

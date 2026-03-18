@@ -25,6 +25,7 @@ export interface TunnelSessionState {
 export interface TunnelCallbacks {
   onSessionStarted: (session: TunnelSessionState) => void;
   onSessionEnded: () => void;
+  onImpersonationChanged: (roles: string[] | null) => void;
   broadcast: (event: string, data: Record<string, any>) => void;
 }
 
@@ -141,6 +142,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.info(
         `Impersonation changed: ${tunnelEvent.roles ? tunnelEvent.roles.join(', ') : 'cleared'}`,
       );
+      cb.onImpersonationChanged(tunnelEvent.roles);
       break;
     case 'connection-lost':
       log.warn(`Connection lost: ${tunnelEvent.message}`);

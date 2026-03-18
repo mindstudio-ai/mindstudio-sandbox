@@ -55,6 +55,7 @@ export interface ServerContext {
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
+  activeImpersonation: string[] | null;
   onUserSave: ((path: string) => void) | null;
 }
 
@@ -78,7 +79,7 @@ export function setViewModeCallback(cb: (mode: ViewMode) => void): void {
 /** Update the view mode, broadcast to clients, and persist. */
 export function setViewMode(mode: string): void {
   if (!VALID_VIEW_MODES.includes(mode as ViewMode)) {
-    throw new Error(`Invalid mode — expected "intake", "spec", or "code"`);
+    throw new Error(`Invalid view mode: "${mode}"`);
   }
   if (ctx.viewMode === mode) {
     return;
@@ -102,6 +103,7 @@ export const ctx: ServerContext = {
   projectHasCode: false,
   lspClient: null,
   viewMode: 'intake',
+  activeImpersonation: null,
   onFileChanged: null,
   onUserSave: null,
 };
@@ -125,6 +127,7 @@ export async function buildInitFrame(
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
     tunnelSession: ctx.tunnelSession,
+    activeImpersonation: ctx.activeImpersonation,
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
     chatHistory,
     processes: ctx.registry?.getAllInfo() ?? [],
@@ -156,6 +159,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
     tunnelSession: ctx.tunnelSession,
+    activeImpersonation: ctx.activeImpersonation,
     fileTree: [],
     chatHistory: [],
     processes: [],

@@ -33,7 +33,9 @@ src/
   types.ts                          — shared types (WS protocol, filesystem, app config)
   logger.ts                         — centralized logger with levels + elapsed time
   state.ts                          — persistent state (survives hibernate/resume)
+  syncStatus.ts                     — spec/code sync status tracking + git sync ref
   bootstrap.ts                      — install/clone/build commands
+  snapshot.ts                       — git-based session snapshots (_draft branch)
 
   server/
     context.ts                      — shared server context + init frame construction
@@ -62,10 +64,13 @@ src/
     ProcessManager.ts               — long-lived child process lifecycle
     ResourceMonitor.ts              — memory/CPU metrics collection
     fileWatcher.ts                  — chokidar file watcher
-    agent/index.ts                  — remy agent process management
+    agent/
+      index.ts                      — remy agent process management
+      events.ts                     — typed agent event union + parser
+      history.ts                    — chat history transformation
     tunnel/
       index.ts                      — dev tunnel process management
-      events.ts                     — tunnel NDJSON event parser
+      events.ts                     — typed tunnel event union + parser
     devServer/index.ts              — dev server process management
 
   utils/
@@ -129,7 +134,9 @@ The first message on connect is an `init` event with everything needed to bootst
   "event": "init",
   "status": "ready",
   "previewAvailable": true,
-  "app": { "appId": "...", "name": "...", "methods": [...], "tables": [...], "interfaces": [...] },
+  "app": { "appId": "...", "name": "...", "methods": [...], "tables": [...], "interfaces": [...], "roles": [...], "scenarios": [...] },
+  "tunnelSession": { "sessionId": "...", "releaseId": "...", "branch": "main", "proxyPort": 3835, "proxyUrl": "...", "webInterfaceUrl": "..." },
+  "activeImpersonation": ["ap"],
   "fileTree": [...],
   "specFileTree": [...],
   "chatHistory": [...],
@@ -138,7 +145,10 @@ The first message on connect is an `init` event with everything needed to bootst
   "editorState": { "tabs": [...], "activeTab": "...", "expandedDirs": [...] },
   "specEditorState": { "tabs": [...], "activeTab": "..." },
   "projectHasCode": false,
+  "viewMode": "intake",
+  "syncStatus": { "specDirty": false, "codeDirty": false },
   "agentActivity": { "busy": false, "fileOps": [] },
+  "pendingExternalTools": [],
   "ptySessionIds": []
 }
 ```
@@ -147,7 +157,9 @@ The first message on connect is an `init` event with everything needed to bootst
 |-------|------|-------------|
 | `status` | `"bootstrapping" \| "ready" \| "error"` | Server lifecycle status |
 | `previewAvailable` | `boolean` | Whether the preview proxy is ready |
-| `app` | `AppConfig` | Parsed `mindstudio.json` |
+| `app` | `AppConfig` | Parsed `mindstudio.json` (includes roles, scenarios, methods, tables, interfaces) |
+| `tunnelSession` | `TunnelSessionState \| null` | Active tunnel session info, or null if not connected |
+| `activeImpersonation` | `string[] \| null` | Currently impersonated role IDs, or null |
 | `fileTree` | `TreeEntry[]` | Code file tree (based on expanded dirs) |
 | `specFileTree` | `TreeEntry[]` | Spec file tree (`src/` — always fully expanded) |
 | `chatHistory` | `Message[]` | Agent conversation history from remy |
@@ -156,7 +168,10 @@ The first message on connect is an `init` event with everything needed to bootst
 | `editorState` | `EditorState` | Code editor tabs + active tab + expanded dirs |
 | `specEditorState` | `SpecEditorState` | Spec editor tabs + active tab |
 | `projectHasCode` | `boolean` | Whether manifest declares methods or interfaces |
+| `viewMode` | `ViewMode` | Current editor tab: `intake`, `preview`, `spec`, `code`, `databases`, `scenarios`, `logs` |
+| `syncStatus` | `SyncStatus` | `{ specDirty, codeDirty }` — whether user edits need syncing |
 | `agentActivity` | `AgentActivity` | Current agent file operations |
+| `pendingExternalTools` | `PendingExternalTool[]` | Unanswered external tool calls (e.g., promptUser) |
 | `ptySessionIds` | `string[]` | Active PTY terminal sessions |
 
 ## Actions (Client → Server)
@@ -196,8 +211,11 @@ The first message on connect is an `init` event with everything needed to bootst
 | Action | Params | Description |
 |--------|--------|-------------|
 | `agentMessage` | `{ text, attachments? }` | Send a message to the agent. Streams response as events |
+| `agentSync` | `{}` | Trigger spec ↔ code sync. Remy diffs and updates the stale side |
+| `agentPublish` | `{}` | Trigger publish flow. Remy presents a plan for approval |
 | `agentCancel` | `{}` | Cancel current agent turn |
 | `agentClear` | `{}` | Clear conversation, start fresh session |
+| `externalToolResult` | `{ id, result }` | Send a result back for any external tool (promptUser, presentSyncPlan, presentPublishPlan). `result` is a string |
 
 ### Processes
 
@@ -213,11 +231,16 @@ The first message on connect is an `init` event with everything needed to bootst
 | Action | Params | Description |
 |--------|--------|-------------|
 | `tunnelRunScenario` | `{ scenarioId }` | Run a scenario (truncate + seed + impersonate) |
-| `tunnelSyncSchema` | `{}` | Re-sync table definitions from disk |
-| `tunnelListScenarios` | `{}` | Request current scenario list |
 | `tunnelImpersonate` | `{ roles }` | Set role overrides for method execution |
 | `tunnelClearImpersonation` | `{}` | Clear role overrides |
-| `tunnelListRoles` | `{}` | Request available roles |
+
+Schema sync is automatic (tunnel watches table files). Roles and scenarios come from `app` in the init frame.
+
+### View Mode
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `setViewMode` | `{ mode }` | Switch editor tab. Values: `intake`, `preview`, `spec`, `code`, `databases`, `scenarios`, `logs` |
 
 ### PTY
 
@@ -253,16 +276,20 @@ The first message on connect is an `init` event with everything needed to bootst
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `agentReady` | | Agent initialized and ready |
+| `agentTurnStarted` | | Agent began processing a message |
 | `agentThinking` | `{ text }` | Internal reasoning (streaming chunks) |
 | `agentText` | `{ text }` | Visible response text (streaming chunks) |
-| `agentToolStart` | `{ id, name, input }` | Tool execution started |
-| `agentToolDone` | `{ id, name, result, isError }` | Tool execution completed |
+| `agentToolStart` | `{ id, name, input, partial? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, presentPublishPlan), multiple events with `partial: true` arrive before the final one |
+| `agentToolInputDelta` | `{ id, name, result }` | Streaming tool input content (progressive updates) |
+| `agentToolDone` | `{ id, name, result?, isError? }` | Tool execution completed |
 | `agentTurnDone` | | Agent finished responding |
 | `agentTurnCancelled` | | Turn cancelled (via `agentCancel`) |
-| `agentError` | `{ error }` | Agent error |
-| `agentSessionRestored` | `{ messageCount }` | Previous session restored on startup |
+| `agentError` | `{ message }` | Agent error |
+| `agentStopping` | | Agent shutting down |
+| `agentStopped` | | Agent process exited |
+| `agentSessionRestored` | | Previous session restored on startup |
 | `agentSessionCleared` | | Session cleared (via `agentClear`) |
-| `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` |
+| `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
 
 ### Processes (batched)
 
@@ -278,7 +305,40 @@ The first message on connect is an `init` event with everything needed to bootst
 |-------|---------|-------------|
 | `tunnelEvent` | `{ event, ... }` | All tunnel events forwarded as-is |
 
-Key tunnel events: `session-started` (enable preview, get scenarios), `schema-synced`, `scenario-start`, `scenario-complete`, `impersonated`, `roles-list`, `method-start`, `method-complete`, `connection-warning`, `connection-restored`, `session-expired`, `error`.
+Key tunnel events:
+
+| Tunnel Event | Payload | Description |
+|-------------|---------|-------------|
+| `session-starting` | `{ appId, name }` | Session initializing |
+| `session-started` | `{ sessionId, releaseId, branch, proxyPort, proxyUrl, webInterfaceUrl, roles, scenarios }` | Session active, proxy running |
+| `session-stopping` | | Graceful shutdown initiated |
+| `session-stopped` | | Session fully stopped |
+| `session-expired` | | Platform expired the session |
+| `method-started` | `{ id, method }` | Method execution began |
+| `method-completed` | `{ id, success, duration, error? }` | Method execution finished |
+| `scenario-started` | `{ id, name }` | Scenario being applied |
+| `scenario-completed` | `{ id, success, duration, roles, error? }` | Scenario finished |
+| `schema-sync-started` | | Table file change detected, syncing |
+| `schema-sync-completed` | `{ created, altered, errors }` | Schema sync finished |
+| `impersonation-changed` | `{ roles }` | Role override set or cleared (`roles: null` when cleared) |
+| `connection-lost` | `{ message }` | Lost connection to platform, retrying |
+| `connection-restored` | | Reconnected after loss |
+| `config-changed` | | `mindstudio.json` modified, session restarting |
+| `config-error` | `{ message }` | Non-fatal config error |
+| `command-error` | `{ message }` | Stdin command failed |
+| `error` | `{ message }` | Fatal error |
+
+### Sync Status
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `syncStatusChanged` | `{ specDirty, codeDirty }` | Spec/code sync flags changed |
+
+### View Mode
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `viewModeChanged` | `{ viewMode }` | Editor tab switched (by agent or user) |
 
 ### Bootstrap
 
