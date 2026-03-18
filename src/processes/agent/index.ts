@@ -82,6 +82,7 @@ const EXTERNAL_TOOLS = new Set([
   'promptUser',
   'clearSyncStatus',
   'presentSyncPlan',
+  'presentPublishPlan',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -358,6 +359,16 @@ export function createAgentActions(
       send('message', {
         text: '',
         runCommand: 'sync',
+        projectHasCode: ctx.projectHasCode,
+        viewContext: { mode: ctx.viewMode, openFiles: [], activeFile: null },
+      });
+      return {};
+    },
+    agentPublish: async () => {
+      log.info('Triggering publish');
+      send('message', {
+        text: '',
+        runCommand: 'publish',
         projectHasCode: ctx.projectHasCode,
         viewContext: { mode: ctx.viewMode, openFiles: [], activeFile: null },
       });
