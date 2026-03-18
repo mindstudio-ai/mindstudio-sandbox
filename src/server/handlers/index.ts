@@ -171,18 +171,15 @@ export const handlers: Record<string, ActionHandler> = {
   },
 
   // --- External tool responses ---
-  promptUserResponse: async (p) => {
-    const { id, answers } = p as {
-      id: string;
-      answers: Record<string, unknown>;
-    };
+  externalToolResult: async (p) => {
+    const { id, result } = p as { id: string; result: string };
     if (!id) {
       throw new Error('Missing "id" parameter');
     }
     if (!ctx.processManager) {
       throw new Error('Agent not running');
     }
-    sendToolResult(ctx.processManager, id, JSON.stringify(answers));
+    sendToolResult(ctx.processManager, id, result);
     return {};
   },
 
