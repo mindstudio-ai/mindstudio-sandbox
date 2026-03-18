@@ -79,46 +79,76 @@ function verifyInstalled(binaryName: string): void {
   }
 }
 
-export async function installTunnel(progress: ProgressFn): Promise<void> {
-  // Clone, build, and link the tunnel from source.
-  // npm install -g from git doesn't work because devDependencies (tsup, etc.)
-  // aren't available. This is temporary — production will use the published npm package.
-  const tunnelDir = '/tmp/mindstudio-local-tunnel';
-  progress(
-    'installTunnel',
-    'Installing mindstudio-local tunnel from source...',
-  );
-  run(`rm -rf ${tunnelDir}`, { label: 'Clean tunnel dir' });
+/**
+ * Clone a git repo, build from source, and npm install -g the result.
+ * Used for dev branches where the published npm package won't work.
+ */
+function installFromSource(opts: {
+  repoUrl: string;
+  branch: string;
+  tmpDir: string;
+  label: string;
+}): void {
+  run(`rm -rf ${opts.tmpDir}`, { label: `Clean ${opts.label} dir` });
   run(
-    `git clone --depth 1 --branch seant/appsv2 https://github.com/mindstudio-ai/mindstudio-local-model-tunnel.git ${tunnelDir}`,
-    {
-      label: 'git clone tunnel (seant/appsv2)',
-    },
+    `git clone --depth 1 --branch ${opts.branch} ${opts.repoUrl} ${opts.tmpDir}`,
+    { label: `git clone ${opts.label} (${opts.branch})` },
   );
-  run('npm install', { cwd: tunnelDir, label: 'npm install in tunnel' });
-  run('npm run build', { cwd: tunnelDir, label: 'npm run build in tunnel' });
-  run(`npm install -g ${tunnelDir}`, {
-    label: 'npm install -g (link built tunnel)',
+  run('npm install', {
+    cwd: opts.tmpDir,
+    label: `npm install in ${opts.label}`,
   });
+  run('npm run build', {
+    cwd: opts.tmpDir,
+    label: `npm run build in ${opts.label}`,
+  });
+  run(`npm install -g ${opts.tmpDir}`, {
+    label: `npm install -g (link built ${opts.label})`,
+  });
+}
+
+export async function installTunnel(progress: ProgressFn): Promise<void> {
+  const devBranch = process.env['TUNNEL_DEV_BRANCH'];
+
+  if (devBranch) {
+    progress(
+      'installTunnel',
+      `Installing tunnel from source (${devBranch})...`,
+    );
+    installFromSource({
+      repoUrl:
+        'https://github.com/mindstudio-ai/mindstudio-local-model-tunnel.git',
+      branch: devBranch,
+      tmpDir: '/tmp/mindstudio-local-tunnel',
+      label: 'tunnel',
+    });
+  } else {
+    progress('installTunnel', 'Installing mindstudio-local tunnel...');
+    run('npm install -g @mindstudio-ai/local-model-tunnel', {
+      label: 'npm install -g @mindstudio-ai/local-model-tunnel',
+    });
+  }
 
   verifyInstalled('mindstudio-local');
 }
 
 export async function installAgent(progress: ProgressFn): Promise<void> {
-  // Clone, build, and link remy from source.
-  // Temporary — production will use the published npm package.
-  const agentDir = '/tmp/remy';
-  progress('installAgent', 'Installing remy agent from source...');
-  run(`rm -rf ${agentDir}`, { label: 'Clean agent dir' });
-  run(
-    `git clone --depth 1 https://github.com/mindstudio-ai/remy.git ${agentDir}`,
-    { label: 'git clone remy' },
-  );
-  run('npm install', { cwd: agentDir, label: 'npm install in remy' });
-  run('npm run build', { cwd: agentDir, label: 'npm run build in remy' });
-  run(`npm install -g ${agentDir}`, {
-    label: 'npm install -g (link built remy)',
-  });
+  const devBranch = process.env['AGENT_DEV_BRANCH'];
+
+  if (devBranch) {
+    progress('installAgent', `Installing remy from source (${devBranch})...`);
+    installFromSource({
+      repoUrl: 'https://github.com/mindstudio-ai/remy.git',
+      branch: devBranch,
+      tmpDir: '/tmp/remy',
+      label: 'remy',
+    });
+  } else {
+    progress('installAgent', 'Installing remy agent...');
+    run('npm install -g @mindstudio-ai/remy', {
+      label: 'npm install -g @mindstudio-ai/remy',
+    });
+  }
 
   verifyInstalled('remy');
 }

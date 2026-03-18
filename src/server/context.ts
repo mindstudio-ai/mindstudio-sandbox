@@ -35,7 +35,8 @@ export type ViewMode =
   | 'code'
   | 'databases'
   | 'scenarios'
-  | 'logs';
+  | 'logs'
+  | 'docs';
 
 export interface ServerContext {
   status: ServerStatus;
@@ -67,6 +68,7 @@ const VALID_VIEW_MODES: ViewMode[] = [
   'databases',
   'scenarios',
   'logs',
+  'docs',
 ];
 
 /** Callback fired when viewMode changes — wired up by index.ts. */
