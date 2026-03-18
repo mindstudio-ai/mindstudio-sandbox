@@ -263,6 +263,7 @@ function setupFileWatcher(
   lspSidecar: LspSidecar,
 ): void {
   const {
+    batcher,
     editorManager,
     specEditorManager,
     fileTreeManager,
@@ -278,7 +279,7 @@ function setupFileWatcher(
     filePath: string,
     changeType: 'created' | 'modified' | 'deleted',
   ): void {
-    broadcast('fileChanged', { path: filePath, changeType });
+    batcher.push('fileChanged', { path: filePath, changeType });
 
     if (changeType === 'modified' || changeType === 'created') {
       lspSidecar.onFileChanged(filePath).catch(() => {});
@@ -462,6 +463,10 @@ async function main(): Promise<void> {
       managers.specEditorManager,
     );
     await restoreState();
+
+    // Re-set system pseudo-process to running (restoreState may have
+    // overwritten it with "stopped" from the previous session's snapshot).
+    managers.registry.setState('system', 'running');
 
     if (managers.editorManager.isEmpty()) {
       managers.editorManager.expandFromAppConfig(appConfig);

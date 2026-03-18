@@ -174,10 +174,16 @@ export class SnapshotManager {
       return false;
     }
 
-    // Force-add ignored state files
-    this.exec('git add --force .sandbox-state.json', { env });
-    this.exec('git add --force .remy-session.json', { env });
-    this.exec('git add --force .sync-status.json', { env });
+    // Force-add ignored state files (only if they exist)
+    for (const f of [
+      '.sandbox-state.json',
+      '.remy-session.json',
+      '.sync-status.json',
+    ]) {
+      if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
+        this.exec(`git add --force ${f}`, { env });
+      }
+    }
 
     // Write tree object from temp index
     const treeSha = this.exec('git write-tree', { env })?.trim();

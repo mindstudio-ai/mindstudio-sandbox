@@ -81,6 +81,7 @@ const EXTERNAL_TOOLS = new Set([
   'setViewMode',
   'promptUser',
   'clearSyncStatus',
+  'presentPlan',
   'presentSyncPlan',
   'presentPublishPlan',
 ]);
