@@ -24,6 +24,11 @@ import type {
   SpecEditorStateManager,
   SpecEditorState,
 } from './server/states/SpecEditorStateManager.js';
+import {
+  getPendingExternalTools,
+  hydratePendingExternalTools,
+  type PendingExternalTool,
+} from './processes/agent/index.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('state');
@@ -32,6 +37,7 @@ interface SandboxState {
   processSnapshots: ProcessSnapshot[];
   editorState?: EditorState;
   specEditorState?: SpecEditorState;
+  pendingExternalTools?: PendingExternalTool[];
 }
 
 const FLUSH_DEBOUNCE_MS = 30_000;
@@ -66,6 +72,7 @@ function flushSync(): void {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
       specEditorState: specEditorManager?.getState(),
+      pendingExternalTools: getPendingExternalTools(),
     };
     fsSync.writeFileSync(statePath, JSON.stringify(state), 'utf-8');
     dirty = false;
@@ -110,6 +117,7 @@ export async function saveState(): Promise<void> {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
       specEditorState: specEditorManager?.getState(),
+      pendingExternalTools: getPendingExternalTools(),
     };
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
@@ -137,6 +145,17 @@ export async function restoreState(): Promise<boolean> {
       }
       if (saved.specEditorState && specEditorManager) {
         specEditorManager.hydrate(saved.specEditorState);
+      }
+      if (
+        saved.pendingExternalTools &&
+        Array.isArray(saved.pendingExternalTools)
+      ) {
+        hydratePendingExternalTools(saved.pendingExternalTools);
+        if (saved.pendingExternalTools.length > 0) {
+          log.info(
+            `Restored ${saved.pendingExternalTools.length} pending external tool(s)`,
+          );
+        }
       }
       log.info(
         `Restored (${saved.processSnapshots.length} process snapshots) ← ${statePath}`,

@@ -33,11 +33,12 @@ export interface AgentActivity {
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
   onEditsFinished?: () => void;
+  /** Return true if the tool was handled server-side (suppresses broadcast to frontend). */
   onExternalTool?: (
     id: string,
     name: string,
     input: Record<string, unknown>,
-  ) => void;
+  ) => boolean;
   onTurnDone?: () => void;
 }
 
@@ -102,6 +103,9 @@ let activity: AgentActivity = { busy: false, fileOps: [] };
 /** Tracks external tool calls waiting for a result (e.g., promptUser). */
 const pendingExternalTools = new Map<string, PendingExternalTool>();
 
+/** Tool IDs handled server-side — suppress broadcast to frontend for these. */
+const serverHandledToolIds = new Set<string>();
+
 export interface PendingExternalTool {
   id: string;
   name: string;
@@ -114,6 +118,15 @@ export function getAgentActivity(): AgentActivity {
 
 export function getPendingExternalTools(): PendingExternalTool[] {
   return Array.from(pendingExternalTools.values());
+}
+
+export function hydratePendingExternalTools(
+  tools: PendingExternalTool[],
+): void {
+  pendingExternalTools.clear();
+  for (const tool of tools) {
+    pendingExternalTools.set(tool.id, tool);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +243,10 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     });
     // Only trigger external tool handling on the final tool_start (no partial flag)
     if (!event.partial) {
-      cb.onExternalTool?.(event.id, event.name, input);
+      const handled = cb.onExternalTool?.(event.id, event.name, input);
+      if (handled) {
+        serverHandledToolIds.add(event.id);
+      }
     }
   } else if (
     event.event === 'tool_input_delta' &&
@@ -248,6 +264,22 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   }
 
   // --- Broadcast to frontend ---
+
+  // Suppress tool_start/tool_done/tool_input_delta for server-handled tools
+  // (e.g., setProjectOnboardingState, clearSyncStatus) — frontend doesn't
+  // need to see these.
+  if (
+    (event.event === 'tool_start' ||
+      event.event === 'tool_done' ||
+      event.event === 'tool_input_delta') &&
+    'id' in event &&
+    serverHandledToolIds.has(event.id)
+  ) {
+    if (event.event === 'tool_done') {
+      serverHandledToolIds.delete(event.id);
+    }
+    return;
+  }
 
   const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;
   const { event: _evt, ...data } = event;

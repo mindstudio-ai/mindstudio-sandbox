@@ -241,6 +241,7 @@ async function startServices(
             broadcast('projectStatusChanged', getProjectStatus());
           }
           sendToolResult(processManager, id, 'ok');
+          return true;
         } else if (name === 'setProjectOnboardingState') {
           const state = input.state as ProjectOnboardingState;
           setOnboardingState(state);
@@ -273,8 +274,10 @@ async function startServices(
 
           broadcast('projectStatusChanged', getProjectStatus());
           sendToolResult(processManager, id, 'ok');
+          return true;
         }
-        // promptUser, presentPlan, etc.: handled by frontend via externalToolResult WS action
+        // Not handled server-side — frontend handles via externalToolResult WS action
+        return false;
       },
       onTurnDone: () => snapshotManager.scheduleSnapshot(),
     },
