@@ -1,5 +1,8 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('file-watcher');
 
 // Directories excluded from file watching.
 const IGNORED_DIRS = ['node_modules', '.git', '.vite'] as const;
@@ -68,10 +71,6 @@ export function startWatcher(
     ],
     ignoreInitial: true,
     persistent: true,
-    awaitWriteFinish: {
-      stabilityThreshold: 100,
-      pollInterval: 50,
-    },
   });
 
   function shouldEmit(absPath: string): boolean {
@@ -84,6 +83,12 @@ export function startWatcher(
     }
     return true;
   }
+
+  watcher.on('error', (err: unknown) => {
+    log.error(
+      `File watcher error: ${err instanceof Error ? err.message : err}`,
+    );
+  });
 
   watcher.on('add', (absPath) => {
     if (!shouldEmit(absPath)) {
