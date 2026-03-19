@@ -103,7 +103,12 @@ export class ProcessManager {
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
       rl.on('line', (line) => {
-        this.registry.appendLog(config.name, 'stdout', line);
+        // Truncate very long lines in the process log (e.g., agent history
+        // responses) — full content is handled by onStdout, the log is just
+        // for debugging visibility.
+        const logLine =
+          line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
+        this.registry.appendLog(config.name, 'stdout', logLine);
         config.onStdout?.(line);
       });
       rls.push(rl);
