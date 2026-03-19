@@ -11,7 +11,7 @@
 
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
-import { getSyncStatus } from '../syncStatus.js';
+import { getProjectStatus } from '../projectStatus.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import type { BroadcastBatcher } from './server/BroadcastBatcher.js';
@@ -28,16 +28,6 @@ import {
 } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './handlers/pty.js';
 
-export type ViewMode =
-  | 'intake'
-  | 'preview'
-  | 'spec'
-  | 'code'
-  | 'databases'
-  | 'scenarios'
-  | 'logs'
-  | 'docs';
-
 export interface ServerContext {
   status: ServerStatus;
   appConfig: AppConfig | null;
@@ -50,44 +40,13 @@ export interface ServerContext {
   resourceMonitor: ResourceMonitor | null;
   fileTreeManager: FileTreeManager | null;
   specFileTreeManager: SpecFileTreeManager | null;
-  projectHasCode: boolean;
   lspClient: LspClient | null;
-  viewMode: ViewMode;
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
   activeImpersonation: string[] | null;
   onUserSave: ((path: string) => void) | null;
-}
-
-const VALID_VIEW_MODES: ViewMode[] = [
-  'intake',
-  'preview',
-  'spec',
-  'code',
-  'databases',
-  'scenarios',
-  'logs',
-  'docs',
-];
-
-/** Callback fired when viewMode changes — wired up by index.ts. */
-let onViewModeChanged: ((mode: ViewMode) => void) | null = null;
-
-export function setViewModeCallback(cb: (mode: ViewMode) => void): void {
-  onViewModeChanged = cb;
-}
-
-/** Update the view mode, broadcast to clients, and persist. */
-export function setViewMode(mode: string): void {
-  if (!VALID_VIEW_MODES.includes(mode as ViewMode)) {
-    throw new Error(`Invalid view mode: "${mode}"`);
-  }
-  if (ctx.viewMode === mode) {
-    return;
-  }
-  ctx.viewMode = mode as ViewMode;
-  onViewModeChanged?.(ctx.viewMode);
+  onProjectStatusChanged: (() => void) | null;
 }
 
 export const ctx: ServerContext = {
@@ -102,12 +61,11 @@ export const ctx: ServerContext = {
   resourceMonitor: null,
   fileTreeManager: null,
   specFileTreeManager: null,
-  projectHasCode: false,
   lspClient: null,
-  viewMode: 'intake',
   activeImpersonation: null,
   onFileChanged: null,
   onUserSave: null,
+  onProjectStatusChanged: null,
 };
 
 // --- Init frame ---
@@ -146,9 +104,7 @@ export async function buildInitFrame(
       tabs: [],
       activeTab: null,
     },
-    projectHasCode: ctx.projectHasCode,
-    viewMode: ctx.viewMode,
-    syncStatus: getSyncStatus(),
+    projectStatus: getProjectStatus(),
     pendingExternalTools: getPendingExternalTools(),
   };
 }
@@ -171,9 +127,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     editorState: { tabs: [], activeTab: null, expandedDirs: [] },
     specFileTree: [],
     specEditorState: { tabs: [], activeTab: null },
-    projectHasCode: ctx.projectHasCode,
-    viewMode: ctx.viewMode,
-    syncStatus: getSyncStatus(),
+    projectStatus: getProjectStatus(),
     pendingExternalTools: getPendingExternalTools(),
   };
 }

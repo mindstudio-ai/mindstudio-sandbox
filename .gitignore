@@ -9,6 +9,6 @@ dist/
 *.__ms_dev__.mjs
 .vscode/settings.json
 .sandbox-state.json
-.sync-status.json
+.project-status.json
 example/
 empty-mindstudio-app/

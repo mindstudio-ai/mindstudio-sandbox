@@ -10,7 +10,7 @@ export const TREE_HIDDEN = new Set([
   '.vite',
   '.sandbox-state.json',
   '.remy-session.json',
-  '.sync-status.json',
+  '.project-status.json',
 ]);
 
 // Directories shown in the file tree but not expanded (collapsed).

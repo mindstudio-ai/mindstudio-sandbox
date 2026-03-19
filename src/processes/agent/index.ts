@@ -8,7 +8,7 @@
 import type { ProcessManager } from '../ProcessManager.js';
 import { parseAgentLine } from './events.js';
 import { transformHistory } from './history.js';
-import { ctx } from '../../server/context.js';
+import { getOnboardingState, setOnboardingState } from '../../projectStatus.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('agent');
@@ -76,14 +76,21 @@ const EVENT_MAP: Record<string, string> = {
   session_cleared: 'agentSessionCleared',
 };
 
-/** Tools where the sandbox handles execution and sends results back to remy. */
-const EXTERNAL_TOOLS = new Set([
-  'setViewMode',
-  'promptUser',
-  'clearSyncStatus',
-  'presentPlan',
-  'presentSyncPlan',
-  'presentPublishPlan',
+/**
+ * Tools that remy executes internally (not external).
+ * Any tool NOT in this set and NOT 'editsFinished' is treated as an
+ * external tool — tracked in pendingExternalTools and forwarded to
+ * the sandbox/frontend for handling. This means remy can add new
+ * external tools without any sandbox code changes.
+ */
+const INTERNAL_TOOLS = new Set([
+  ...Object.keys(FILE_TOOL_ACTIONS),
+  'bash',
+  'grep',
+  'glob',
+  'listDir',
+  'lspDiagnostics',
+  'restartProcess',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -214,7 +221,7 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 
   // --- External tools ---
 
-  if (event.event === 'tool_start' && EXTERNAL_TOOLS.has(event.name)) {
+  if (event.event === 'tool_start' && !INTERNAL_TOOLS.has(event.name)) {
     const input = event.input ?? {};
     pendingExternalTools.set(event.id, {
       id: event.id,
@@ -233,7 +240,10 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     // captures the full content if the client reconnects mid-stream.
     const pending = pendingExternalTools.get(event.id)!;
     pending.input = { ...pending.input, content: event.result };
-  } else if (event.event === 'tool_done' && EXTERNAL_TOOLS.has(event.name)) {
+  } else if (
+    event.event === 'tool_done' &&
+    pendingExternalTools.has(event.id)
+  ) {
     pendingExternalTools.delete(event.id);
   }
 
@@ -316,7 +326,9 @@ export function getAgentHistory(pm: ProcessManager): Promise<unknown[]> {
 /** Create WS action handlers for agent commands. */
 export function createAgentActions(
   pm: ProcessManager,
+  callbacks?: { onProjectStatusChanged?: () => void },
 ): Record<string, ActionHandler> {
+  const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
   function send(action: string, extra?: Record<string, unknown>): void {
     if (pm.getState('agent') !== 'running') {
       throw new Error('agent not running');
@@ -326,9 +338,10 @@ export function createAgentActions(
 
   return {
     agentMessage: async (p) => {
-      const { text, attachments } = p as {
+      const { text, attachments, viewContext } = p as {
         text: string;
         attachments?: Array<{ url: string; extractedTextUrl?: string }>;
+        viewContext?: Record<string, unknown>;
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
 
@@ -341,25 +354,11 @@ export function createAgentActions(
         send('cancel');
       }
 
-      // Gather view context so remy knows what the user is looking at
-      const viewMode = ctx.viewMode;
-      const activeEditor =
-        viewMode === 'spec'
-          ? ctx.specEditorState
-          : viewMode === 'code'
-            ? ctx.editorState
-            : null;
-      const editorState = activeEditor?.getState();
-
       send('message', {
         text,
-        projectHasCode: ctx.projectHasCode,
+        onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
-        viewContext: {
-          mode: viewMode,
-          openFiles: editorState?.tabs.map((t) => t.path) ?? [],
-          activeFile: editorState?.activeTab ?? null,
-        },
+        ...(viewContext ? { viewContext } : {}),
       });
       return {};
     },
@@ -368,8 +367,8 @@ export function createAgentActions(
       send('message', {
         text: '',
         runCommand: 'sync',
-        projectHasCode: ctx.projectHasCode,
-        viewContext: { mode: ctx.viewMode, openFiles: [], activeFile: null },
+        onboardingState: getOnboardingState(),
+        editorContext: {},
       });
       return {};
     },
@@ -378,8 +377,22 @@ export function createAgentActions(
       send('message', {
         text: '',
         runCommand: 'publish',
-        projectHasCode: ctx.projectHasCode,
-        viewContext: { mode: ctx.viewMode, openFiles: [], activeFile: null },
+        onboardingState: getOnboardingState(),
+        editorContext: {},
+      });
+      return {};
+    },
+    agentBuild: async () => {
+      log.info('Triggering build');
+      // Advance onboarding to initialCodegen when build is triggered
+      if (setOnboardingState('initialCodegen')) {
+        onProjectStatusChanged?.();
+      }
+      send('message', {
+        text: '',
+        runCommand: 'buildFromInitialSpec',
+        onboardingState: getOnboardingState(),
+        editorContext: {},
       });
       return {};
     },

@@ -178,7 +178,7 @@ export class SnapshotManager {
     for (const f of [
       '.sandbox-state.json',
       '.remy-session.json',
-      '.sync-status.json',
+      '.project-status.json',
     ]) {
       if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
         this.exec(`git add --force ${f}`, { env });

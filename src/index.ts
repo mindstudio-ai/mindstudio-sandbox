@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
@@ -32,13 +33,12 @@ import {
   setProxyTarget,
   flushHmr,
 } from './server/index.js';
-import { ctx, setViewMode, setViewModeCallback } from './server/context.js';
+import { ctx } from './server/context.js';
 import { handlers } from './server/handlers/index.js';
 import { EditorStateManager } from './server/states/EditorStateManager.js';
 import { FileTreeManager } from './server/states/FileTreeManager.js';
 import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.js';
 import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.js';
-import { getProjectHasCode } from './server/states/_helpers/getProjectHasCode.js';
 import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/handlers/filesystem.js';
@@ -55,12 +55,14 @@ import {
 import { createLogger, onLog } from './logger.js';
 import { SnapshotManager } from './snapshot.js';
 import {
-  initSyncStatus,
-  getSyncStatus,
+  initProjectStatus,
+  getProjectStatus,
   markSpecDirty,
   markCodeDirty,
   clearSyncStatus,
-} from './syncStatus.js';
+  setOnboardingState,
+  type ProjectOnboardingState,
+} from './projectStatus.js';
 import type { AppConfig, WebConfig } from './types.js';
 
 const log = createLogger('cnc');
@@ -234,16 +236,45 @@ async function startServices(
       broadcast,
       onEditsFinished: flushHmr,
       onExternalTool: (id, name, input) => {
-        if (name === 'setViewMode') {
-          setViewMode(input.mode as string);
-          sendToolResult(processManager, id, 'ok');
-        } else if (name === 'clearSyncStatus') {
+        if (name === 'clearSyncStatus') {
           if (clearSyncStatus()) {
-            broadcast('syncStatusChanged', getSyncStatus());
+            broadcast('projectStatusChanged', getProjectStatus());
           }
           sendToolResult(processManager, id, 'ok');
+        } else if (name === 'setProjectOnboardingState') {
+          const state = input.state as ProjectOnboardingState;
+          setOnboardingState(state);
+
+          // Side effect: when entering initialSpecAuthoring, wipe src/app.md if it's
+          // still the untouched scaffold version. This prevents the user from
+          // seeing a flash of the "hello world" spec before remy writes the
+          // real one. We check git diff against HEAD (the initial clone) —
+          // if the file is unchanged, it's safe to delete.
+          if (state === 'initialSpecAuthoring') {
+            try {
+              const diff = execSync('git diff HEAD -- src/app.md', {
+                cwd: config.workspaceDir,
+                encoding: 'utf-8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+              });
+              if (!diff.trim()) {
+                execSync('rm -f src/app.md', {
+                  cwd: config.workspaceDir,
+                  stdio: 'ignore',
+                });
+                log.info(
+                  'Removed scaffold src/app.md (unchanged from initial commit)',
+                );
+              }
+            } catch {
+              // File doesn't exist or git fails — either way, nothing to do
+            }
+          }
+
+          broadcast('projectStatusChanged', getProjectStatus());
+          sendToolResult(processManager, id, 'ok');
         }
-        // promptUser: handled by frontend via promptUserResponse WS action
+        // promptUser, presentPlan, etc.: handled by frontend via externalToolResult WS action
       },
       onTurnDone: () => snapshotManager.scheduleSnapshot(),
     },
@@ -270,8 +301,6 @@ function setupFileWatcher(
     specFileTreeManager,
   } = managers;
 
-  let currentProjectHasCode = ctx.projectHasCode;
-
   // Shared handler for all file change events — called by both the
   // file watcher (for external/user changes) and the writeFile/deleteFile/
   // renameFile handlers (where watcher events are suppressed).
@@ -290,16 +319,6 @@ function setupFileWatcher(
           .then((updated) => {
             ctx.appConfig = updated;
             broadcast('manifestChanged', { app: updated });
-
-            // Check if projectHasCode changed
-            const newProjectHasCode = getProjectHasCode(updated);
-            if (newProjectHasCode !== currentProjectHasCode) {
-              currentProjectHasCode = newProjectHasCode;
-              ctx.projectHasCode = newProjectHasCode;
-              broadcast('projectHasCodeChanged', {
-                projectHasCode: newProjectHasCode,
-              });
-            }
           })
           .catch(() => {});
       }
@@ -325,13 +344,18 @@ function setupFileWatcher(
   ctx.onUserSave = (filePath: string) => {
     if (filePath.startsWith('src/')) {
       if (markSpecDirty()) {
-        broadcast('syncStatusChanged', getSyncStatus());
+        broadcast('projectStatusChanged', getProjectStatus());
       }
     } else if (filePath.startsWith('dist/')) {
       if (markCodeDirty()) {
-        broadcast('syncStatusChanged', getSyncStatus());
+        broadcast('projectStatusChanged', getProjectStatus());
       }
     }
+  };
+
+  // Broadcast project status changes (onboarding state set by user)
+  ctx.onProjectStatusChanged = () => {
+    broadcast('projectStatusChanged', getProjectStatus());
   };
 
   log.info(`Starting file watcher on ${config.workspaceDir}`);
@@ -407,10 +431,6 @@ async function main(): Promise<void> {
   ctx.specEditorState = managers.specEditorManager;
   ctx.specFileTreeManager = managers.specFileTreeManager;
   ctx.resourceMonitor = managers.resourceMonitor;
-  setViewModeCallback((mode) => {
-    broadcast('viewModeChanged', { viewMode: mode });
-    markDirty();
-  });
   log.info(`Server listening on port ${config.port}`);
 
   const progress = (step: string, message: string) => {
@@ -432,17 +452,14 @@ async function main(): Promise<void> {
     configureGit(config.workspaceDir);
     await snapshotManager.restore();
 
-    // 7. Init sync status (after snapshot restore so file is available)
-    initSyncStatus(config.workspaceDir);
+    // 7. Init project status (after snapshot restore so file is available)
+    initProjectStatus(config.workspaceDir);
 
     // 8. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
     const webConfig = await readWebConfig(config.workspaceDir, appConfig);
     ctx.appConfig = appConfig;
-    ctx.projectHasCode = getProjectHasCode(appConfig);
-    log.info(
-      `App: ${appConfig.name} (${appConfig.appId}), projectHasCode: ${ctx.projectHasCode}`,
-    );
+    log.info(`App: ${appConfig.name} (${appConfig.appId})`);
 
     // 8. Install dependencies
     await installDependencies(config.workspaceDir, progress);
@@ -453,7 +470,14 @@ async function main(): Promise<void> {
     initPty(config.workspaceDir, managers.registry, managers.batcher);
     ctx.processManager = managers.processManager;
     Object.assign(handlers, createTunnelActions(managers.processManager));
-    Object.assign(handlers, createAgentActions(managers.processManager));
+    Object.assign(
+      handlers,
+      createAgentActions(managers.processManager, {
+        onProjectStatusChanged: () => {
+          broadcast('projectStatusChanged', getProjectStatus());
+        },
+      }),
+    );
 
     // 10. Restore state
     initState(

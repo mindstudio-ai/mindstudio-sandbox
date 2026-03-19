@@ -16,7 +16,11 @@ import {
   ptyClose,
   ptyGetScrollback,
 } from './pty.js';
-import { ctx, setViewMode } from '../context.js';
+import { ctx } from '../context.js';
+import {
+  setOnboardingState,
+  type ProjectOnboardingState,
+} from '../../projectStatus.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('handlers');
@@ -163,10 +167,12 @@ export const handlers: Record<string, ActionHandler> = {
     return {};
   },
 
-  // --- View mode ---
-  setViewMode: async (p) => {
-    const { mode } = p as { mode: string };
-    setViewMode(mode);
+  // --- Project onboarding ---
+  setProjectOnboardingState: async (p) => {
+    const { state } = p as { state: string };
+    if (setOnboardingState(state as ProjectOnboardingState, true)) {
+      ctx.onProjectStatusChanged?.();
+    }
     return {};
   },
 

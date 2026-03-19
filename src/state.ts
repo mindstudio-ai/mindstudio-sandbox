@@ -24,7 +24,6 @@ import type {
   SpecEditorStateManager,
   SpecEditorState,
 } from './server/states/SpecEditorStateManager.js';
-import { ctx, type ViewMode } from './server/context.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('state');
@@ -33,7 +32,6 @@ interface SandboxState {
   processSnapshots: ProcessSnapshot[];
   editorState?: EditorState;
   specEditorState?: SpecEditorState;
-  viewMode?: ViewMode;
 }
 
 const FLUSH_DEBOUNCE_MS = 30_000;
@@ -68,7 +66,6 @@ function flushSync(): void {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
       specEditorState: specEditorManager?.getState(),
-      viewMode: ctx.viewMode,
     };
     fsSync.writeFileSync(statePath, JSON.stringify(state), 'utf-8');
     dirty = false;
@@ -113,7 +110,6 @@ export async function saveState(): Promise<void> {
       processSnapshots: registry.getSnapshots(),
       editorState: editorManager?.getState(),
       specEditorState: specEditorManager?.getState(),
-      viewMode: ctx.viewMode,
     };
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
@@ -141,9 +137,6 @@ export async function restoreState(): Promise<boolean> {
       }
       if (saved.specEditorState && specEditorManager) {
         specEditorManager.hydrate(saved.specEditorState);
-      }
-      if (saved.viewMode) {
-        ctx.viewMode = saved.viewMode;
       }
       log.info(
         `Restored (${saved.processSnapshots.length} process snapshots) ← ${statePath}`,
