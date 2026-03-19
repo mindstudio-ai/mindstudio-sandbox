@@ -153,6 +153,28 @@ export async function installAgent(progress: ProgressFn): Promise<void> {
   verifyInstalled('remy');
 }
 
+export async function installAgentSdk(progress: ProgressFn): Promise<void> {
+  const devBranch = process.env['AGENT_SDK_DEV_BRANCH'];
+
+  if (devBranch) {
+    progress(
+      'installAgentSdk',
+      `Installing agent SDK from source (${devBranch})...`,
+    );
+    installFromSource({
+      repoUrl: 'https://github.com/mindstudio-ai/mindstudio-agent.git',
+      branch: devBranch,
+      tmpDir: '/tmp/mindstudio-agent',
+      label: 'agent-sdk',
+    });
+  } else {
+    progress('installAgentSdk', 'Installing MindStudio agent SDK...');
+    run('npm install -g @mindstudio-ai/agent', {
+      label: 'npm install -g @mindstudio-ai/agent',
+    });
+  }
+}
+
 export async function installLsp(progress: ProgressFn): Promise<void> {
   progress('installLsp', 'Installing TypeScript language server...');
   run('npm install -g typescript-language-server typescript', {

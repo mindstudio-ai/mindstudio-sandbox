@@ -6,6 +6,7 @@ import { loadConfig, type Config } from './config.js';
 import {
   installTunnel,
   installAgent,
+  installAgentSdk,
   installLsp,
   writeTunnelConfig,
   cloneAppRepo,
@@ -448,6 +449,7 @@ async function main(): Promise<void> {
     await Promise.all([
       installTunnel(progress),
       installAgent(progress),
+      installAgentSdk(progress),
       installLsp(progress),
     ]);
 
