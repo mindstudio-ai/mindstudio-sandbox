@@ -119,6 +119,7 @@ function createStateManagers(config: Config): Managers {
     onChange: (tree) => {
       broadcast('specFileTreeChanged', { specFileTree: tree });
     },
+    getAppName: () => ctx.appConfig?.name ?? null,
   });
 
   const specEditorManager = new SpecEditorStateManager((state) => {
@@ -272,6 +273,14 @@ async function startServices(
             } catch {
               // File doesn't exist or git fails — either way, nothing to do
             }
+
+            // Broadcast the file change directly (bypassing batcher) so the
+            // frontend clears its editor content BEFORE receiving the view
+            // transition to spec mode — prevents a flash of stale content.
+            broadcast('fileChanged', {
+              batch: [{ path: 'src/app.md', changeType: 'modified' }],
+            });
+
             ctx.specEditorState?.openFile('src/app.md', false);
           }
 

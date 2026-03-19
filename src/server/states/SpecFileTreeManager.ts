@@ -19,17 +19,20 @@ const REBUILD_DEBOUNCE_MS = 50;
 export interface SpecFileTreeManagerOpts {
   workspaceDir: string;
   onChange: (tree: TreeEntry[]) => void;
+  getAppName: () => string | null;
 }
 
 export class SpecFileTreeManager {
   private workspaceDir: string;
   private onChange: (tree: TreeEntry[]) => void;
+  private getAppName: () => string | null;
   private cachedTree: TreeEntry[] = [];
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: SpecFileTreeManagerOpts) {
     this.workspaceDir = opts.workspaceDir;
     this.onChange = opts.onChange;
+    this.getAppName = opts.getAppName;
   }
 
   /** Build the full src/ tree from disk and cache it. */
@@ -140,6 +143,9 @@ export class SpecFileTreeManager {
           const displayName = await this.readFrontmatterName(fullPath);
           if (displayName) {
             node.displayName = displayName;
+          } else if (relPath === 'src/app.md') {
+            // Fall back to app name from mindstudio.json for the main spec file
+            node.displayName = this.getAppName() ?? undefined;
           }
         }
 

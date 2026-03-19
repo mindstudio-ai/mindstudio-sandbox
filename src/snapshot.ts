@@ -210,12 +210,19 @@ export class SnapshotManager {
       return false;
     }
 
-    // Force-push to remote (explicit refspec)
+    // Force-push to remote (explicit refspec). Retry once on failure —
+    // the remote may reject if a previous push is still settling (stale
+    // compare-and-swap value).
     if (
       this.exec(`git push --force origin ${DRAFT_REF}:${DRAFT_REF}`) === null
     ) {
-      log.warn('Snapshot committed locally but push failed');
-      return false;
+      log.warn('Push failed, retrying...');
+      if (
+        this.exec(`git push --force origin ${DRAFT_REF}:${DRAFT_REF}`) === null
+      ) {
+        log.warn('Snapshot committed locally but push failed');
+        return false;
+      }
     }
 
     // Clean up temp index
