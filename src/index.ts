@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import {
@@ -246,11 +247,10 @@ async function startServices(
           const state = input.state as ProjectOnboardingState;
           setOnboardingState(state);
 
-          // Side effect: when entering initialSpecAuthoring, wipe src/app.md if it's
-          // still the untouched scaffold version. This prevents the user from
-          // seeing a flash of the "hello world" spec before remy writes the
-          // real one. We check git diff against HEAD (the initial clone) —
-          // if the file is unchanged, it's safe to delete.
+          // Side effect: when entering initialSpecAuthoring, clear src/app.md
+          // if it's still the untouched scaffold version, then open it in the
+          // spec editor. This prevents the user from seeing the "hello world"
+          // spec before remy writes the real one.
           if (state === 'initialSpecAuthoring') {
             try {
               const diff = execSync('git diff HEAD -- src/app.md', {
@@ -259,17 +259,19 @@ async function startServices(
                 stdio: ['ignore', 'pipe', 'pipe'],
               });
               if (!diff.trim()) {
-                execSync('rm -f src/app.md', {
-                  cwd: config.workspaceDir,
-                  stdio: 'ignore',
-                });
+                fsSync.writeFileSync(
+                  path.join(config.workspaceDir, 'src/app.md'),
+                  '',
+                  'utf-8',
+                );
                 log.info(
-                  'Removed scaffold src/app.md (unchanged from initial commit)',
+                  'Cleared scaffold src/app.md (unchanged from initial commit)',
                 );
               }
             } catch {
               // File doesn't exist or git fails — either way, nothing to do
             }
+            ctx.specEditorState?.openFile('src/app.md', false);
           }
 
           broadcast('projectStatusChanged', getProjectStatus());

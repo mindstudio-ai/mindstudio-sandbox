@@ -94,6 +94,16 @@ const INTERNAL_TOOLS = new Set([
   'restartProcess',
 ]);
 
+/**
+ * External tools handled by the sandbox server (not forwarded to frontend).
+ * These are suppressed from broadcast and filtered from chat history.
+ */
+export const SERVER_HANDLED_TOOLS = new Set([
+  'editsFinished',
+  'setProjectOnboardingState',
+  'clearSyncStatus',
+]);
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------

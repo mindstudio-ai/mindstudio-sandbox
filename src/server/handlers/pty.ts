@@ -56,7 +56,14 @@ export async function ptyCreate(params: {
     cols,
     rows,
     cwd,
-    env: process.env as Record<string, string>,
+    env: {
+      ...(process.env as Record<string, string>),
+      TERM: 'xterm-256color',
+      CLICOLOR: '1',
+      FORCE_COLOR: '1',
+      // Custom prompt: purple "mindstudio" label, cyan cwd (relative), reset ▸
+      PS1: '\\[\\e[35m\\]mindstudio \\[\\e[36m\\]\\W\\[\\e[0m\\] ▸ ',
+    },
   });
 
   const session: PtySession = {

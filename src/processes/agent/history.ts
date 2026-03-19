@@ -1,3 +1,5 @@
+import { SERVER_HANDLED_TOOLS } from './index.js';
+
 /**
  * Transform remy's raw LLM-level history into frontend-friendly format.
  *
@@ -59,8 +61,8 @@ export function transformHistory(raw: unknown[]): unknown[] {
         | undefined;
       if (toolCalls) {
         for (const tc of toolCalls) {
-          // Filter out internal-only tools
-          if (tc.name === 'editsFinished') {
+          // Filter out server-handled tools (not shown to frontend)
+          if (SERVER_HANDLED_TOOLS.has(tc.name)) {
             continue;
           }
           let toolResult: string | undefined;
