@@ -57,7 +57,12 @@ export function transformHistory(raw: unknown[]): unknown[] {
 
       // Add tool blocks, merging with subsequent tool result messages
       const toolCalls = msg.toolCalls as
-        | Array<{ id: string; name: string; input: unknown }>
+        | Array<{
+            id: string;
+            name: string;
+            input: unknown;
+            parentToolId?: string;
+          }>
         | undefined;
       if (toolCalls) {
         for (const tc of toolCalls) {
@@ -85,6 +90,7 @@ export function transformHistory(raw: unknown[]): unknown[] {
             input: tc.input,
             result: toolResult,
             isError,
+            ...(tc.parentToolId ? { parentToolId: tc.parentToolId } : {}),
           });
         }
       }
