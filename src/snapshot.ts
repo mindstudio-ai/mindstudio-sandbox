@@ -210,19 +210,11 @@ export class SnapshotManager {
       return false;
     }
 
-    // Force-push to remote (explicit refspec). Retry once on failure —
-    // the remote may reject if a previous push is still settling (stale
-    // compare-and-swap value).
-    if (
-      this.exec(`git push --force origin ${DRAFT_REF}:${DRAFT_REF}`) === null
-    ) {
-      log.warn('Push failed, retrying...');
-      if (
-        this.exec(`git push --force origin ${DRAFT_REF}:${DRAFT_REF}`) === null
-      ) {
-        log.warn('Snapshot committed locally but push failed');
-        return false;
-      }
+    // Push to remote using + prefix for unconditional force (bypasses
+    // server-side compare-and-swap checks that --force can still trigger).
+    if (this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`) === null) {
+      log.warn('Snapshot committed locally but push failed');
+      return false;
     }
 
     // Clean up temp index
