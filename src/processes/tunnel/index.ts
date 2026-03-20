@@ -195,6 +195,16 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       }
       break;
     }
+    case 'screenshot-completed': {
+      log.info(
+        `Screenshot captured: ${tunnelEvent.width}x${tunnelEvent.height} (${tunnelEvent.duration}ms)`,
+      );
+      const screenshotResolver = screenshotResolvers.shift();
+      if (screenshotResolver) {
+        screenshotResolver(tunnelEvent);
+      }
+      break;
+    }
     case 'command-error':
       log.warn(`Command error: ${tunnelEvent.message}`);
       break;
@@ -366,6 +376,50 @@ export function runBrowserAndWait(
     browserResolvers.push(resolverFn);
 
     pm.writeStdin('tunnel', JSON.stringify({ action: 'browser', steps }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous screenshot capture
+// ---------------------------------------------------------------------------
+
+interface ScreenshotResult {
+  url: string;
+  width: number;
+  height: number;
+  duration: number;
+}
+
+const screenshotResolvers: Array<(result: ScreenshotResult) => void> = [];
+
+/** Capture a screenshot and wait for the CDN URL. */
+export function takeScreenshotAndWait(
+  pm: ProcessManager,
+): Promise<ScreenshotResult> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({
+      url: '',
+      width: 0,
+      height: 0,
+      duration: 0,
+    });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      const idx = screenshotResolvers.indexOf(resolverFn);
+      if (idx !== -1) {
+        screenshotResolvers.splice(idx, 1);
+      }
+      resolve({ url: '', width: 0, height: 0, duration: 0 });
+    }, 30_000);
+
+    const resolverFn = (result: ScreenshotResult) => {
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    screenshotResolvers.push(resolverFn);
+    pm.writeStdin('tunnel', JSON.stringify({ action: 'screenshot' }));
   });
 }
 

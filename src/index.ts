@@ -24,6 +24,7 @@ import {
   runScenarioAndWait,
   runMethodAndWait,
   runBrowserAndWait,
+  takeScreenshotAndWait,
 } from './processes/tunnel/index.js';
 import {
   startAgent,
@@ -336,6 +337,12 @@ async function startServices(
           const steps = (input.steps as unknown[]) ?? [];
           log.info(`Agent running browser command: ${steps.length} step(s)`);
           runBrowserAndWait(processManager, steps).then((result) => {
+            sendToolResult(processManager, id, JSON.stringify(result));
+          });
+          return true;
+        } else if (name === 'screenshot') {
+          log.info('Agent taking screenshot');
+          takeScreenshotAndWait(processManager).then((result) => {
             sendToolResult(processManager, id, JSON.stringify(result));
           });
           return true;

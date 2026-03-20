@@ -83,6 +83,13 @@ export type TunnelEvent =
       snapshot: string;
       duration: number;
     }
+  | {
+      event: 'screenshot-completed';
+      url: string;
+      width: number;
+      height: number;
+      duration: number;
+    }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }
