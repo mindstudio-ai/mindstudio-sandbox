@@ -79,6 +79,7 @@ const log = createLogger('cnc');
 // ---------------------------------------------------------------------------
 
 interface Managers {
+  logsDir: string;
   batcher: BroadcastBatcher;
   registry: ProcessRegistry;
   processManager: ProcessManager;
@@ -94,8 +95,9 @@ function createStateManagers(config: Config): Managers {
     flush: (event, batch) => broadcast(event, { batch }),
   });
 
+  // logsDir is created later (after clone) but registry needs the path now.
+  // appendLog silently ignores write failures if the dir doesn't exist yet.
   const logsDir = path.join(config.workspaceDir, '.logs');
-  fsSync.mkdirSync(logsDir, { recursive: true });
 
   const registry = new ProcessRegistry({
     onStateChange: (event) => {
@@ -152,6 +154,7 @@ function createStateManagers(config: Config): Managers {
   const processManager = new ProcessManager(registry);
 
   return {
+    logsDir,
     batcher,
     registry,
     processManager,
@@ -507,6 +510,7 @@ async function main(): Promise<void> {
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
     configureGit(config.workspaceDir);
+    fsSync.mkdirSync(managers.logsDir, { recursive: true });
     await snapshotManager.restore();
 
     // 7. Init project status (after snapshot restore so file is available)
