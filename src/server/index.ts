@@ -99,6 +99,18 @@ export function startServer(
       }
 
       if (req.url?.startsWith('/logs/')) {
+        const corsHeaders = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET',
+        };
+
+        // Handle CORS preflight
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, corsHeaders);
+          res.end();
+          return;
+        }
+
         const name = decodeURIComponent(req.url.slice('/logs/'.length));
 
         // Resolve log file path: process logs from registry, or
@@ -109,7 +121,7 @@ export function startServer(
         };
         let logPath = ctx.registry?.getLogPath(name) ?? STANDALONE_LOGS[name];
         if (!logPath) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.writeHead(404, { 'Content-Type': 'text/plain', ...corsHeaders });
           res.end('Log not found');
           return;
         }
@@ -123,11 +135,15 @@ export function startServer(
             res.writeHead(200, {
               'Content-Type': contentType,
               'Cache-Control': 'no-cache',
+              ...corsHeaders,
             });
             res.end(content);
           })
           .catch(() => {
-            res.writeHead(200, { 'Content-Type': contentType });
+            res.writeHead(200, {
+              'Content-Type': contentType,
+              ...corsHeaders,
+            });
             res.end('');
           });
         return;
