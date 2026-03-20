@@ -18,7 +18,14 @@ import {
 } from './bootstrap.js';
 import { ProcessRegistry } from './processes/ProcessRegistry.js';
 import { ProcessManager } from './processes/ProcessManager.js';
-import { startTunnel, createTunnelActions } from './processes/tunnel/index.js';
+import {
+  startTunnel,
+  createTunnelActions,
+  runScenarioAndWait,
+  runMethodAndWait,
+  runBrowserAndWait,
+  takeScreenshotAndWait,
+} from './processes/tunnel/index.js';
 import {
   startAgent,
   createAgentActions,
@@ -74,6 +81,7 @@ const log = createLogger('cnc');
 // ---------------------------------------------------------------------------
 
 interface Managers {
+  logsDir: string;
   batcher: BroadcastBatcher;
   registry: ProcessRegistry;
   processManager: ProcessManager;
@@ -89,15 +97,16 @@ function createStateManagers(config: Config): Managers {
     flush: (event, batch) => broadcast(event, { batch }),
   });
 
+  // logsDir is created later (after clone) but registry needs the path now.
+  // appendLog silently ignores write failures if the dir doesn't exist yet.
+  const logsDir = path.join(config.workspaceDir, '.logs');
+
   const registry = new ProcessRegistry({
     onStateChange: (event) => {
       batcher.push('processStateChanged', event);
       markDirty();
     },
-    onLogAppend: (name, entry) => {
-      batcher.push('processOutput', { process: name, ...entry });
-      markDirty();
-    },
+    logsDir,
   });
 
   const fileTreeManager = new FileTreeManager({
@@ -147,6 +156,7 @@ function createStateManagers(config: Config): Managers {
   const processManager = new ProcessManager(registry);
 
   return {
+    logsDir,
     batcher,
     registry,
     processManager,
@@ -286,6 +296,55 @@ async function startServices(
 
           broadcast('projectStatusChanged', getProjectStatus());
           sendToolResult(processManager, id, 'ok');
+          return true;
+        } else if (name === 'runScenario') {
+          const scenarioId = input.scenarioId as string;
+          if (!scenarioId) {
+            sendToolResult(processManager, id, 'error: missing scenarioId');
+            return true;
+          }
+          log.info(`Agent running scenario: ${scenarioId}`);
+          runScenarioAndWait(processManager, scenarioId).then((result) => {
+            sendToolResult(processManager, id, JSON.stringify(result));
+          });
+          return true;
+        } else if (name === 'runMethod') {
+          const method = input.method as string;
+          if (!method) {
+            sendToolResult(
+              processManager,
+              id,
+              JSON.stringify({
+                method: '',
+                success: false,
+                output: null,
+                error: { message: 'missing method' },
+                stdout: [],
+                duration: 0,
+              }),
+            );
+            return true;
+          }
+          const methodInput = (input.input as Record<string, unknown>) ?? {};
+          log.info(`Agent running method: ${method}`);
+          runMethodAndWait(processManager, method, methodInput).then(
+            (result) => {
+              sendToolResult(processManager, id, JSON.stringify(result));
+            },
+          );
+          return true;
+        } else if (name === 'browserCommand') {
+          const steps = (input.steps as unknown[]) ?? [];
+          log.info(`Agent running browser command: ${steps.length} step(s)`);
+          runBrowserAndWait(processManager, steps).then((result) => {
+            sendToolResult(processManager, id, JSON.stringify(result));
+          });
+          return true;
+        } else if (name === 'screenshot') {
+          log.info('Agent taking screenshot');
+          takeScreenshotAndWait(processManager).then((result) => {
+            sendToolResult(processManager, id, JSON.stringify(result));
+          });
           return true;
         }
         // Not handled server-side — frontend handles via externalToolResult WS action
@@ -438,7 +497,7 @@ async function main(): Promise<void> {
   });
 
   // 4. Start HTTP/WS server (health returns "bootstrapping")
-  await startServer(config.port, config.sandboxToken);
+  await startServer(config.port, config.sandboxToken, config.workspaceDir);
   ctx.batcher = managers.batcher;
   ctx.registry = managers.registry;
   ctx.editorState = managers.editorManager;
@@ -466,6 +525,7 @@ async function main(): Promise<void> {
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
     configureGit(config.workspaceDir);
+    fsSync.mkdirSync(managers.logsDir, { recursive: true });
     await snapshotManager.restore();
 
     // 7. Init project status (after snapshot restore so file is available)

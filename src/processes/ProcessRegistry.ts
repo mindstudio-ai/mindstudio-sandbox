@@ -1,8 +1,10 @@
 /**
- * Unified process registry — central data store for all process metadata
- * and per-process log buffers. Every execution unit (bootstrap tasks,
- * long-lived services, shell commands, system logs) is a first-class entry.
+ * Unified process registry — central data store for all process metadata.
+ * Logs are written to individual files on disk (.logs/<process>.log).
  */
+
+import fs from 'node:fs';
+import path from 'node:path';
 
 export type ProcessType = 'service' | 'task' | 'shell' | 'system' | 'pty';
 export type ProcessState =
@@ -11,12 +13,6 @@ export type ProcessState =
   | 'crashed'
   | 'stopped'
   | 'completed';
-
-export interface ProcessLogEntry {
-  stream: 'stdout' | 'stderr';
-  line: string;
-  ts: number;
-}
 
 export interface RestartRecord {
   at: number;
@@ -37,6 +33,7 @@ export interface ProcessInfo {
   restartCount: number;
   restartHistory: RestartRecord[];
   pid: number | null;
+  logFile: string;
 }
 
 export interface ProcessStateChangeEvent {
@@ -53,40 +50,37 @@ export interface ProcessStateChangeEvent {
 
 export interface ProcessSnapshot {
   info: ProcessInfo;
-  log: ProcessLogEntry[];
 }
 
-const DEFAULT_LOG_CAP = 1000;
-const DEFAULT_MERGED_LOG_CAP = 5000;
 const MAX_RESTART_HISTORY = 20;
+const MAX_LOG_SIZE = 2 * 1024 * 1024; // 2MB per log file
+const ROTATION_CHECK_INTERVAL = 500; // only check file size every N appends
 
 interface RegistryEntry {
   info: ProcessInfo;
-  log: ProcessLogEntry[];
+  appendCount: number;
 }
 
 export interface ProcessRegistryOpts {
   onStateChange: (event: ProcessStateChangeEvent) => void;
-  onLogAppend: (name: string, entry: ProcessLogEntry) => void;
-  logCap?: number;
-  mergedLogCap?: number;
+  logsDir: string;
 }
 
 export class ProcessRegistry {
   private entries = new Map<string, RegistryEntry>();
   private onStateChange: (event: ProcessStateChangeEvent) => void;
-  private onLogAppend: (name: string, entry: ProcessLogEntry) => void;
-  private logCap: number;
-  private mergedLogCap: number;
+  private logsDir: string;
 
   constructor(opts: ProcessRegistryOpts) {
     this.onStateChange = opts.onStateChange;
-    this.onLogAppend = opts.onLogAppend;
-    this.logCap = opts.logCap ?? DEFAULT_LOG_CAP;
-    this.mergedLogCap = opts.mergedLogCap ?? DEFAULT_MERGED_LOG_CAP;
+    this.logsDir = opts.logsDir;
   }
 
   register(name: string, type: ProcessType, command: string): void {
+    // Sanitize name for filename (replace colons, slashes, etc.)
+    const safeFilename = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const logFile = `.logs/${safeFilename}.log`;
+
     this.entries.set(name, {
       info: {
         name,
@@ -101,8 +95,9 @@ export class ProcessRegistry {
         restartCount: 0,
         restartHistory: [],
         pid: null,
+        logFile,
       },
-      log: [],
+      appendCount: 0,
     });
   }
 
@@ -180,15 +175,29 @@ export class ProcessRegistry {
       return;
     }
 
-    const logEntry: ProcessLogEntry = { stream, line, ts: Date.now() };
-    entry.log.push(logEntry);
-
-    // Per-process cap
-    if (entry.log.length > this.logCap) {
-      entry.log.splice(0, entry.log.length - this.logCap);
+    const ts = new Date().toISOString();
+    const fullPath = path.join(this.logsDir, path.basename(entry.info.logFile));
+    try {
+      fs.appendFileSync(fullPath, `[${ts}] [${stream}] ${line}\n`);
+      entry.appendCount++;
+      if (entry.appendCount % ROTATION_CHECK_INTERVAL === 0) {
+        this.maybeRotate(fullPath);
+      }
+    } catch {
+      // Ignore write failures (dir might not exist yet during early bootstrap)
     }
+  }
 
-    this.onLogAppend(name, logEntry);
+  /** Truncate log file if it exceeds the size cap. */
+  private maybeRotate(fullPath: string): void {
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.size > MAX_LOG_SIZE) {
+        fs.writeFileSync(fullPath, '');
+      }
+    } catch {
+      // ignore
+    }
   }
 
   getInfo(name: string): ProcessInfo | undefined {
@@ -199,30 +208,15 @@ export class ProcessRegistry {
     return Array.from(this.entries.values()).map((e) => e.info);
   }
 
-  getLog(name: string): ProcessLogEntry[] {
-    return this.entries.get(name)?.log ?? [];
+  /** Get the relative log file path for a process (for HTTP endpoint). */
+  getLogPath(name: string): string | undefined {
+    return this.entries.get(name)?.info.logFile;
   }
 
-  /** Merged log across all processes, sorted by timestamp, capped. */
-  getMergedLog(): ProcessLogEntry[] {
-    const all: Array<ProcessLogEntry & { process: string }> = [];
-    for (const [name, entry] of this.entries) {
-      for (const log of entry.log) {
-        all.push({ ...log, process: name });
-      }
-    }
-    all.sort((a, b) => a.ts - b.ts);
-    if (all.length > this.mergedLogCap) {
-      return all.slice(all.length - this.mergedLogCap);
-    }
-    return all;
-  }
-
-  /** Snapshot all entries for persistence. */
+  /** Snapshot all entries for persistence (metadata only, logs are on disk). */
   getSnapshots(): ProcessSnapshot[] {
     return Array.from(this.entries.values()).map((e) => ({
       info: { ...e.info, restartHistory: [...e.info.restartHistory] },
-      log: [...e.log],
     }));
   }
 
@@ -238,7 +232,7 @@ export class ProcessRegistry {
           info.duration = info.endedAt - info.startedAt;
         }
       }
-      this.entries.set(info.name, { info, log: [...snap.log] });
+      this.entries.set(info.name, { info, appendCount: 0 });
     }
   }
 

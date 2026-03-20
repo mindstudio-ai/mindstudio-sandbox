@@ -8,6 +8,8 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import net from 'node:net';
 import { URL } from 'node:url';
 import httpProxy from 'http-proxy';
@@ -22,6 +24,7 @@ const log = createLogger('ws-server');
 const lspLog = createLogger('lsp-ws');
 
 let sandboxToken: string = '';
+let workspaceDir: string = '';
 let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 
@@ -74,8 +77,13 @@ function isCncPath(url: string | undefined): boolean {
   return pathname === '/ws' || pathname === '/health' || pathname === '/lsp';
 }
 
-export function startServer(port: number, token?: string): Promise<void> {
+export function startServer(
+  port: number,
+  token?: string,
+  wsDir?: string,
+): Promise<void> {
   sandboxToken = token || '';
+  workspaceDir = wsDir || '';
 
   return new Promise((resolve) => {
     log.info(`Creating HTTP server on port ${port}`);
@@ -87,6 +95,94 @@ export function startServer(port: number, token?: string): Promise<void> {
       if (req.url === '/health' || req.url?.startsWith('/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: ctx.status, proxyTarget }));
+        return;
+      }
+
+      if (req.url?.startsWith('/logs/')) {
+        const corsHeaders = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET',
+        };
+
+        // Handle CORS preflight
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, corsHeaders);
+          res.end();
+          return;
+        }
+
+        const name = decodeURIComponent(req.url.slice('/logs/'.length));
+
+        // Resolve log file path: process logs from registry, or
+        // special files written directly by the tunnel.
+        const STANDALONE_LOGS: Record<string, string> = {
+          requests: '.logs/requests.ndjson',
+          browser: '.logs/browser.ndjson',
+        };
+        let logPath = ctx.registry?.getLogPath(name) ?? STANDALONE_LOGS[name];
+        if (!logPath) {
+          res.writeHead(404, { 'Content-Type': 'text/plain', ...corsHeaders });
+          res.end('Log not found');
+          return;
+        }
+
+        const fullPath = path.join(workspaceDir, logPath);
+        const contentType = logPath.endsWith('.ndjson')
+          ? 'application/x-ndjson'
+          : 'text/plain';
+
+        fs.stat(fullPath)
+          .then(async (stat) => {
+            const rangeHeader = req.headers.range;
+            if (rangeHeader) {
+              // Parse "bytes=<start>-" range request
+              const match = rangeHeader.match(/bytes=(\d+)-/);
+              const start = match ? parseInt(match[1], 10) : 0;
+              if (start >= stat.size) {
+                // Nothing new — return empty 206
+                res.writeHead(206, {
+                  'Content-Type': contentType,
+                  'Content-Range': `bytes ${stat.size}-${stat.size}/${stat.size}`,
+                  'Content-Length': '0',
+                  'Accept-Ranges': 'bytes',
+                  'Cache-Control': 'no-cache',
+                  ...corsHeaders,
+                });
+                res.end('');
+                return;
+              }
+              const content = await fs.readFile(fullPath, 'utf-8');
+              const slice = content.slice(start);
+              res.writeHead(206, {
+                'Content-Type': contentType,
+                'Content-Range': `bytes ${start}-${stat.size - 1}/${stat.size}`,
+                'Content-Length': String(Buffer.byteLength(slice)),
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'no-cache',
+                ...corsHeaders,
+              });
+              res.end(slice);
+            } else {
+              const content = await fs.readFile(fullPath, 'utf-8');
+              res.writeHead(200, {
+                'Content-Type': contentType,
+                'Content-Length': String(Buffer.byteLength(content)),
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'no-cache',
+                ...corsHeaders,
+              });
+              res.end(content);
+            }
+          })
+          .catch(() => {
+            res.writeHead(200, {
+              'Content-Type': contentType,
+              'Content-Length': '0',
+              'Accept-Ranges': 'bytes',
+              ...corsHeaders,
+            });
+            res.end('');
+          });
         return;
       }
 

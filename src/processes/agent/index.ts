@@ -95,13 +95,24 @@ const INTERNAL_TOOLS = new Set([
 ]);
 
 /**
- * External tools handled by the sandbox server (not forwarded to frontend).
- * These are suppressed from broadcast and filtered from chat history.
+ * External tools handled by the sandbox server that are HIDDEN from frontend.
+ * Suppressed from broadcast and filtered from chat history.
  */
 export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
   'setProjectOnboardingState',
   'clearSyncStatus',
+]);
+
+/**
+ * External tools handled by the sandbox server that are VISIBLE to frontend.
+ * The sandbox sends tool_result, but events are still broadcast and shown in history.
+ */
+export const SERVER_VISIBLE_TOOLS = new Set([
+  'runScenario',
+  'runMethod',
+  'browserCommand',
+  'screenshot',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -167,6 +178,7 @@ export function startAgent(
     restartOnCrash: false,
     maxRestarts: 0,
     critical: false,
+    logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
     onStdout: (line) => handleStdout(line, callbacks),
   });
 }
@@ -254,7 +266,8 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     // Only trigger external tool handling on the final tool_start (no partial flag)
     if (!event.partial) {
       const handled = cb.onExternalTool?.(event.id, event.name, input);
-      if (handled) {
+      // Suppress broadcast only for hidden server-handled tools
+      if (handled && SERVER_HANDLED_TOOLS.has(event.name)) {
         serverHandledToolIds.add(event.id);
       }
     }

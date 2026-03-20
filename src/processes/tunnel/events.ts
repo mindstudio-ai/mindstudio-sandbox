@@ -53,6 +53,43 @@ export type TunnelEvent =
       errors: string[];
     }
   | { event: 'impersonation-changed'; roles: string[] | null }
+  | {
+      event: 'method-run-completed';
+      method: string;
+      success: boolean;
+      output: unknown | null;
+      error: {
+        message: string;
+        stack?: string;
+        code?: string;
+        statusCode?: number;
+        status?: number;
+        response?: string;
+        body?: string;
+        cause?: unknown;
+      } | null;
+      stdout: string[];
+      duration: number;
+    }
+  | {
+      event: 'browser-completed';
+      id: string;
+      steps: Array<{
+        index: number;
+        command: string;
+        result: string;
+        error?: string;
+      }>;
+      snapshot: string;
+      duration: number;
+    }
+  | {
+      event: 'screenshot-completed';
+      url: string;
+      width: number;
+      height: number;
+      duration: number;
+    }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }

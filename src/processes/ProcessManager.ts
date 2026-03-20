@@ -4,7 +4,6 @@ import type {
   ProcessRegistry,
   ProcessState,
   ProcessInfo,
-  ProcessLogEntry,
 } from './ProcessRegistry.js';
 
 export interface ManagedProcessConfig {
@@ -17,6 +16,8 @@ export interface ManagedProcessConfig {
   restartOnCrash: boolean;
   maxRestarts: number;
   critical?: boolean;
+  /** Set to false to skip logging stdout to the process log file (e.g., protocol traffic). */
+  logStdout?: boolean;
   onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
 }
@@ -101,14 +102,14 @@ export class ProcessManager {
     const rls: Array<ReturnType<typeof createInterface>> = [];
 
     if (child.stdout) {
+      const shouldLogStdout = config.logStdout !== false;
       const rl = createInterface({ input: child.stdout });
       rl.on('line', (line) => {
-        // Truncate very long lines in the process log (e.g., agent history
-        // responses) — full content is handled by onStdout, the log is just
-        // for debugging visibility.
-        const logLine =
-          line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
-        this.registry.appendLog(config.name, 'stdout', logLine);
+        if (shouldLogStdout) {
+          const logLine =
+            line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
+          this.registry.appendLog(config.name, 'stdout', logLine);
+        }
         config.onStdout?.(line);
       });
       rls.push(rl);
@@ -181,10 +182,6 @@ export class ProcessManager {
 
   getProcesses(): ProcessInfo[] {
     return this.registry.getAllInfo();
-  }
-
-  getProcessLog(name: string): ProcessLogEntry[] {
-    return this.registry.getLog(name);
   }
 
   writeStdin(name: string, data: string): void {

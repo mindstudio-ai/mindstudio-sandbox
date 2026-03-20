@@ -94,14 +94,6 @@ export const handlers: Record<string, ActionHandler> = {
     await ctx.processManager.restart(name);
     return {};
   },
-  getProcessLog: async (p) => {
-    const { name } = p as { name: string };
-    if (!name) {
-      throw new Error('Missing "name" parameter');
-    }
-    return { log: ctx.processManager?.getProcessLog(name) ?? [] };
-  },
-
   // --- Editor ---
   openFile: async (p) => {
     const { path, preview } = p as { path: string; preview?: boolean };

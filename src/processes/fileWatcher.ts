@@ -5,12 +5,13 @@ import { createLogger } from '../logger.js';
 const log = createLogger('file-watcher');
 
 // Directories excluded from file watching.
-const IGNORED_DIRS = ['node_modules', '.git', '.vite'] as const;
+const IGNORED_DIRS = ['node_modules', '.git', '.vite', '.logs'] as const;
 
 // Entries hidden entirely from the file tree.
 export const TREE_HIDDEN = new Set([
   '.git',
   '.vite',
+  '.logs',
   '.sandbox-state.json',
   '.remy-session.json',
   '.project-status.json',

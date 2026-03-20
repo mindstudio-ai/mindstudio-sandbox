@@ -9,14 +9,22 @@ export type AgentEvent =
       name: string;
       input: Record<string, unknown>;
       partial?: boolean;
+      parentToolId?: string;
     }
-  | { event: 'tool_input_delta'; id: string; name: string; result: string }
+  | {
+      event: 'tool_input_delta';
+      id: string;
+      name: string;
+      result: string;
+      parentToolId?: string;
+    }
   | {
       event: 'tool_done';
       id: string;
       name: string;
       result?: string;
       isError?: boolean;
+      parentToolId?: string;
     }
   | { event: 'turn_done' }
   | { event: 'turn_cancelled' }
