@@ -108,7 +108,11 @@ export const SERVER_HANDLED_TOOLS = new Set([
  * External tools handled by the sandbox server that are VISIBLE to frontend.
  * The sandbox sends tool_result, but events are still broadcast and shown in history.
  */
-export const SERVER_VISIBLE_TOOLS = new Set(['runScenario', 'runMethod']);
+export const SERVER_VISIBLE_TOOLS = new Set([
+  'runScenario',
+  'runMethod',
+  'browserCommand',
+]);
 
 // ---------------------------------------------------------------------------
 // Module state

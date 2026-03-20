@@ -71,6 +71,18 @@ export type TunnelEvent =
       stdout: string[];
       duration: number;
     }
+  | {
+      event: 'browser-completed';
+      id: string;
+      steps: Array<{
+        index: number;
+        command: string;
+        result: string;
+        error?: string;
+      }>;
+      snapshot: string;
+      duration: number;
+    }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }

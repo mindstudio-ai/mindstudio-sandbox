@@ -185,6 +185,16 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       }
       break;
     }
+    case 'browser-completed': {
+      log.info(
+        `Browser command completed: ${tunnelEvent.steps.length} step(s) (${tunnelEvent.duration}ms)`,
+      );
+      const browserResolver = browserResolvers.shift();
+      if (browserResolver) {
+        browserResolver(tunnelEvent);
+      }
+      break;
+    }
     case 'command-error':
       log.warn(`Command error: ${tunnelEvent.message}`);
       break;
@@ -302,6 +312,60 @@ export function runMethodAndWait(
       'tunnel',
       JSON.stringify({ action: 'run-method', method, input: input ?? {} }),
     );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous browser command execution
+// ---------------------------------------------------------------------------
+
+interface BrowserResult {
+  id?: string;
+  steps: Array<{
+    index: number;
+    command: string;
+    result: string;
+    error?: string;
+  }>;
+  snapshot: string;
+  duration: number;
+}
+
+const browserResolvers: Array<(result: BrowserResult) => void> = [];
+
+/** Send browser commands and wait for the completion event. */
+export function runBrowserAndWait(
+  pm: ProcessManager,
+  steps: unknown[],
+): Promise<BrowserResult> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({
+      steps: [],
+      snapshot: '',
+      duration: 0,
+    });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      const idx = browserResolvers.indexOf(resolverFn);
+      if (idx !== -1) {
+        browserResolvers.splice(idx, 1);
+      }
+      resolve({
+        steps: [{ index: 0, command: '', result: '', error: 'timeout (120s)' }],
+        snapshot: '',
+        duration: 0,
+      });
+    }, 120_000);
+
+    const resolverFn = (result: BrowserResult) => {
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    browserResolvers.push(resolverFn);
+
+    pm.writeStdin('tunnel', JSON.stringify({ action: 'browser', steps }));
   });
 }
 

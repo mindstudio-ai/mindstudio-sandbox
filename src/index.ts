@@ -23,6 +23,7 @@ import {
   createTunnelActions,
   runScenarioAndWait,
   runMethodAndWait,
+  runBrowserAndWait,
 } from './processes/tunnel/index.js';
 import {
   startAgent,
@@ -330,6 +331,13 @@ async function startServices(
               sendToolResult(processManager, id, JSON.stringify(result));
             },
           );
+          return true;
+        } else if (name === 'browserCommand') {
+          const steps = (input.steps as unknown[]) ?? [];
+          log.info(`Agent running browser command: ${steps.length} step(s)`);
+          runBrowserAndWait(processManager, steps).then((result) => {
+            sendToolResult(processManager, id, JSON.stringify(result));
+          });
           return true;
         }
         // Not handled server-side — frontend handles via externalToolResult WS action
