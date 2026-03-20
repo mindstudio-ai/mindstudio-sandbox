@@ -173,6 +173,7 @@ export function startAgent(
     restartOnCrash: false,
     maxRestarts: 0,
     critical: false,
+    logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
     onStdout: (line) => handleStdout(line, callbacks),
   });
 }

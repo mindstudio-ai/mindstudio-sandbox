@@ -53,9 +53,12 @@ export interface ProcessSnapshot {
 }
 
 const MAX_RESTART_HISTORY = 20;
+const MAX_LOG_SIZE = 2 * 1024 * 1024; // 2MB per log file
+const ROTATION_CHECK_INTERVAL = 500; // only check file size every N appends
 
 interface RegistryEntry {
   info: ProcessInfo;
+  appendCount: number;
 }
 
 export interface ProcessRegistryOpts {
@@ -94,6 +97,7 @@ export class ProcessRegistry {
         pid: null,
         logFile,
       },
+      appendCount: 0,
     });
   }
 
@@ -175,8 +179,24 @@ export class ProcessRegistry {
     const fullPath = path.join(this.logsDir, path.basename(entry.info.logFile));
     try {
       fs.appendFileSync(fullPath, `[${ts}] [${stream}] ${line}\n`);
+      entry.appendCount++;
+      if (entry.appendCount % ROTATION_CHECK_INTERVAL === 0) {
+        this.maybeRotate(fullPath);
+      }
     } catch {
       // Ignore write failures (dir might not exist yet during early bootstrap)
+    }
+  }
+
+  /** Truncate log file if it exceeds the size cap. */
+  private maybeRotate(fullPath: string): void {
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.size > MAX_LOG_SIZE) {
+        fs.writeFileSync(fullPath, '');
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -212,7 +232,7 @@ export class ProcessRegistry {
           info.duration = info.endedAt - info.startedAt;
         }
       }
-      this.entries.set(info.name, { info });
+      this.entries.set(info.name, { info, appendCount: 0 });
     }
   }
 

@@ -51,6 +51,7 @@ export function startTunnel(
     restartOnCrash: true,
     maxRestarts: 5,
     critical: true,
+    logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
     onStdout: (line) => handleStdout(line, callbacks),
   });
 }

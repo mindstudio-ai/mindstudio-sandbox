@@ -130,18 +130,55 @@ export function startServer(
         const contentType = logPath.endsWith('.ndjson')
           ? 'application/x-ndjson'
           : 'text/plain';
-        fs.readFile(fullPath, 'utf-8')
-          .then((content) => {
-            res.writeHead(200, {
-              'Content-Type': contentType,
-              'Cache-Control': 'no-cache',
-              ...corsHeaders,
-            });
-            res.end(content);
+
+        fs.stat(fullPath)
+          .then(async (stat) => {
+            const rangeHeader = req.headers.range;
+            if (rangeHeader) {
+              // Parse "bytes=<start>-" range request
+              const match = rangeHeader.match(/bytes=(\d+)-/);
+              const start = match ? parseInt(match[1], 10) : 0;
+              if (start >= stat.size) {
+                // Nothing new — return empty 206
+                res.writeHead(206, {
+                  'Content-Type': contentType,
+                  'Content-Range': `bytes ${stat.size}-${stat.size}/${stat.size}`,
+                  'Content-Length': '0',
+                  'Accept-Ranges': 'bytes',
+                  'Cache-Control': 'no-cache',
+                  ...corsHeaders,
+                });
+                res.end('');
+                return;
+              }
+              const content = await fs.readFile(fullPath, 'utf-8');
+              const slice = content.slice(start);
+              res.writeHead(206, {
+                'Content-Type': contentType,
+                'Content-Range': `bytes ${start}-${stat.size - 1}/${stat.size}`,
+                'Content-Length': String(Buffer.byteLength(slice)),
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'no-cache',
+                ...corsHeaders,
+              });
+              res.end(slice);
+            } else {
+              const content = await fs.readFile(fullPath, 'utf-8');
+              res.writeHead(200, {
+                'Content-Type': contentType,
+                'Content-Length': String(Buffer.byteLength(content)),
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'no-cache',
+                ...corsHeaders,
+              });
+              res.end(content);
+            }
           })
           .catch(() => {
             res.writeHead(200, {
               'Content-Type': contentType,
+              'Content-Length': '0',
+              'Accept-Ranges': 'bytes',
               ...corsHeaders,
             });
             res.end('');
