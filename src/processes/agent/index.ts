@@ -102,6 +102,8 @@ export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
   'setProjectOnboardingState',
   'clearSyncStatus',
+  'runScenario',
+  'runMethod',
 ]);
 
 // ---------------------------------------------------------------------------

@@ -44,7 +44,7 @@ export function startTunnel(
       '--bind',
       '0.0.0.0',
       '--log-level',
-      'debug',
+      'info',
     ],
     cwd: config.workspaceDir,
     stdin: true,
@@ -119,7 +119,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
     case 'scenario-started':
       log.info(`Scenario started: ${tunnelEvent.name} (${tunnelEvent.id})`);
       break;
-    case 'scenario-completed':
+    case 'scenario-completed': {
       if (tunnelEvent.success) {
         log.info(
           `Scenario completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
@@ -129,7 +129,18 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
           `Scenario failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
         );
       }
+      const resolver = scenarioResolvers.get(tunnelEvent.id);
+      if (resolver) {
+        scenarioResolvers.delete(tunnelEvent.id);
+        resolver({
+          success: tunnelEvent.success,
+          duration: tunnelEvent.duration,
+          roles: tunnelEvent.roles,
+          error: tunnelEvent.error,
+        });
+      }
       break;
+    }
     case 'schema-sync-started':
       log.info('Schema sync started');
       break;
@@ -156,6 +167,23 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
     case 'config-error':
       log.warn(`Config error: ${tunnelEvent.message}`);
       break;
+    case 'method-run-completed': {
+      if (tunnelEvent.success) {
+        log.info(
+          `Method run completed: ${tunnelEvent.method} (${tunnelEvent.duration}ms)`,
+        );
+      } else {
+        log.warn(
+          `Method run failed: ${tunnelEvent.method} — ${tunnelEvent.error?.message ?? 'unknown error'}`,
+        );
+      }
+      const methodResolver = methodRunResolvers.get(tunnelEvent.method);
+      if (methodResolver) {
+        methodRunResolvers.delete(tunnelEvent.method);
+        methodResolver(tunnelEvent);
+      }
+      break;
+    }
     case 'command-error':
       log.warn(`Command error: ${tunnelEvent.message}`);
       break;
@@ -163,6 +191,117 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.error(`Error: ${tunnelEvent.message}`);
       break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous scenario execution
+// ---------------------------------------------------------------------------
+
+interface ScenarioResult {
+  success: boolean;
+  duration: number;
+  roles: string[];
+  error?: string;
+}
+
+const scenarioResolvers = new Map<string, (result: ScenarioResult) => void>();
+
+/** Run a scenario and wait for the tunnel's completion event. */
+export function runScenarioAndWait(
+  pm: ProcessManager,
+  scenarioId: string,
+): Promise<ScenarioResult> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({
+      success: false,
+      duration: 0,
+      roles: [],
+      error: 'tunnel not running',
+    });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      scenarioResolvers.delete(scenarioId);
+      resolve({
+        success: false,
+        duration: 0,
+        roles: [],
+        error: 'timeout (30s)',
+      });
+    }, 30_000);
+
+    scenarioResolvers.set(scenarioId, (result) => {
+      clearTimeout(timeout);
+      resolve(result);
+    });
+
+    pm.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'run-scenario', scenarioId }),
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous method execution
+// ---------------------------------------------------------------------------
+
+interface MethodRunResult {
+  method: string;
+  success: boolean;
+  output: unknown | null;
+  error: {
+    message: string;
+    stack?: string;
+    code?: string;
+    statusCode?: number;
+    cause?: unknown;
+  } | null;
+  stdout: string[];
+  duration: number;
+}
+
+const methodRunResolvers = new Map<string, (result: MethodRunResult) => void>();
+
+/** Run a method and wait for the tunnel's completion event. */
+export function runMethodAndWait(
+  pm: ProcessManager,
+  method: string,
+  input?: Record<string, unknown>,
+): Promise<MethodRunResult> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({
+      method,
+      success: false,
+      output: null,
+      error: { message: 'tunnel not running' },
+      stdout: [],
+      duration: 0,
+    });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      methodRunResolvers.delete(method);
+      resolve({
+        method,
+        success: false,
+        output: null,
+        error: { message: 'timeout (30s)' },
+        stdout: [],
+        duration: 0,
+      });
+    }, 30_000);
+
+    methodRunResolvers.set(method, (result) => {
+      clearTimeout(timeout);
+      resolve(result);
+    });
+
+    pm.writeStdin(
+      'tunnel',
+      JSON.stringify({ action: 'run-method', method, input: input ?? {} }),
+    );
+  });
 }
 
 /** Create WS action handlers for tunnel commands. */

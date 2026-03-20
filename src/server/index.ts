@@ -8,6 +8,8 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import net from 'node:net';
 import { URL } from 'node:url';
 import httpProxy from 'http-proxy';
@@ -22,6 +24,7 @@ const log = createLogger('ws-server');
 const lspLog = createLogger('lsp-ws');
 
 let sandboxToken: string = '';
+let workspaceDir: string = '';
 let proxyTarget: number | null = null;
 let proxy: httpProxy | null = null;
 
@@ -74,8 +77,13 @@ function isCncPath(url: string | undefined): boolean {
   return pathname === '/ws' || pathname === '/health' || pathname === '/lsp';
 }
 
-export function startServer(port: number, token?: string): Promise<void> {
+export function startServer(
+  port: number,
+  token?: string,
+  wsDir?: string,
+): Promise<void> {
   sandboxToken = token || '';
+  workspaceDir = wsDir || '';
 
   return new Promise((resolve) => {
     log.info(`Creating HTTP server on port ${port}`);
@@ -87,6 +95,41 @@ export function startServer(port: number, token?: string): Promise<void> {
       if (req.url === '/health' || req.url?.startsWith('/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: ctx.status, proxyTarget }));
+        return;
+      }
+
+      if (req.url?.startsWith('/logs/')) {
+        const name = decodeURIComponent(req.url.slice('/logs/'.length));
+
+        // Resolve log file path: process logs from registry, or
+        // special files written directly by the tunnel.
+        const STANDALONE_LOGS: Record<string, string> = {
+          requests: '.logs/requests.ndjson',
+          browser: '.logs/browser.ndjson',
+        };
+        let logPath = ctx.registry?.getLogPath(name) ?? STANDALONE_LOGS[name];
+        if (!logPath) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Log not found');
+          return;
+        }
+
+        const fullPath = path.join(workspaceDir, logPath);
+        const contentType = logPath.endsWith('.ndjson')
+          ? 'application/x-ndjson'
+          : 'text/plain';
+        fs.readFile(fullPath, 'utf-8')
+          .then((content) => {
+            res.writeHead(200, {
+              'Content-Type': contentType,
+              'Cache-Control': 'no-cache',
+            });
+            res.end(content);
+          })
+          .catch(() => {
+            res.writeHead(200, { 'Content-Type': contentType });
+            res.end('');
+          });
         return;
       }
 

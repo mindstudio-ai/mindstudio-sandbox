@@ -53,6 +53,24 @@ export type TunnelEvent =
       errors: string[];
     }
   | { event: 'impersonation-changed'; roles: string[] | null }
+  | {
+      event: 'method-run-completed';
+      method: string;
+      success: boolean;
+      output: unknown | null;
+      error: {
+        message: string;
+        stack?: string;
+        code?: string;
+        statusCode?: number;
+        status?: number;
+        response?: string;
+        body?: string;
+        cause?: unknown;
+      } | null;
+      stdout: string[];
+      duration: number;
+    }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }

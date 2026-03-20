@@ -4,7 +4,6 @@ import type {
   ProcessRegistry,
   ProcessState,
   ProcessInfo,
-  ProcessLogEntry,
 } from './ProcessRegistry.js';
 
 export interface ManagedProcessConfig {
@@ -181,10 +180,6 @@ export class ProcessManager {
 
   getProcesses(): ProcessInfo[] {
     return this.registry.getAllInfo();
-  }
-
-  getProcessLog(name: string): ProcessLogEntry[] {
-    return this.registry.getLog(name);
   }
 
   writeStdin(name: string, data: string): void {

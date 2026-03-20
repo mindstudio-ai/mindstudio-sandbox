@@ -91,7 +91,6 @@ export async function buildInitFrame(
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
     chatHistory,
     processes: ctx.registry?.getAllInfo() ?? [],
-    outputLog: ctx.registry?.getMergedLog() ?? [],
     agentActivity: getAgentActivity(),
     ptySessionIds: getActiveSessionIds(),
     editorState: ctx.editorState?.getState() ?? {
@@ -121,7 +120,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     fileTree: [],
     chatHistory: [],
     processes: [],
-    outputLog: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
     editorState: { tabs: [], activeTab: null, expandedDirs: [] },
