@@ -9,7 +9,7 @@
  * completely isolated from remy's working tree and any in-progress git ops.
  */
 
-import { execSync } from 'node:child_process';
+import { exec as execCb } from 'node:child_process';
 import fs from 'node:fs';
 import { createLogger } from './logger.js';
 
@@ -74,7 +74,7 @@ export class SnapshotManager {
     }
     this.inProgress = true;
     try {
-      return this.doSnapshot();
+      return await this.doSnapshot();
     } finally {
       this.inProgress = false;
     }
@@ -84,8 +84,14 @@ export class SnapshotManager {
   async restore(): Promise<boolean> {
     log.info('Checking for draft snapshot to restore...');
     try {
+      // Delete any stale local tracking ref before fetching. Snapshot commits
+      // are parentless orphans, so old ones get GC'd on the remote — if the
+      // local ref still points at a GC'd object, fetch negotiation fails with
+      // "upload-pack: not our ref".
+      await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
+
       // Fetch the draft branch into a proper remote tracking ref
-      const fetched = this.exec(
+      const fetched = await this.exec(
         `git fetch origin ${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
       );
       if (fetched === null) {
@@ -94,8 +100,8 @@ export class SnapshotManager {
       }
 
       // Verify the ref exists
-      const draftSha = this.exec(
-        `git rev-parse --verify ${REMOTE_DRAFT_REF}`,
+      const draftSha = (
+        await this.exec(`git rev-parse --verify ${REMOTE_DRAFT_REF}`)
       )?.trim();
       if (!draftSha) {
         log.warn('Fetched _draft but ref does not exist locally');
@@ -104,10 +110,10 @@ export class SnapshotManager {
       log.info(`Found draft snapshot: ${draftSha.slice(0, 8)}`);
 
       // Compare timestamps
-      const draftTsStr = this.exec(
+      const draftTsStr = await this.exec(
         `git log -1 --format=%ct ${REMOTE_DRAFT_REF}`,
       );
-      const headTsStr = this.exec('git log -1 --format=%ct HEAD');
+      const headTsStr = await this.exec('git log -1 --format=%ct HEAD');
       if (draftTsStr === null || headTsStr === null) {
         log.warn('Could not read commit timestamps');
         return false;
@@ -125,17 +131,17 @@ export class SnapshotManager {
       }
 
       // Show what the draft contains
-      const draftMsg = this.exec(
-        `git log -1 --format=%s ${REMOTE_DRAFT_REF}`,
+      const draftMsg = (
+        await this.exec(`git log -1 --format=%s ${REMOTE_DRAFT_REF}`)
       )?.trim();
       log.info(`Draft commit message: "${draftMsg}"`);
 
       // Overlay draft files onto working tree without touching the index
       log.info('Restoring files from draft snapshot...');
       if (
-        this.exec(
+        (await this.exec(
           `git restore --source=${REMOTE_DRAFT_REF} --worktree -- .`,
-        ) === null
+        )) === null
       ) {
         log.error('Failed to restore files from draft branch');
         return false;
@@ -149,7 +155,7 @@ export class SnapshotManager {
     }
   }
 
-  private doSnapshot(): boolean {
+  private async doSnapshot(): Promise<boolean> {
     const startTime = Date.now();
     log.info('Starting snapshot...');
 
@@ -163,13 +169,13 @@ export class SnapshotManager {
     const env = { ...process.env, GIT_INDEX_FILE: TMP_INDEX };
 
     // Seed the temp index from HEAD so git has a valid base
-    if (this.exec('git read-tree HEAD', { env }) === null) {
+    if ((await this.exec('git read-tree HEAD', { env })) === null) {
       log.error('Snapshot failed: could not read-tree HEAD');
       return false;
     }
 
     // Stage all workspace files (respects .gitignore)
-    if (this.exec('git add -A', { env }) === null) {
+    if ((await this.exec('git add -A', { env })) === null) {
       log.error('Snapshot failed: could not stage files');
       return false;
     }
@@ -181,22 +187,36 @@ export class SnapshotManager {
       '.project-status.json',
     ]) {
       if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
-        this.exec(`git add --force ${f}`, { env });
+        await this.exec(`git add --force ${f}`, { env });
       }
     }
 
     // Write tree object from temp index
-    const treeSha = this.exec('git write-tree', { env })?.trim();
+    const treeSha = (await this.exec('git write-tree', { env }))?.trim();
     if (!treeSha) {
       log.error('Snapshot failed: could not write tree');
       return false;
     }
     log.debug(`Tree: ${treeSha.slice(0, 8)}`);
 
+    // Skip if tree is identical to the current _draft (nothing changed)
+    const previousTree = (
+      await this.exec(`git rev-parse ${DRAFT_REF}^{tree}`)
+    )?.trim();
+    if (previousTree && treeSha === previousTree) {
+      log.info(`No changes since last snapshot, skipping`);
+      try {
+        fs.unlinkSync(TMP_INDEX);
+      } catch {
+        // fine
+      }
+      return true;
+    }
+
     // Create commit object
     const msg = `snapshot ${new Date().toISOString()}`;
-    const commitSha = this.exec(
-      `git commit-tree ${treeSha} -m "${msg}"`,
+    const commitSha = (
+      await this.exec(`git commit-tree ${treeSha} -m "${msg}"`)
     )?.trim();
     if (!commitSha) {
       log.error('Snapshot failed: could not create commit');
@@ -205,14 +225,18 @@ export class SnapshotManager {
     log.debug(`Commit: ${commitSha.slice(0, 8)}`);
 
     // Point _draft ref at the new commit
-    if (this.exec(`git update-ref ${DRAFT_REF} ${commitSha}`) === null) {
+    if (
+      (await this.exec(`git update-ref ${DRAFT_REF} ${commitSha}`)) === null
+    ) {
       log.error('Snapshot failed: could not update ref');
       return false;
     }
 
     // Push to remote using + prefix for unconditional force (bypasses
     // server-side compare-and-swap checks that --force can still trigger).
-    if (this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`) === null) {
+    if (
+      (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
+    ) {
       log.warn('Snapshot committed locally but push failed');
       return false;
     }
@@ -230,33 +254,35 @@ export class SnapshotManager {
   }
 
   /**
-   * Run a git command synchronously. Returns stdout on success, null on failure.
+   * Run a git command asynchronously. Returns stdout on success, null on failure.
    * Never throws.
    */
-  private exec(cmd: string, opts?: { env?: NodeJS.ProcessEnv }): string | null {
-    try {
-      const result = execSync(cmd, {
-        cwd: this.workspaceDir,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 30_000,
-        ...(opts?.env ? { env: opts.env } : {}),
-      }) as string;
-      return result;
-    } catch (err: unknown) {
-      const execErr = err as {
-        stderr?: string;
-        stdout?: string;
-        status?: number;
-        message?: string;
-      };
-      const stderr = execErr.stderr?.trim();
-      const exitCode = execErr.status;
-      log.warn(`FAILED [exit ${exitCode}]: ${cmd}`);
-      if (stderr) {
-        log.warn(`  stderr: ${stderr}`);
-      }
-      return null;
-    }
+  private exec(
+    cmd: string,
+    opts?: { env?: NodeJS.ProcessEnv },
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      execCb(
+        cmd,
+        {
+          cwd: this.workspaceDir,
+          encoding: 'utf-8',
+          timeout: 30_000,
+          ...(opts?.env ? { env: opts.env } : {}),
+        },
+        (err, stdout, stderr) => {
+          if (err) {
+            const exitCode = (err as { code?: number }).code;
+            log.warn(`FAILED [exit ${exitCode}]: ${cmd}`);
+            if (stderr?.trim()) {
+              log.warn(`  stderr: ${stderr.trim()}`);
+            }
+            resolve(null);
+            return;
+          }
+          resolve(stdout);
+        },
+      );
+    });
   }
 }
