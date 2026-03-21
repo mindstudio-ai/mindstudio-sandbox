@@ -297,6 +297,39 @@ async function startServices(
           broadcast('projectStatusChanged', getProjectStatus());
           sendToolResult(processManager, id, 'ok');
           return true;
+        } else if (name === 'setProjectName') {
+          const newName = input.name as string;
+          if (!newName) {
+            sendToolResult(processManager, id, 'error: missing name');
+            return true;
+          }
+          try {
+            const manifestPath = path.join(
+              config.workspaceDir,
+              'mindstudio.json',
+            );
+            const raw = fsSync.readFileSync(manifestPath, 'utf-8');
+            const manifest = JSON.parse(raw);
+            manifest.name = newName;
+            fsSync.writeFileSync(
+              manifestPath,
+              JSON.stringify(manifest, null, 2) + '\n',
+              'utf-8',
+            );
+            readAppConfig(config.workspaceDir)
+              .then((updated) => {
+                ctx.appConfig = updated;
+                broadcast('manifestChanged', { app: updated });
+              })
+              .catch(() => {});
+            log.info(`Project name updated to "${newName}"`);
+          } catch (err) {
+            log.error(
+              `Failed to update project name: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+          sendToolResult(processManager, id, 'ok');
+          return true;
         } else if (name === 'runScenario') {
           const scenarioId = input.scenarioId as string;
           if (!scenarioId) {

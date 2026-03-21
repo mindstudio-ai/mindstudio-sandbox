@@ -65,11 +65,12 @@ export function startWatcher(
   }, 30_000);
   cleanupTimer.unref();
 
+  const ignoredNames = new Set([...IGNORED_DIRS, ...TREE_HIDDEN]);
   watcher = chokidar.watch(dir, {
-    ignored: [
-      ...IGNORED_DIRS.map((d) => `**/${d}/**`),
-      ...Array.from(TREE_HIDDEN).map((name) => `**/${name}`),
-    ],
+    ignored: (filePath: string) => {
+      const base = path.basename(filePath);
+      return ignoredNames.has(base);
+    },
     ignoreInitial: true,
     persistent: true,
   });

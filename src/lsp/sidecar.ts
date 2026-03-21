@@ -59,6 +59,15 @@ const SYMBOL_KIND_MAP: Record<number, string> = {
 
 const MAX_DIAGNOSTICS_CACHE = 200;
 
+// Diagnostic codes to suppress regardless of severity — these are style
+// suggestions that mislead the LLM into "fixing" things that aren't broken.
+const SUPPRESSED_CODES = new Set<number | string>([
+  6133, // 'X' is declared but its value is never read
+  6196, // 'X' is declared but never used
+  80005, // 'require' call may be converted to an import
+  80006, // This may be converted to an async function
+]);
+
 export class LspSidecar {
   private server: http.Server | null = null;
   private lsp: LspClient;
@@ -84,14 +93,27 @@ export class LspSidecar {
         const relPath = this.lsp.uriToPath(p.uri);
         this.diagnosticsCache.set(
           relPath,
-          p.diagnostics.map((d) => ({
-            file: relPath,
-            line: d.range.start.line + 1, // LSP is 0-indexed
-            column: d.range.start.character + 1,
-            severity: SEVERITY_MAP[d.severity ?? 1] || 'error',
-            message: d.message,
-            code: d.code,
-          })),
+          p.diagnostics
+            .filter((d) => {
+              // Drop hints and informational diagnostics — they're noise for LLMs
+              const sev = d.severity ?? 1;
+              if (sev >= 3) {
+                return false;
+              }
+              // Drop specific codes that mislead the agent into unnecessary fixes
+              if (d.code !== undefined && SUPPRESSED_CODES.has(d.code)) {
+                return false;
+              }
+              return true;
+            })
+            .map((d) => ({
+              file: relPath,
+              line: d.range.start.line + 1, // LSP is 0-indexed
+              column: d.range.start.character + 1,
+              severity: SEVERITY_MAP[d.severity ?? 1] || 'error',
+              message: d.message,
+              code: d.code,
+            })),
         );
         // Evict oldest entries if cache is too large
         if (this.diagnosticsCache.size > MAX_DIAGNOSTICS_CACHE) {
