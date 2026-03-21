@@ -70,6 +70,7 @@ const EVENT_MAP: Record<string, string> = {
   tool_done: 'agentToolDone',
   turn_done: 'agentTurnDone',
   turn_cancelled: 'agentTurnCancelled',
+  status: 'agentStatus',
   error: 'agentError',
   stopping: 'agentStopping',
   stopped: 'agentStopped',

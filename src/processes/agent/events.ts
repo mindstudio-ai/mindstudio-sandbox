@@ -28,6 +28,7 @@ export type AgentEvent =
     }
   | { event: 'turn_done' }
   | { event: 'turn_cancelled' }
+  | { event: 'status'; message: string }
   | { event: 'error'; message: string }
   | { event: 'stopping' }
   | { event: 'stopped' }
