@@ -36,6 +36,8 @@ export interface TreeEntry extends DirEntry {
   collapsed?: boolean;
   /** Human-readable name from frontmatter (e.g., YAML `name` field in .md files). */
   displayName?: string;
+  /** Parsed YAML frontmatter from .md files (all key-value pairs). */
+  frontmatter?: Record<string, unknown>;
 }
 
 export interface SearchResult {
