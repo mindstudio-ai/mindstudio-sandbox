@@ -8,7 +8,7 @@
 import http from 'node:http';
 import type { LspClient } from './client.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
-import { getBrowserStatus } from '../processes/tunnel/index.js';
+import { getBrowserStatus, resetBrowser } from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -174,6 +174,9 @@ export class LspSidecar {
               result = this.pm
                 ? await getBrowserStatus(this.pm)
                 : { connected: false };
+              break;
+            case '/reset-browser':
+              result = this.pm ? await resetBrowser(this.pm) : { ok: false };
               break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });

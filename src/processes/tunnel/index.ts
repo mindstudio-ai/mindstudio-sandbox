@@ -212,6 +212,13 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       }
       break;
     }
+    case 'reset-browser-completed': {
+      const resetResolver = resetBrowserResolvers.shift();
+      if (resetResolver) {
+        resetResolver();
+      }
+      break;
+    }
     case 'command-error':
       log.warn(`Command error: ${tunnelEvent.message}`);
       break;
@@ -459,6 +466,36 @@ export function getBrowserStatus(
 
     browserStatusResolvers.push(resolverFn);
     pm.writeStdin('tunnel', JSON.stringify({ action: 'browser-status' }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reset browser
+// ---------------------------------------------------------------------------
+
+const resetBrowserResolvers: Array<() => void> = [];
+
+/** Reset the user's browser (reload to clean page). */
+export function resetBrowser(pm: ProcessManager): Promise<{ ok: boolean }> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({ ok: false });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      const idx = resetBrowserResolvers.indexOf(resolverFn);
+      if (idx !== -1) {
+        resetBrowserResolvers.splice(idx, 1);
+      }
+      resolve({ ok: false });
+    }, 5_000);
+
+    const resolverFn = () => {
+      clearTimeout(timeout);
+      resolve({ ok: true });
+    };
+
+    resetBrowserResolvers.push(resolverFn);
+    pm.writeStdin('tunnel', JSON.stringify({ action: 'reset-browser' }));
   });
 }
 

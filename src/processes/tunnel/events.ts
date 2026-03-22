@@ -91,6 +91,7 @@ export type TunnelEvent =
       duration: number;
     }
   | { event: 'browser-status'; connected: boolean }
+  | { event: 'reset-browser-completed' }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }
