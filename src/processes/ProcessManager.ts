@@ -215,7 +215,10 @@ export class ProcessManager {
     proc.child.stdin.write(data + '\n');
   }
 
-  async restart(name: string): Promise<void> {
+  async restart(
+    name: string,
+    opts?: { onBeforeRespawn?: () => void },
+  ): Promise<void> {
     const proc = this.processes.get(name);
     if (!proc) {
       return;
@@ -226,6 +229,7 @@ export class ProcessManager {
       proc.stopped = true;
       await this.killChild(proc.child, name);
     }
+    opts?.onBeforeRespawn?.();
     proc.stopped = false;
     this.spawn(proc);
   }

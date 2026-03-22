@@ -90,6 +90,7 @@ export type TunnelEvent =
       height: number;
       duration: number;
     }
+  | { event: 'browser-status'; connected: boolean }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }
