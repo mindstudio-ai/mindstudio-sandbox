@@ -105,12 +105,21 @@ export class ProcessManager {
       const shouldLogStdout = config.logStdout !== false;
       const rl = createInterface({ input: child.stdout });
       rl.on('line', (line) => {
-        if (shouldLogStdout) {
-          const logLine =
-            line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
-          this.registry.appendLog(config.name, 'stdout', logLine);
+        try {
+          if (shouldLogStdout) {
+            const logLine =
+              line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
+            this.registry.appendLog(config.name, 'stdout', logLine);
+          }
+          config.onStdout?.(line);
+        } catch (err) {
+          log.error(
+            `"${config.name}" stdout handler error: ${err instanceof Error ? err.message : err}`,
+          );
         }
-        config.onStdout?.(line);
+      });
+      rl.on('error', (err) => {
+        log.error(`"${config.name}" stdout readline error: ${err.message}`);
       });
       rls.push(rl);
     }
@@ -118,8 +127,17 @@ export class ProcessManager {
     if (child.stderr) {
       const rl = createInterface({ input: child.stderr });
       rl.on('line', (line) => {
-        this.registry.appendLog(config.name, 'stderr', line);
-        config.onStderr?.(line);
+        try {
+          this.registry.appendLog(config.name, 'stderr', line);
+          config.onStderr?.(line);
+        } catch (err) {
+          log.error(
+            `"${config.name}" stderr handler error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      });
+      rl.on('error', (err) => {
+        log.error(`"${config.name}" stderr readline error: ${err.message}`);
       });
       rls.push(rl);
     }
@@ -197,7 +215,10 @@ export class ProcessManager {
     proc.child.stdin.write(data + '\n');
   }
 
-  async restart(name: string): Promise<void> {
+  async restart(
+    name: string,
+    opts?: { onBeforeRespawn?: () => void },
+  ): Promise<void> {
     const proc = this.processes.get(name);
     if (!proc) {
       return;
@@ -208,6 +229,7 @@ export class ProcessManager {
       proc.stopped = true;
       await this.killChild(proc.child, name);
     }
+    opts?.onBeforeRespawn?.();
     proc.stopped = false;
     this.spawn(proc);
   }

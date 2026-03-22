@@ -392,11 +392,25 @@ export function broadcast(event: string, data: Record<string, any>): void {
   if (!wss) {
     return;
   }
-  const msg: WsEvent = { event, ...data };
-  const payload = JSON.stringify(msg);
+  let payload: string;
+  try {
+    const msg: WsEvent = { event, ...data };
+    payload = JSON.stringify(msg);
+  } catch (err) {
+    log.error(
+      `Failed to serialize broadcast event "${event}": ${err instanceof Error ? err.message : err}`,
+    );
+    return;
+  }
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+      try {
+        client.send(payload);
+      } catch (err) {
+        log.warn(
+          `Failed to send "${event}" to client: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
   }
 

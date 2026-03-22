@@ -205,6 +205,13 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       }
       break;
     }
+    case 'browser-status': {
+      const resolver = browserStatusResolvers.shift();
+      if (resolver) {
+        resolver(tunnelEvent.connected);
+      }
+      break;
+    }
     case 'command-error':
       log.warn(`Command error: ${tunnelEvent.message}`);
       break;
@@ -420,6 +427,38 @@ export function takeScreenshotAndWait(
 
     screenshotResolvers.push(resolverFn);
     pm.writeStdin('tunnel', JSON.stringify({ action: 'screenshot' }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Browser status
+// ---------------------------------------------------------------------------
+
+const browserStatusResolvers: Array<(connected: boolean) => void> = [];
+
+/** Check whether the user's browser is connected to the tunnel. */
+export function getBrowserStatus(
+  pm: ProcessManager,
+): Promise<{ connected: boolean }> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({ connected: false });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      const idx = browserStatusResolvers.indexOf(resolverFn);
+      if (idx !== -1) {
+        browserStatusResolvers.splice(idx, 1);
+      }
+      resolve({ connected: false });
+    }, 5_000);
+
+    const resolverFn = (connected: boolean) => {
+      clearTimeout(timeout);
+      resolve({ connected });
+    };
+
+    browserStatusResolvers.push(resolverFn);
+    pm.writeStdin('tunnel', JSON.stringify({ action: 'browser-status' }));
   });
 }
 

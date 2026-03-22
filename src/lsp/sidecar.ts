@@ -8,6 +8,7 @@
 import http from 'node:http';
 import type { LspClient } from './client.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
+import { getBrowserStatus } from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -169,6 +170,11 @@ export class LspSidecar {
             case '/restart-process':
               result = await this.handleRestartProcess(params);
               break;
+            case '/browser-status':
+              result = this.pm
+                ? await getBrowserStatus(this.pm)
+                : { connected: false };
+              break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Not found' }));
@@ -224,7 +230,16 @@ export class LspSidecar {
       throw new Error('Process manager not available');
     }
     log.info(`Restarting process (via sidecar): ${name}`);
-    await this.pm.restart(name);
+    await this.pm.restart(name, {
+      onBeforeRespawn:
+        name === 'devServer'
+          ? () =>
+              this.pm!.writeStdin(
+                'tunnel',
+                JSON.stringify({ action: 'dev-server-restarting' }),
+              )
+          : undefined,
+    });
     return { ok: true };
   }
 
