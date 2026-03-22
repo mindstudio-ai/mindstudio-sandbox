@@ -103,6 +103,9 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.error('Session expired by platform');
       cb.onSessionEnded();
       break;
+    case 'method-run-started':
+      log.info(`Method run started: ${tunnelEvent.method}`);
+      break;
     case 'method-started':
       log.debug(`Method started: ${tunnelEvent.method} (${tunnelEvent.id})`);
       break;

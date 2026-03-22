@@ -232,8 +232,11 @@ export class SnapshotManager {
       return false;
     }
 
-    // Push to remote using + prefix for unconditional force (bypasses
-    // server-side compare-and-swap checks that --force can still trigger).
+    // Delete stale remote tracking ref so push negotiation doesn't send an
+    // outdated expected-old-value (causes "incorrect old value provided").
+    await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
+
+    // Push to remote using + prefix for unconditional force.
     if (
       (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
     ) {
