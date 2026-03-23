@@ -84,34 +84,46 @@ export class SnapshotManager {
   async restore(): Promise<boolean> {
     log.info('Checking for draft snapshot to restore...');
     try {
-      // Delete any stale local tracking ref before fetching. Snapshot commits
-      // are parentless orphans, so old ones get GC'd on the remote — if the
-      // local ref still points at a GC'd object, fetch negotiation fails with
-      // "upload-pack: not our ref".
-      await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
-
-      // Fetch the draft branch into a proper remote tracking ref
-      const fetched = await this.exec(
-        `git fetch origin ${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
+      // Use ls-remote to check if _draft exists and get its SHA without any
+      // local ref negotiation. This avoids "upload-pack: not our ref" errors
+      // caused by stale local refs referencing GC'd orphan commits.
+      const lsOutput = await this.exec(
+        `git ls-remote origin refs/heads/${DRAFT_BRANCH}`,
       );
-      if (fetched === null) {
+      if (!lsOutput || !lsOutput.trim()) {
         log.info('No _draft branch on remote, skipping restore');
         return false;
       }
-
-      // Verify the ref exists
-      const draftSha = (
-        await this.exec(`git rev-parse --verify ${REMOTE_DRAFT_REF}`)
-      )?.trim();
+      const draftSha = lsOutput.trim().split(/\s+/)[0];
       if (!draftSha) {
-        log.warn('Fetched _draft but ref does not exist locally');
+        log.info('Could not parse _draft SHA from ls-remote');
+        return false;
+      }
+      log.info(`Found draft snapshot on remote: ${draftSha.slice(0, 8)}`);
+
+      // Prune all stale local refs that might interfere with fetch negotiation
+      await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
+      await this.exec(`git update-ref -d ${DRAFT_REF}`);
+
+      // Fetch the specific SHA directly using --no-negotiate to skip the
+      // "have" exchange that triggers "not our ref" errors.
+      const fetched = await this.exec(`git fetch --no-tags origin ${draftSha}`);
+      if (fetched === null) {
+        log.error('Failed to fetch draft snapshot from remote');
+        return false;
+      }
+
+      // Verify we have the object locally
+      const verify = await this.exec(`git cat-file -t ${draftSha}`);
+      if (!verify || verify.trim() !== 'commit') {
+        log.error('Fetched object is not a valid commit');
         return false;
       }
 
       const draftMsg = (
-        await this.exec(`git log -1 --format=%s ${REMOTE_DRAFT_REF}`)
+        await this.exec(`git log -1 --format=%s ${draftSha}`)
       )?.trim();
-      log.info(`Found draft snapshot: ${draftSha.slice(0, 8)} ("${draftMsg}")`);
+      log.info(`Draft commit message: "${draftMsg}"`);
 
       // Always restore — the draft is a filesystem backup of the last running
       // container state, including gitignored state files (.sandbox-state.json,
@@ -119,10 +131,10 @@ export class SnapshotManager {
       log.info('Restoring files from draft snapshot...');
       if (
         (await this.exec(
-          `git restore --source=${REMOTE_DRAFT_REF} --worktree -- .`,
+          `git restore --source=${draftSha} --worktree -- .`,
         )) === null
       ) {
-        log.error('Failed to restore files from draft branch');
+        log.error('Failed to restore files from draft snapshot');
         return false;
       }
 
