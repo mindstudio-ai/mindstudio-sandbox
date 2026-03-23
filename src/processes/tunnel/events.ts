@@ -28,6 +28,7 @@ export type TunnelEvent =
   | { event: 'session-stopping' }
   | { event: 'session-stopped' }
   | { event: 'session-expired' }
+  | { event: 'method-run-started'; method: string }
   | { event: 'method-started'; id: string; method: string }
   | {
       event: 'method-completed';

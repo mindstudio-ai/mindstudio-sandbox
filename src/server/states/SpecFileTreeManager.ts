@@ -80,15 +80,18 @@ export class SpecFileTreeManager {
   }
 
   /**
-   * Read the `name` field from YAML frontmatter in a markdown file.
-   * Returns null if no frontmatter or no name field.
+   * Parse YAML frontmatter from a markdown file.
+   * Returns null if no frontmatter block found.
+   * Uses lightweight line-by-line parsing (no YAML library dependency).
    */
-  private async readFrontmatterName(fullPath: string): Promise<string | null> {
+  private async readFrontmatter(
+    fullPath: string,
+  ): Promise<Record<string, unknown> | null> {
     try {
-      // Read just the first 512 bytes — frontmatter is always at the top
+      // Read just the first 1KB — frontmatter is always at the top
       const handle = await fs.open(fullPath, 'r');
-      const buf = Buffer.alloc(512);
-      const { bytesRead } = await handle.read(buf, 0, 512, 0);
+      const buf = Buffer.alloc(1024);
+      const { bytesRead } = await handle.read(buf, 0, 1024, 0);
       await handle.close();
       const head = buf.toString('utf-8', 0, bytesRead);
 
@@ -99,9 +102,44 @@ export class SpecFileTreeManager {
       if (endIdx === -1) {
         return null;
       }
-      const frontmatter = head.slice(3, endIdx);
-      const match = frontmatter.match(/^name:\s*(.+)$/m);
-      return match ? match[1].trim() : null;
+      const block = head.slice(3, endIdx).trim();
+      if (!block) {
+        return null;
+      }
+
+      const result: Record<string, unknown> = {};
+      for (const line of block.split('\n')) {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx === -1) {
+          continue;
+        }
+        const key = line.slice(0, colonIdx).trim();
+        let value: unknown = line.slice(colonIdx + 1).trim();
+
+        // Parse YAML-ish values
+        if (typeof value === 'string') {
+          if (value === 'true') {
+            value = true;
+          } else if (value === 'false') {
+            value = false;
+          } else if (value === '[]') {
+            value = [];
+          } else if (
+            (value as string).startsWith('[') &&
+            (value as string).endsWith(']')
+          ) {
+            // Simple inline array: [foo, bar] or ["foo", "bar"]
+            value = (value as string)
+              .slice(1, -1)
+              .split(',')
+              .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+              .filter(Boolean);
+          }
+        }
+
+        result[key] = value;
+      }
+      return Object.keys(result).length > 0 ? result : null;
     } catch {
       return null;
     }
@@ -140,10 +178,14 @@ export class SpecFileTreeManager {
         if (entry.isDirectory()) {
           node.children = await this.readDir(relPath);
         } else if (entry.name.endsWith('.md')) {
-          const displayName = await this.readFrontmatterName(fullPath);
-          if (displayName) {
-            node.displayName = displayName;
-          } else if (relPath === 'src/app.md') {
+          const fm = await this.readFrontmatter(fullPath);
+          if (fm) {
+            node.frontmatter = fm;
+            if (typeof fm.name === 'string') {
+              node.displayName = fm.name;
+            }
+          }
+          if (!node.displayName && relPath === 'src/app.md') {
             // Fall back to app name from mindstudio.json for the main spec file
             node.displayName = this.getAppName() ?? undefined;
           }

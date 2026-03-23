@@ -80,7 +80,7 @@ export class SnapshotManager {
     }
   }
 
-  /** Restore workspace from _draft branch if it's newer than HEAD. */
+  /** Restore workspace from _draft snapshot. Always restores if a draft exists. */
   async restore(): Promise<boolean> {
     log.info('Checking for draft snapshot to restore...');
     try {
@@ -107,36 +107,15 @@ export class SnapshotManager {
         log.warn('Fetched _draft but ref does not exist locally');
         return false;
       }
-      log.info(`Found draft snapshot: ${draftSha.slice(0, 8)}`);
 
-      // Compare timestamps
-      const draftTsStr = await this.exec(
-        `git log -1 --format=%ct ${REMOTE_DRAFT_REF}`,
-      );
-      const headTsStr = await this.exec('git log -1 --format=%ct HEAD');
-      if (draftTsStr === null || headTsStr === null) {
-        log.warn('Could not read commit timestamps');
-        return false;
-      }
-
-      const draftTs = parseInt(draftTsStr.trim(), 10);
-      const headTs = parseInt(headTsStr.trim(), 10);
-      log.info(
-        `Timestamps — draft: ${draftTs} (${new Date(draftTs * 1000).toISOString()}), HEAD: ${headTs} (${new Date(headTs * 1000).toISOString()})`,
-      );
-
-      if (isNaN(draftTs) || isNaN(headTs) || draftTs <= headTs) {
-        log.info('Draft is not newer than HEAD, skipping restore');
-        return false;
-      }
-
-      // Show what the draft contains
       const draftMsg = (
         await this.exec(`git log -1 --format=%s ${REMOTE_DRAFT_REF}`)
       )?.trim();
-      log.info(`Draft commit message: "${draftMsg}"`);
+      log.info(`Found draft snapshot: ${draftSha.slice(0, 8)} ("${draftMsg}")`);
 
-      // Overlay draft files onto working tree without touching the index
+      // Always restore — the draft is a filesystem backup of the last running
+      // container state, including gitignored state files (.sandbox-state.json,
+      // .remy-session.json, .project-status.json) that HEAD never contains.
       log.info('Restoring files from draft snapshot...');
       if (
         (await this.exec(
@@ -232,8 +211,11 @@ export class SnapshotManager {
       return false;
     }
 
-    // Push to remote using + prefix for unconditional force (bypasses
-    // server-side compare-and-swap checks that --force can still trigger).
+    // Delete stale remote tracking ref so push negotiation doesn't send an
+    // outdated expected-old-value (causes "incorrect old value provided").
+    await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
+
+    // Push to remote using + prefix for unconditional force.
     if (
       (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
     ) {
