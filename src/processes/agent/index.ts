@@ -129,7 +129,7 @@ const pendingExternalTools = new Map<string, PendingExternalTool>();
 /** Tool IDs handled server-side — suppress broadcast to frontend for these. */
 const serverHandledToolIds = new Set<string>();
 
-export interface PendingExternalTool {
+interface PendingExternalTool {
   id: string;
   name: string;
   input: Record<string, unknown>;
@@ -137,19 +137,6 @@ export interface PendingExternalTool {
 
 export function getAgentActivity(): AgentActivity {
   return { busy: activity.busy, fileOps: [...activity.fileOps] };
-}
-
-export function getPendingExternalTools(): PendingExternalTool[] {
-  return Array.from(pendingExternalTools.values());
-}
-
-export function hydratePendingExternalTools(
-  tools: PendingExternalTool[],
-): void {
-  pendingExternalTools.clear();
-  for (const tool of tools) {
-    pendingExternalTools.set(tool.id, tool);
-  }
 }
 
 // ---------------------------------------------------------------------------
