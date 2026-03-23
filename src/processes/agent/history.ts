@@ -120,16 +120,26 @@ export function transformHistory(raw: unknown[]): unknown[] {
           }
           const id = block.id as string;
           const tr = toolResults.get(id);
-          blocks.push({
+          const toolBlock: Record<string, unknown> = {
             type: 'tool',
             id,
             name,
             input: block.input,
             result: tr?.content,
             isError: tr?.isError ?? false,
-            ...(block.parentToolId ? { parentToolId: block.parentToolId } : {}),
-            ...(block.startedAt != null ? { startedAt: block.startedAt } : {}),
-          });
+          };
+          if (block.parentToolId) {
+            toolBlock.parentToolId = block.parentToolId;
+          }
+          if (block.startedAt != null) {
+            toolBlock.startedAt = block.startedAt;
+          }
+          if (Array.isArray(block.subAgentMessages)) {
+            toolBlock.subAgentMessages = transformHistory(
+              block.subAgentMessages as unknown[],
+            );
+          }
+          blocks.push(toolBlock);
           continue;
         }
 
