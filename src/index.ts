@@ -570,10 +570,10 @@ async function main(): Promise<void> {
     ctx.appConfig = appConfig;
     log.info(`App: ${appConfig.name} (${appConfig.appId})`);
 
-    // 8. Install dependencies
+    // 9. Install dependencies
     await installDependencies(config.workspaceDir, progress);
 
-    // 9. Init handlers
+    // 10. Init handlers
     initFilesystem(config.workspaceDir);
     initShell(config.workspaceDir, managers.registry);
     initPty(config.workspaceDir, managers.registry, managers.batcher);
@@ -588,7 +588,7 @@ async function main(): Promise<void> {
       }),
     );
 
-    // 10. Restore state
+    // 11. Restore state
     initState(
       config.workspaceDir,
       managers.registry,
@@ -613,11 +613,11 @@ async function main(): Promise<void> {
       }
     }
 
-    // 11. Build initial file trees
+    // 12. Build initial file trees
     await managers.fileTreeManager.buildVisibleTree();
     await managers.specFileTreeManager.buildTree();
 
-    // 12. Start services
+    // 13. Start services
     const { lspClient, lspSidecar } = await startServices(
       config,
       managers,
@@ -628,10 +628,10 @@ async function main(): Promise<void> {
     );
     lspClientRef = lspClient;
 
-    // 13. File watcher
+    // 14. File watcher
     setupFileWatcher(config, managers, appConfig, lspSidecar);
 
-    // 14. Start periodic snapshots
+    // 15. Start periodic snapshots
     snapshotManager.start();
 
     // Ready
