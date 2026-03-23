@@ -93,6 +93,7 @@ const INTERNAL_TOOLS = new Set([
   'listDir',
   'lspDiagnostics',
   'restartProcess',
+  'screenshot',
 ]);
 
 /**
@@ -114,7 +115,6 @@ export const SERVER_VISIBLE_TOOLS = new Set([
   'runScenario',
   'runMethod',
   'browserCommand',
-  'screenshot',
 ]);
 
 // ---------------------------------------------------------------------------

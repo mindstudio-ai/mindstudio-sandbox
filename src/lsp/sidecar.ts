@@ -8,7 +8,11 @@
 import http from 'node:http';
 import type { LspClient } from './client.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
-import { getBrowserStatus, resetBrowser } from '../processes/tunnel/index.js';
+import {
+  getBrowserStatus,
+  resetBrowser,
+  takeScreenshotAndWait,
+} from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -177,6 +181,11 @@ export class LspSidecar {
               break;
             case '/reset-browser':
               result = this.pm ? await resetBrowser(this.pm) : { ok: false };
+              break;
+            case '/screenshot':
+              result = this.pm
+                ? await takeScreenshotAndWait(this.pm)
+                : { url: '', width: 0, height: 0, duration: 0 };
               break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
