@@ -2,8 +2,8 @@
  * Periodic git snapshot manager.
  *
  * Commits all workspace state (files + session state) to a `_draft` branch
- * and force-pushes to the remote. On boot, restores from the draft if it's
- * newer than HEAD. Provides durability against unclean container deaths.
+ * and force-pushes to the remote. On boot, restores from the draft if one
+ * exists. Provides durability against unclean container deaths.
  *
  * Uses git plumbing commands with a temporary index file so snapshots are
  * completely isolated from remy's working tree and any in-progress git ops.

@@ -76,14 +76,7 @@ export function startWatcher(
   });
 
   function shouldEmit(absPath: string): boolean {
-    if (isSuppressed(absPath)) {
-      return false;
-    }
-    // Don't emit events for hidden files (e.g. .sandbox-state.json)
-    if (TREE_HIDDEN.has(path.basename(absPath))) {
-      return false;
-    }
-    return true;
+    return !isSuppressed(absPath);
   }
 
   watcher.on('error', (err: unknown) => {

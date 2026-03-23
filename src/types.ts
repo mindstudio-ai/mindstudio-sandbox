@@ -25,15 +25,13 @@ export interface DirEntry {
   type: 'file' | 'directory';
   size: number;
   modified: string;
-  /** If true, this directory should not be expanded by the frontend. */
+  /** If true, this directory's contents are not included or should not be expanded. */
   collapsed?: boolean;
 }
 
 export interface TreeEntry extends DirEntry {
   path: string;
   children?: TreeEntry[];
-  /** If true, this directory exists but its contents are not included (e.g. node_modules). */
-  collapsed?: boolean;
   /** Human-readable name from frontmatter (e.g., YAML `name` field in .md files). */
   displayName?: string;
   /** Parsed YAML frontmatter from .md files (all key-value pairs). */

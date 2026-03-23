@@ -238,6 +238,7 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     case 'error':
       activity = { busy: false, fileOps: [] };
       pendingExternalTools.clear();
+      serverHandledToolIds.clear();
       cb.onTurnDone?.();
       broadcastActivity(cb);
       break;

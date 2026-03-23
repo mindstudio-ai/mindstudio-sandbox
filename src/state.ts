@@ -57,16 +57,20 @@ export function markDirty(): void {
   flushTimer.unref();
 }
 
+function buildState(): SandboxState {
+  return {
+    processSnapshots: registry!.getSnapshots(),
+    editorState: editorManager?.getState(),
+    specEditorState: specEditorManager?.getState(),
+  };
+}
+
 function flushSync(): void {
   if (!dirty || !registry) {
     return;
   }
   try {
-    const state: SandboxState = {
-      processSnapshots: registry.getSnapshots(),
-      editorState: editorManager?.getState(),
-      specEditorState: specEditorManager?.getState(),
-    };
+    const state = buildState();
     fsSync.writeFileSync(statePath, JSON.stringify(state), 'utf-8');
     dirty = false;
     log.debug(
@@ -106,11 +110,7 @@ export async function saveState(): Promise<void> {
   }
   try {
     stopAutoSave();
-    const state: SandboxState = {
-      processSnapshots: registry.getSnapshots(),
-      editorState: editorManager?.getState(),
-      specEditorState: specEditorManager?.getState(),
-    };
+    const state = buildState();
     const json = JSON.stringify(state, null, 2);
     await fs.writeFile(statePath, json, 'utf-8');
     dirty = false;
