@@ -129,7 +129,7 @@ const pendingExternalTools = new Map<string, PendingExternalTool>();
 /** Tool IDs handled server-side — suppress broadcast to frontend for these. */
 const serverHandledToolIds = new Set<string>();
 
-export interface PendingExternalTool {
+interface PendingExternalTool {
   id: string;
   name: string;
   input: Record<string, unknown>;
@@ -137,19 +137,6 @@ export interface PendingExternalTool {
 
 export function getAgentActivity(): AgentActivity {
   return { busy: activity.busy, fileOps: [...activity.fileOps] };
-}
-
-export function getPendingExternalTools(): PendingExternalTool[] {
-  return Array.from(pendingExternalTools.values());
-}
-
-export function hydratePendingExternalTools(
-  tools: PendingExternalTool[],
-): void {
-  pendingExternalTools.clear();
-  for (const tool of tools) {
-    pendingExternalTools.set(tool.id, tool);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +252,14 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       name: event.name,
       input,
     });
+    // Suppress broadcast immediately for server-handled tools (before partial
+    // streams leak to the frontend).
+    if (SERVER_HANDLED_TOOLS.has(event.name)) {
+      serverHandledToolIds.add(event.id);
+    }
     // Only trigger external tool handling on the final tool_start (no partial flag)
     if (!event.partial) {
-      const handled = cb.onExternalTool?.(event.id, event.name, input);
-      // Suppress broadcast only for hidden server-handled tools
-      if (handled && SERVER_HANDLED_TOOLS.has(event.name)) {
-        serverHandledToolIds.add(event.id);
-      }
+      cb.onExternalTool?.(event.id, event.name, input);
     }
   } else if (
     event.event === 'tool_input_delta' &&

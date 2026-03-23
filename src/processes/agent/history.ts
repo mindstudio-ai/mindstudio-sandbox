@@ -5,94 +5,146 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *
  * Raw format:
  *   { role: "user", content: "hi" }
- *   { role: "assistant", content: "text", toolCalls: [{id, name, input}] }
+ *   { role: "assistant", content: [
+ *       { type: "thinking", thinking: "...", signature: "..." },
+ *       { type: "text", text: "hello" },
+ *       { type: "tool_use", id: "tc_1", name: "readFile", input: {...} }
+ *   ]}
  *   { role: "user", content: "result", toolCallId: "tc_1", isToolError: false }
  *
  * Transformed:
  *   { role: "user", content: "hi" }
  *   { role: "assistant", content: [
- *       { type: "text", text: "text" },
+ *       { type: "thinking", thinking: "...", signature: "..." },
+ *       { type: "text", text: "hello" },
  *       { type: "tool", id: "tc_1", name: "readFile", input: {...}, result: "result", isError: false }
  *   ]}
  */
 export function transformHistory(raw: unknown[]): unknown[] {
+  // Build a map of tool results from user messages for quick lookup
+  const toolResults = new Map<string, { content: string; isError: boolean }>();
+  for (const msg of raw) {
+    const m = msg as Record<string, unknown>;
+    if (m.role === 'user' && m.toolCallId) {
+      toolResults.set(m.toolCallId as string, {
+        content: m.content as string,
+        isError: (m.isToolError as boolean) ?? false,
+      });
+    }
+  }
+
   const result: unknown[] = [];
 
-  for (let i = 0; i < raw.length; i++) {
-    const msg = raw[i] as Record<string, unknown>;
+  for (const msg of raw) {
+    const m = msg as Record<string, unknown>;
 
-    if (msg.role === 'user' && msg.toolCallId) {
-      // Tool result — skip, already merged into preceding assistant message
+    // Skip tool result messages — merged into assistant blocks
+    if (m.role === 'user' && m.toolCallId) {
       continue;
     }
 
-    if (msg.hidden) {
-      // Internal prompt — skip from chat display
+    // Skip internal prompts
+    if (m.hidden) {
       continue;
     }
 
-    if (msg.role === 'user') {
+    if (m.role === 'user') {
       const userMsg: Record<string, unknown> = {
         role: 'user',
-        content: msg.content,
+        content: m.content,
       };
-      if (msg.attachments) {
-        userMsg.attachments = msg.attachments;
+      if (m.attachments) {
+        userMsg.attachments = m.attachments;
       }
       result.push(userMsg);
       continue;
     }
 
-    if (msg.role === 'assistant') {
-      const blocks: unknown[] = [];
+    if (m.role === 'assistant') {
+      const rawContent = m.content;
 
-      // Add text block if there's content
-      if (
-        msg.content &&
-        typeof msg.content === 'string' &&
-        msg.content.trim()
-      ) {
-        blocks.push({ type: 'text', text: msg.content });
+      // Handle legacy format: string content + toolCalls array
+      if (typeof rawContent === 'string' || !Array.isArray(rawContent)) {
+        const blocks: unknown[] = [];
+        if (rawContent && typeof rawContent === 'string' && rawContent.trim()) {
+          blocks.push({ type: 'text', text: rawContent });
+        }
+        const toolCalls = m.toolCalls as
+          | Array<{
+              id: string;
+              name: string;
+              input: unknown;
+              parentToolId?: string;
+            }>
+          | undefined;
+        if (toolCalls) {
+          for (const tc of toolCalls) {
+            if (SERVER_HANDLED_TOOLS.has(tc.name)) {
+              continue;
+            }
+            const tr = toolResults.get(tc.id);
+            blocks.push({
+              type: 'tool',
+              id: tc.id,
+              name: tc.name,
+              input: tc.input,
+              result: tr?.content,
+              isError: tr?.isError ?? false,
+              ...(tc.parentToolId ? { parentToolId: tc.parentToolId } : {}),
+            });
+          }
+        }
+        result.push({ role: 'assistant', content: blocks });
+        continue;
       }
 
-      // Add tool blocks, merging with subsequent tool result messages
-      const toolCalls = msg.toolCalls as
-        | Array<{
-            id: string;
-            name: string;
-            input: unknown;
-            parentToolId?: string;
-          }>
-        | undefined;
-      if (toolCalls) {
-        for (const tc of toolCalls) {
-          // Filter out server-handled tools (not shown to frontend)
-          if (SERVER_HANDLED_TOOLS.has(tc.name)) {
+      // New format: ordered content blocks
+      const blocks: unknown[] = [];
+      for (const block of rawContent as Array<Record<string, unknown>>) {
+        if (block.type === 'thinking') {
+          blocks.push(block);
+          continue;
+        }
+
+        if (block.type === 'text') {
+          if (block.text && (block.text as string).trim()) {
+            blocks.push(block);
+          }
+          continue;
+        }
+
+        if (block.type === 'tool_use') {
+          const name = block.name as string;
+          if (SERVER_HANDLED_TOOLS.has(name)) {
             continue;
           }
-          let toolResult: string | undefined;
-          let isError = false;
-          for (let j = i + 1; j < raw.length; j++) {
-            const next = raw[j] as Record<string, unknown>;
-            if (next.role === 'user' && next.toolCallId === tc.id) {
-              toolResult = next.content as string;
-              isError = (next.isToolError as boolean) ?? false;
-              break;
-            }
-            if (next.role !== 'user' || !next.toolCallId) {
-              break;
-            }
-          }
-          blocks.push({
+          const id = block.id as string;
+          const tr = toolResults.get(id);
+          const toolBlock: Record<string, unknown> = {
             type: 'tool',
-            id: tc.id,
-            name: tc.name,
-            input: tc.input,
-            result: toolResult,
-            isError,
-            ...(tc.parentToolId ? { parentToolId: tc.parentToolId } : {}),
-          });
+            id,
+            name,
+            input: block.input,
+            result: tr?.content,
+            isError: tr?.isError ?? false,
+          };
+          if (block.parentToolId) {
+            toolBlock.parentToolId = block.parentToolId;
+          }
+          if (block.startedAt != null) {
+            toolBlock.startedAt = block.startedAt;
+          }
+          if (Array.isArray(block.subAgentMessages)) {
+            toolBlock.subAgentMessages = transformHistory(
+              block.subAgentMessages as unknown[],
+            );
+          }
+          blocks.push(toolBlock);
+          continue;
         }
+
+        // Pass through any unknown block types
+        blocks.push(block);
       }
 
       result.push({ role: 'assistant', content: blocks });
