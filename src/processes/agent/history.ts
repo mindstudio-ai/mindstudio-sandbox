@@ -128,6 +128,7 @@ export function transformHistory(raw: unknown[]): unknown[] {
             result: tr?.content,
             isError: tr?.isError ?? false,
             ...(block.parentToolId ? { parentToolId: block.parentToolId } : {}),
+            ...(block.startedAt != null ? { startedAt: block.startedAt } : {}),
           });
           continue;
         }
