@@ -182,7 +182,12 @@ export class LspSidecar {
               break;
             case '/screenshot':
               result = this.pm
-                ? await sendTunnelCommand(this.pm, 'screenshot', {}, 120_000)
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'screenshot',
+                    { fullPage: params.fullPage !== false },
+                    120_000,
+                  )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
             default:
