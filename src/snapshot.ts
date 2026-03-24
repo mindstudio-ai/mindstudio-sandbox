@@ -25,6 +25,7 @@ export class SnapshotManager {
   private timer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private inProgress = false;
+  private lastTreeSha: string | null = null;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -84,46 +85,26 @@ export class SnapshotManager {
   async restore(): Promise<boolean> {
     log.info('Checking for draft snapshot to restore...');
     try {
-      // Use ls-remote to check if _draft exists and get its SHA without any
-      // local ref negotiation. This avoids "upload-pack: not our ref" errors
-      // caused by stale local refs referencing GC'd orphan commits.
-      const lsOutput = await this.exec(
-        `git ls-remote origin refs/heads/${DRAFT_BRANCH}`,
+      const fetched = await this.exec(
+        `git fetch --no-tags origin ${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
       );
-      if (!lsOutput || !lsOutput.trim()) {
+      if (fetched === null) {
         log.info('No _draft branch on remote, skipping restore');
         return false;
       }
-      const draftSha = lsOutput.trim().split(/\s+/)[0];
+
+      const draftSha = (
+        await this.exec(`git rev-parse ${REMOTE_DRAFT_REF}`)
+      )?.trim();
       if (!draftSha) {
-        log.info('Could not parse _draft SHA from ls-remote');
-        return false;
-      }
-      log.info(`Found draft snapshot on remote: ${draftSha.slice(0, 8)}`);
-
-      // Prune all stale local refs that might interfere with fetch negotiation
-      await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
-      await this.exec(`git update-ref -d ${DRAFT_REF}`);
-
-      // Fetch the specific SHA directly using --no-negotiate to skip the
-      // "have" exchange that triggers "not our ref" errors.
-      const fetched = await this.exec(`git fetch --no-tags origin ${draftSha}`);
-      if (fetched === null) {
-        log.error('Failed to fetch draft snapshot from remote');
-        return false;
-      }
-
-      // Verify we have the object locally
-      const verify = await this.exec(`git cat-file -t ${draftSha}`);
-      if (!verify || verify.trim() !== 'commit') {
-        log.error('Fetched object is not a valid commit');
+        log.warn('Fetched _draft but could not resolve ref');
         return false;
       }
 
       const draftMsg = (
-        await this.exec(`git log -1 --format=%s ${draftSha}`)
+        await this.exec(`git log -1 --format=%s ${REMOTE_DRAFT_REF}`)
       )?.trim();
-      log.info(`Draft commit message: "${draftMsg}"`);
+      log.info(`Found draft snapshot: ${draftSha.slice(0, 8)} ("${draftMsg}")`);
 
       // Always restore — the draft is a filesystem backup of the last running
       // container state, including gitignored state files (.sandbox-state.json,
@@ -131,7 +112,7 @@ export class SnapshotManager {
       log.info('Restoring files from draft snapshot...');
       if (
         (await this.exec(
-          `git restore --source=${draftSha} --worktree -- .`,
+          `git restore --source=${REMOTE_DRAFT_REF} --worktree -- .`,
         )) === null
       ) {
         log.error('Failed to restore files from draft snapshot');
@@ -190,11 +171,8 @@ export class SnapshotManager {
     }
     log.debug(`Tree: ${treeSha.slice(0, 8)}`);
 
-    // Skip if tree is identical to the current _draft (nothing changed)
-    const previousTree = (
-      await this.exec(`git rev-parse ${DRAFT_REF}^{tree}`)
-    )?.trim();
-    if (previousTree && treeSha === previousTree) {
+    // Skip if tree is identical to the last snapshot (nothing changed)
+    if (this.lastTreeSha && treeSha === this.lastTreeSha) {
       log.info(`No changes since last snapshot, skipping`);
       try {
         fs.unlinkSync(TMP_INDEX);
@@ -223,10 +201,6 @@ export class SnapshotManager {
       return false;
     }
 
-    // Delete stale remote tracking ref so push negotiation doesn't send an
-    // outdated expected-old-value (causes "incorrect old value provided").
-    await this.exec(`git update-ref -d ${REMOTE_DRAFT_REF}`);
-
     // Push to remote using + prefix for unconditional force.
     if (
       (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
@@ -234,6 +208,8 @@ export class SnapshotManager {
       log.warn('Snapshot committed locally but push failed');
       return false;
     }
+
+    this.lastTreeSha = treeSha;
 
     // Clean up temp index
     try {
