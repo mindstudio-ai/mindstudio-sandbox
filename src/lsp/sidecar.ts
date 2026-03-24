@@ -8,11 +8,7 @@
 import http from 'node:http';
 import type { LspClient } from './client.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
-import {
-  getBrowserStatus,
-  resetBrowser,
-  takeScreenshotAndWait,
-} from '../processes/tunnel/index.js';
+import { sendCommand as sendTunnelCommand } from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp-sidecar');
@@ -176,15 +172,22 @@ export class LspSidecar {
               break;
             case '/browser-status':
               result = this.pm
-                ? await getBrowserStatus(this.pm)
+                ? await sendTunnelCommand(this.pm, 'browser-status', {}, 5_000)
                 : { connected: false };
               break;
             case '/reset-browser':
-              result = this.pm ? await resetBrowser(this.pm) : { ok: false };
+              result = this.pm
+                ? await sendTunnelCommand(this.pm, 'reset-browser', {}, 5_000)
+                : { ok: false };
               break;
             case '/screenshot':
               result = this.pm
-                ? await takeScreenshotAndWait(this.pm)
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'screenshot',
+                    { fullPage: params.fullPage !== false },
+                    120_000,
+                  )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
             default:
@@ -245,11 +248,9 @@ export class LspSidecar {
     await this.pm.restart(name, {
       onBeforeRespawn:
         name === 'devServer'
-          ? () =>
-              this.pm!.writeStdin(
-                'tunnel',
-                JSON.stringify({ action: 'dev-server-restarting' }),
-              )
+          ? () => {
+              sendTunnelCommand(this.pm!, 'dev-server-restarting', {}, 5_000);
+            }
           : undefined,
     });
     return { ok: true };

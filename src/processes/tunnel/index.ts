@@ -1,12 +1,13 @@
 /**
  * Tunnel process — manages the mindstudio-local dev tunnel.
  *
- * Handles startup config, stdout event parsing, and WS action handlers
- * for scenarios and role impersonation.
+ * Handles startup config, stdout event parsing, and WS action handlers.
+ * Uses requestId-based correlation for all stdin commands.
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { parseTunnelLine } from './events.js';
+import { parseTunnelMessage } from './events.js';
+import type { TunnelEvent } from './events.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('tunnel');
@@ -56,12 +57,66 @@ export function startTunnel(
   });
 }
 
+// ---------------------------------------------------------------------------
+// requestId-based command correlation
+// ---------------------------------------------------------------------------
+
+let requestCounter = 0;
+const pending = new Map<
+  string,
+  {
+    resolve: (response: Record<string, unknown>) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
+>();
+
+/** Send a command to the tunnel and wait for the correlated response. */
+export function sendCommand(
+  pm: ProcessManager,
+  action: string,
+  params?: Record<string, unknown>,
+  timeoutMs = 30_000,
+): Promise<Record<string, unknown>> {
+  if (pm.getState('tunnel') !== 'running') {
+    return Promise.resolve({ success: false, error: 'tunnel not running' });
+  }
+  const requestId = `tc-${++requestCounter}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pending.delete(requestId);
+      resolve({ success: false, error: `timeout (${timeoutMs / 1000}s)` });
+    }, timeoutMs);
+
+    pending.set(requestId, { resolve, timer });
+    pm.writeStdin('tunnel', JSON.stringify({ requestId, action, ...params }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Stdout handling
+// ---------------------------------------------------------------------------
+
 function handleStdout(line: string, cb: TunnelCallbacks): void {
-  const tunnelEvent = parseTunnelLine(line);
-  if (!tunnelEvent) {
+  const msg = parseTunnelMessage(line);
+  if (!msg) {
     return;
   }
 
+  // Command response — resolve pending promise, don't broadcast
+  if ('requestId' in msg && msg.requestId) {
+    const entry = pending.get(msg.requestId as string);
+    if (entry) {
+      pending.delete(msg.requestId as string);
+      clearTimeout(entry.timer);
+      entry.resolve(msg as Record<string, unknown>);
+    } else {
+      log.debug(`No pending resolver for requestId=${msg.requestId}`);
+    }
+    return;
+  }
+
+  // System event — broadcast to frontend + handle
+  const tunnelEvent = msg as TunnelEvent;
   log.debug(
     `Event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
   );
@@ -103,27 +158,26 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.error('Session expired by platform');
       cb.onSessionEnded();
       break;
-    case 'method-run-started':
-      log.info(`Method run started: ${tunnelEvent.method}`);
+    case 'platform-method-started':
+      log.debug(
+        `Platform method started: ${tunnelEvent.method} (${tunnelEvent.id})`,
+      );
       break;
-    case 'method-started':
-      log.debug(`Method started: ${tunnelEvent.method} (${tunnelEvent.id})`);
-      break;
-    case 'method-completed':
+    case 'platform-method-completed':
       if (tunnelEvent.success) {
         log.debug(
-          `Method completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
+          `Platform method completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
         );
       } else {
         log.warn(
-          `Method failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
+          `Platform method failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
         );
       }
       break;
     case 'scenario-started':
       log.info(`Scenario started: ${tunnelEvent.name} (${tunnelEvent.id})`);
       break;
-    case 'scenario-completed': {
+    case 'scenario-completed':
       if (tunnelEvent.success) {
         log.info(
           `Scenario completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
@@ -133,18 +187,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
           `Scenario failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
         );
       }
-      const resolver = scenarioResolvers.get(tunnelEvent.id);
-      if (resolver) {
-        scenarioResolvers.delete(tunnelEvent.id);
-        resolver({
-          success: tunnelEvent.success,
-          duration: tunnelEvent.duration,
-          roles: tunnelEvent.roles,
-          error: tunnelEvent.error,
-        });
-      }
       break;
-    }
     case 'schema-sync-started':
       log.info('Schema sync started');
       break;
@@ -171,60 +214,6 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
     case 'config-error':
       log.warn(`Config error: ${tunnelEvent.message}`);
       break;
-    case 'method-run-completed': {
-      if (tunnelEvent.success) {
-        log.info(
-          `Method run completed: ${tunnelEvent.method} (${tunnelEvent.duration}ms)`,
-        );
-      } else {
-        log.warn(
-          `Method run failed: ${tunnelEvent.method} — ${tunnelEvent.error?.message ?? 'unknown error'}`,
-        );
-      }
-      const methodResolver = methodRunResolvers.get(tunnelEvent.method);
-      if (methodResolver) {
-        methodRunResolvers.delete(tunnelEvent.method);
-        methodResolver(tunnelEvent);
-      }
-      break;
-    }
-    case 'browser-completed': {
-      log.info(
-        `Browser command completed: ${tunnelEvent.steps.length} step(s) (${tunnelEvent.duration}ms)`,
-      );
-      const browserResolver = browserResolvers.shift();
-      if (browserResolver) {
-        browserResolver(tunnelEvent);
-      }
-      break;
-    }
-    case 'screenshot-completed': {
-      log.info(
-        `Screenshot captured: ${tunnelEvent.width}x${tunnelEvent.height} (${tunnelEvent.duration}ms)`,
-      );
-      const screenshotResolver = screenshotResolvers.shift();
-      if (screenshotResolver) {
-        screenshotResolver(tunnelEvent);
-      }
-      break;
-    }
-    case 'browser-status': {
-      const resolver = browserStatusResolvers.shift();
-      if (resolver) {
-        resolver(tunnelEvent.connected);
-      }
-      break;
-    }
-    case 'reset-browser-completed': {
-      const resetResolver = resetBrowserResolvers.shift();
-      if (resetResolver) {
-        resetResolver();
-      }
-      break;
-    }
-    case 'command-error':
-      log.warn(`Command error: ${tunnelEvent.message}`);
-      break;
     case 'error':
       log.error(`Error: ${tunnelEvent.message}`);
       break;
@@ -232,287 +221,13 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
 }
 
 // ---------------------------------------------------------------------------
-// Synchronous scenario execution
+// WS action handlers
 // ---------------------------------------------------------------------------
-
-interface ScenarioResult {
-  success: boolean;
-  duration: number;
-  roles: string[];
-  error?: string;
-}
-
-const scenarioResolvers = new Map<string, (result: ScenarioResult) => void>();
-
-/** Run a scenario and wait for the tunnel's completion event. */
-export function runScenarioAndWait(
-  pm: ProcessManager,
-  scenarioId: string,
-): Promise<ScenarioResult> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({
-      success: false,
-      duration: 0,
-      roles: [],
-      error: 'tunnel not running',
-    });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      scenarioResolvers.delete(scenarioId);
-      resolve({
-        success: false,
-        duration: 0,
-        roles: [],
-        error: 'timeout (30s)',
-      });
-    }, 30_000);
-
-    scenarioResolvers.set(scenarioId, (result) => {
-      clearTimeout(timeout);
-      resolve(result);
-    });
-
-    pm.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'run-scenario', scenarioId }),
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Synchronous method execution
-// ---------------------------------------------------------------------------
-
-interface MethodRunResult {
-  method: string;
-  success: boolean;
-  output: unknown | null;
-  error: {
-    message: string;
-    stack?: string;
-    code?: string;
-    statusCode?: number;
-    cause?: unknown;
-  } | null;
-  stdout: string[];
-  duration: number;
-}
-
-const methodRunResolvers = new Map<string, (result: MethodRunResult) => void>();
-
-/** Run a method and wait for the tunnel's completion event. */
-export function runMethodAndWait(
-  pm: ProcessManager,
-  method: string,
-  input?: Record<string, unknown>,
-): Promise<MethodRunResult> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({
-      method,
-      success: false,
-      output: null,
-      error: { message: 'tunnel not running' },
-      stdout: [],
-      duration: 0,
-    });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      methodRunResolvers.delete(method);
-      resolve({
-        method,
-        success: false,
-        output: null,
-        error: { message: 'timeout (30s)' },
-        stdout: [],
-        duration: 0,
-      });
-    }, 30_000);
-
-    methodRunResolvers.set(method, (result) => {
-      clearTimeout(timeout);
-      resolve(result);
-    });
-
-    pm.writeStdin(
-      'tunnel',
-      JSON.stringify({ action: 'run-method', method, input: input ?? {} }),
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Synchronous browser command execution
-// ---------------------------------------------------------------------------
-
-interface BrowserResult {
-  id?: string;
-  steps: Array<{
-    index: number;
-    command: string;
-    result: string;
-    error?: string;
-  }>;
-  snapshot: string;
-  duration: number;
-}
-
-const browserResolvers: Array<(result: BrowserResult) => void> = [];
-
-/** Send browser commands and wait for the completion event. */
-export function runBrowserAndWait(
-  pm: ProcessManager,
-  steps: unknown[],
-): Promise<BrowserResult> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({
-      steps: [],
-      snapshot: '',
-      duration: 0,
-    });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      const idx = browserResolvers.indexOf(resolverFn);
-      if (idx !== -1) {
-        browserResolvers.splice(idx, 1);
-      }
-      resolve({
-        steps: [{ index: 0, command: '', result: '', error: 'timeout (120s)' }],
-        snapshot: '',
-        duration: 0,
-      });
-    }, 120_000);
-
-    const resolverFn = (result: BrowserResult) => {
-      clearTimeout(timeout);
-      resolve(result);
-    };
-
-    browserResolvers.push(resolverFn);
-
-    pm.writeStdin('tunnel', JSON.stringify({ action: 'browser', steps }));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Synchronous screenshot capture
-// ---------------------------------------------------------------------------
-
-interface ScreenshotResult {
-  url: string;
-  width: number;
-  height: number;
-  duration: number;
-}
-
-const screenshotResolvers: Array<(result: ScreenshotResult) => void> = [];
-
-/** Capture a screenshot and wait for the CDN URL. */
-export function takeScreenshotAndWait(
-  pm: ProcessManager,
-): Promise<ScreenshotResult> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({
-      url: '',
-      width: 0,
-      height: 0,
-      duration: 0,
-    });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      const idx = screenshotResolvers.indexOf(resolverFn);
-      if (idx !== -1) {
-        screenshotResolvers.splice(idx, 1);
-      }
-      resolve({ url: '', width: 0, height: 0, duration: 0 });
-    }, 30_000);
-
-    const resolverFn = (result: ScreenshotResult) => {
-      clearTimeout(timeout);
-      resolve(result);
-    };
-
-    screenshotResolvers.push(resolverFn);
-    pm.writeStdin('tunnel', JSON.stringify({ action: 'screenshot' }));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Browser status
-// ---------------------------------------------------------------------------
-
-const browserStatusResolvers: Array<(connected: boolean) => void> = [];
-
-/** Check whether the user's browser is connected to the tunnel. */
-export function getBrowserStatus(
-  pm: ProcessManager,
-): Promise<{ connected: boolean }> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({ connected: false });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      const idx = browserStatusResolvers.indexOf(resolverFn);
-      if (idx !== -1) {
-        browserStatusResolvers.splice(idx, 1);
-      }
-      resolve({ connected: false });
-    }, 5_000);
-
-    const resolverFn = (connected: boolean) => {
-      clearTimeout(timeout);
-      resolve({ connected });
-    };
-
-    browserStatusResolvers.push(resolverFn);
-    pm.writeStdin('tunnel', JSON.stringify({ action: 'browser-status' }));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Reset browser
-// ---------------------------------------------------------------------------
-
-const resetBrowserResolvers: Array<() => void> = [];
-
-/** Reset the user's browser (reload to clean page). */
-export function resetBrowser(pm: ProcessManager): Promise<{ ok: boolean }> {
-  if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({ ok: false });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      const idx = resetBrowserResolvers.indexOf(resolverFn);
-      if (idx !== -1) {
-        resetBrowserResolvers.splice(idx, 1);
-      }
-      resolve({ ok: false });
-    }, 5_000);
-
-    const resolverFn = () => {
-      clearTimeout(timeout);
-      resolve({ ok: true });
-    };
-
-    resetBrowserResolvers.push(resolverFn);
-    pm.writeStdin('tunnel', JSON.stringify({ action: 'reset-browser' }));
-  });
-}
 
 /** Create WS action handlers for tunnel commands. */
 export function createTunnelActions(
   pm: ProcessManager,
 ): Record<string, ActionHandler> {
-  function send(action: string, extra?: Record<string, unknown>): void {
-    if (pm.getState('tunnel') !== 'running') {
-      throw new Error('tunnel not running');
-    }
-    pm.writeStdin('tunnel', JSON.stringify({ action, ...extra }));
-  }
-
   return {
     tunnelRunScenario: async (p) => {
       const { scenarioId } = p as { scenarioId: string };
@@ -520,8 +235,39 @@ export function createTunnelActions(
         throw new Error('Missing "scenarioId" parameter');
       }
       log.info(`Running scenario: ${scenarioId}`);
-      send('run-scenario', { scenarioId });
-      return {};
+      return await sendCommand(pm, 'run-scenario', { scenarioId }, 30_000);
+    },
+    tunnelRunMethod: async (p) => {
+      const { method, input } = p as {
+        method: string;
+        input?: Record<string, unknown>;
+      };
+      if (!method) {
+        throw new Error('Missing "method" parameter');
+      }
+      log.info(`Running method: ${method}`);
+      return await sendCommand(
+        pm,
+        'run-method',
+        { method, input: input ?? {} },
+        30_000,
+      );
+    },
+    tunnelBrowser: async (p) => {
+      const { steps } = p as { steps: unknown[] };
+      if (!steps) {
+        throw new Error('Missing "steps" parameter');
+      }
+      return await sendCommand(pm, 'browser', { steps }, 120_000);
+    },
+    tunnelScreenshot: async () => {
+      return await sendCommand(pm, 'screenshot', {}, 120_000);
+    },
+    tunnelBrowserStatus: async () => {
+      return await sendCommand(pm, 'browser-status', {}, 5_000);
+    },
+    tunnelResetBrowser: async () => {
+      return await sendCommand(pm, 'reset-browser', {}, 5_000);
     },
     tunnelImpersonate: async (p) => {
       const { roles } = p as { roles: string[] };
@@ -529,13 +275,11 @@ export function createTunnelActions(
         throw new Error('Missing "roles" parameter (array of role IDs)');
       }
       log.info(`Impersonating roles: ${roles.join(', ')}`);
-      send('impersonate', { roles });
-      return {};
+      return await sendCommand(pm, 'impersonate', { roles }, 5_000);
     },
     tunnelClearImpersonation: async () => {
       log.info('Clearing role impersonation');
-      send('clear-impersonation');
-      return {};
+      return await sendCommand(pm, 'clear-impersonation', {}, 5_000);
     },
   };
 }

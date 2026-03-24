@@ -8,21 +8,23 @@ Single port (4387) serves everything:
 
 ```
 Browser
-  ├── wss://host/ws?token=...   → C&C WebSocket (editor control)
-  ├── wss://host/lsp            → TypeScript language server (LSP over JSON-RPC)
-  ├── https://host/health       → health check (public)
-  ├── https://host/*            → reverse proxy → dev server (preview)
-  └── wss://host/*              → reverse proxy → dev server (HMR)
+  ├── wss://host/ws?token=...            → C&C WebSocket (editor control)
+  ├── wss://host/lsp                     → TypeScript language server (LSP over JSON-RPC)
+  ├── wss://host/__mindstudio_dev__/ws   → tunnel browser automation (direct proxy)
+  ├── https://host/health                → health check (public)
+  ├── https://host/*                     → reverse proxy → dev server (preview)
+  └── wss://host/*                       → HMR relay → dev server (buffered during agent turns)
 ```
 
 Internally, port 4388 runs the LSP HTTP sidecar for the remy agent.
 
 Inside the container, the C&C server manages:
 - **Dev server** (Vite / webpack / etc.) — frontend with HMR
-- **Dev tunnel** (`mindstudio-local --headless`) — method execution, platform sync
+- **Dev tunnel** (`mindstudio-local --headless`) — method execution, platform sync, browser automation
 - **Remy agent** (`remy --headless`) — AI coding agent
 - **File watcher** — broadcasts filesystem changes to connected clients
 - **TypeScript language server** — shared between Monaco editor and remy
+- **Snapshot manager** — periodic git snapshots to a `_draft` branch for persistence across container restarts
 
 ## Project Structure
 
@@ -33,11 +35,12 @@ src/
   types.ts                          — shared types (WS protocol, filesystem, app config)
   logger.ts                         — centralized logger with levels + elapsed time
   state.ts                          — persistent state (survives hibernate/resume)
-  syncStatus.ts                     — spec/code sync status tracking + git sync ref
+  projectStatus.ts                  — onboarding state + project status tracking
   bootstrap.ts                      — install/clone/build commands
   snapshot.ts                       — git-based session snapshots (_draft branch)
 
   server/
+    index.ts                        — HTTP/WS server, upgrade routing, broadcast
     context.ts                      — shared server context + init frame construction
     handlers/
       index.ts                      — action handler registry (routes WS actions)
@@ -49,8 +52,6 @@ src/
       SpecEditorStateManager.ts     — spec editor tabs
       FileTreeManager.ts            — code file tree (lazy, expandedDirs-gated)
       SpecFileTreeManager.ts        — spec file tree (always fully expanded)
-      _helpers/
-        getProjectHasCode.ts        — derives projectHasCode from manifest
     server/
       BroadcastBatcher.ts           — batched WS event delivery (100ms flush)
       HmrRelay.ts                   — HMR WebSocket relay with buffering
@@ -60,22 +61,37 @@ src/
     sidecar.ts                      — language server HTTP API for remy
 
   processes/
+    parseJsonEvent.ts               — shared NDJSON event parser
     ProcessRegistry.ts              — unified process metadata + per-process logs
     ProcessManager.ts               — long-lived child process lifecycle
     ResourceMonitor.ts              — memory/CPU metrics collection
     fileWatcher.ts                  — chokidar file watcher
     agent/
-      index.ts                      — remy agent process management
-      events.ts                     — typed agent event union + parser
+      index.ts                      — remy agent process management + IPC
+      events.ts                     — typed agent event union
       history.ts                    — chat history transformation
     tunnel/
-      index.ts                      — dev tunnel process management
-      events.ts                     — typed tunnel event union + parser
+      index.ts                      — dev tunnel process management + IPC
+      events.ts                     — typed tunnel event union
     devServer/index.ts              — dev server process management
 
   utils/
     paths.ts                        — shared path utilities
 ```
+
+## IPC Protocol
+
+Both the agent and tunnel use the same IPC pattern: newline-delimited JSON over stdin/stdout with `requestId`-based correlation.
+
+**Sending commands:** Every stdin command includes a `requestId`. Responses carry the same `requestId`.
+
+**System events vs command responses:** System events (lifecycle, connection status) have no `requestId`. Command responses always do. The handler distinguishes them with `if (msg.requestId)`.
+
+**Agent specifics:** Streaming events (`text`, `thinking`, `tool_start`, etc.) carry the originating command's `requestId` and are broadcast to the frontend in real-time. Each command ends with a `completed` event. `tool_result` is fire-and-forget (no `requestId`).
+
+**Tunnel specifics:** Command responses are consumed by the resolver and returned as WS response data. System events are broadcast to the frontend.
+
+Both use `sendAgentCommand` / `sendCommand` (in their respective `index.ts` files) which returns a promise that resolves when the `completed`/response event arrives.
 
 ## Connecting from the Frontend
 
@@ -97,7 +113,7 @@ ws.onmessage = (e) => {
   if (msg.requestId) {
     handleResponse(msg);        // reply to a request you sent
   } else if (msg.batch) {
-    handleBatchedEvent(msg);    // batched: processOutput, processStateChanged
+    handleBatchedEvent(msg);    // batched: processStateChanged, fileChanged, ptyOutput
   } else if (msg.event) {
     handleEvent(msg);           // single pushed event
   }
@@ -141,14 +157,10 @@ The first message on connect is an `init` event with everything needed to bootst
   "specFileTree": [...],
   "chatHistory": [...],
   "processes": [...],
-  "outputLog": [...],
   "editorState": { "tabs": [...], "activeTab": "...", "expandedDirs": [...] },
   "specEditorState": { "tabs": [...], "activeTab": "..." },
-  "projectHasCode": false,
-  "viewMode": "intake",
-  "syncStatus": { "specDirty": false, "codeDirty": false },
   "agentActivity": { "busy": false, "fileOps": [] },
-  "pendingExternalTools": [],
+  "projectStatus": { "specDirty": false, "codeDirty": false, "onboardingState": "onboardingFinished" },
   "ptySessionIds": []
 }
 ```
@@ -164,14 +176,10 @@ The first message on connect is an `init` event with everything needed to bootst
 | `specFileTree` | `TreeEntry[]` | Spec file tree (`src/` — always fully expanded) |
 | `chatHistory` | `Message[]` | Agent conversation history from remy |
 | `processes` | `ProcessInfo[]` | All tracked processes |
-| `outputLog` | `ProcessLogEntry[]` | Merged log (last 5000 lines) |
 | `editorState` | `EditorState` | Code editor tabs + active tab + expanded dirs |
 | `specEditorState` | `SpecEditorState` | Spec editor tabs + active tab |
-| `projectHasCode` | `boolean` | Whether manifest declares methods or interfaces |
-| `viewMode` | `ViewMode` | Current editor tab: `intake`, `preview`, `spec`, `code`, `databases`, `scenarios`, `logs` |
-| `syncStatus` | `SyncStatus` | `{ specDirty, codeDirty }` — whether user edits need syncing |
 | `agentActivity` | `AgentActivity` | Current agent file operations |
-| `pendingExternalTools` | `PendingExternalTool[]` | Unanswered external tool calls (e.g., promptUser) |
+| `projectStatus` | `ProjectStatus` | `{ specDirty, codeDirty, onboardingState }` — sync flags + onboarding phase |
 | `ptySessionIds` | `string[]` | Active PTY terminal sessions |
 
 ## Actions (Client → Server)
@@ -208,14 +216,35 @@ The first message on connect is an `init` event with everything needed to bootst
 
 ### Agent
 
+All agent actions await the agent's `completed` event and return it as the WS response. Streaming events (`agentText`, `agentThinking`, `agentToolStart`, etc.) are broadcast separately while the command is in flight.
+
 | Action | Params | Description |
 |--------|--------|-------------|
-| `agentMessage` | `{ text, attachments? }` | Send a message to the agent. Streams response as events |
-| `agentSync` | `{}` | Trigger spec ↔ code sync. Remy diffs and updates the stale side |
-| `agentPublish` | `{}` | Trigger publish flow. Remy presents a plan for approval |
-| `agentCancel` | `{}` | Cancel current agent turn |
+| `agentMessage` | `{ text, attachments?, viewContext? }` | Send a message to the agent. Returns on `completed` |
+| `agentSync` | `{}` | Trigger spec ↔ code sync |
+| `agentPublish` | `{}` | Trigger publish flow |
+| `agentBuild` | `{}` | Trigger initial build from spec |
+| `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed |
 | `agentClear` | `{}` | Clear conversation, start fresh session |
-| `externalToolResult` | `{ id, result }` | Send a result back for any external tool (promptUser, presentSyncPlan, presentPublishPlan). `result` is a string |
+| `externalToolResult` | `{ id, result }` | Send a result back for any external tool (promptUser, presentSyncPlan, etc.). Fire-and-forget |
+| `setProjectOnboardingState` | `{ state }` | Advance onboarding state |
+
+### Tunnel
+
+All tunnel actions await the tunnel's response and return it as the WS response.
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `tunnelRunScenario` | `{ scenarioId }` | Run a scenario (truncate + seed + impersonate). Returns result |
+| `tunnelRunMethod` | `{ method, input? }` | Run a method directly. Returns output |
+| `tunnelBrowser` | `{ steps }` | Execute browser automation steps. Returns step results |
+| `tunnelScreenshot` | `{}` | Capture a full-page screenshot. Returns `{ url, width, height, duration }` |
+| `tunnelBrowserStatus` | `{}` | Check if a browser is connected. Returns `{ connected }` |
+| `tunnelResetBrowser` | `{}` | Reload all connected browser tabs |
+| `tunnelImpersonate` | `{ roles }` | Set role overrides for method execution |
+| `tunnelClearImpersonation` | `{}` | Clear role overrides |
+
+Schema sync is automatic (tunnel watches table files). Roles and scenarios come from `app` in the init frame.
 
 ### Processes
 
@@ -223,24 +252,7 @@ The first message on connect is an `init` event with everything needed to bootst
 |--------|--------|-------------|
 | `getProcesses` | `{}` | Get all tracked processes |
 | `restartProcess` | `{ name }` | Restart a process |
-| `getProcessLog` | `{ name }` | Get per-process log buffer (up to 1000 lines) |
 | `getResources` | `{}` | Get memory/CPU metrics snapshot |
-
-### Tunnel
-
-| Action | Params | Description |
-|--------|--------|-------------|
-| `tunnelRunScenario` | `{ scenarioId }` | Run a scenario (truncate + seed + impersonate) |
-| `tunnelImpersonate` | `{ roles }` | Set role overrides for method execution |
-| `tunnelClearImpersonation` | `{}` | Clear role overrides |
-
-Schema sync is automatic (tunnel watches table files). Roles and scenarios come from `app` in the init frame.
-
-### View Mode
-
-| Action | Params | Description |
-|--------|--------|-------------|
-| `setViewMode` | `{ mode }` | Switch editor tab. Values: `intake`, `preview`, `spec`, `code`, `databases`, `scenarios`, `logs` |
 
 ### PTY
 
@@ -258,7 +270,7 @@ Schema sync is automatic (tunnel watches table files). Roles and scenarios come 
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `fileChanged` | `{ path, changeType }` | File created/modified/deleted (by agent, git, etc.) |
+| `fileChanged` | `{ batch }` | File created/modified/deleted. Batched every 100ms. Each item: `{ path, changeType }` |
 | `fileTreeChanged` | `{ fileTree }` | Code file tree updated (structural changes) |
 | `specFileTreeChanged` | `{ specFileTree }` | Spec file tree updated (`src/` structural changes) |
 | `manifestChanged` | `{ app }` | `mindstudio.json` changed — updated AppConfig |
@@ -269,43 +281,44 @@ Schema sync is automatic (tunnel watches table files). Roles and scenarios come 
 |-------|---------|-------------|
 | `editorStateChanged` | `{ editorState }` | Code editor tabs/active changed. **Replace local state entirely.** |
 | `specEditorStateChanged` | `{ specEditorState }` | Spec editor tabs/active changed. **Replace local state entirely.** |
-| `projectHasCodeChanged` | `{ projectHasCode }` | `projectHasCode` flag changed (compiler added methods/interfaces) |
+| `projectStatusChanged` | `{ projectStatus }` | Onboarding state or sync dirty flags changed |
 
 ### Agent
+
+Streaming events are broadcast in real-time while a message command is in flight. They carry `requestId` (from the originating `agentMessage` command) and optionally `parentToolId` (for sub-agent events).
 
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `agentReady` | | Agent initialized and ready |
-| `agentTurnStarted` | | Agent began processing a message |
-| `agentThinking` | `{ text }` | Internal reasoning (streaming chunks) |
-| `agentText` | `{ text }` | Visible response text (streaming chunks) |
-| `agentToolStart` | `{ id, name, input, partial? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, presentPublishPlan), multiple events with `partial: true` arrive before the final one |
-| `agentToolInputDelta` | `{ id, name, result }` | Streaming tool input content (progressive updates) |
-| `agentToolDone` | `{ id, name, result?, isError? }` | Tool execution completed |
-| `agentTurnDone` | | Agent finished responding |
-| `agentTurnCancelled` | | Turn cancelled (via `agentCancel`) |
-| `agentError` | `{ message }` | Agent error |
+| `agentThinking` | `{ text, requestId?, parentToolId? }` | Internal reasoning (streaming chunks) |
+| `agentText` | `{ text, requestId?, parentToolId? }` | Visible response text (streaming chunks) |
+| `agentToolStart` | `{ id, name, input, partial?, requestId?, parentToolId? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, etc.), multiple events with `partial: true` arrive before the final one |
+| `agentToolInputDelta` | `{ id, name, result, requestId?, parentToolId? }` | Streaming tool input content (progressive updates) |
+| `agentToolDone` | `{ id, name, result?, isError?, requestId?, parentToolId? }` | Tool execution completed |
+| `agentCompleted` | `{ requestId, success, error? }` | Command finished. Also returned as the WS response for the originating action |
+| `agentStatus` | `{ message, requestId? }` | Contextual status label (e.g., "Writing files...") |
+| `agentError` | `{ message?, error?, requestId? }` | Agent error |
 | `agentStopping` | | Agent shutting down |
 | `agentStopped` | | Agent process exited |
-| `agentSessionRestored` | | Previous session restored on startup |
-| `agentSessionCleared` | | Session cleared (via `agentClear`) |
+| `agentSessionRestored` | `{ messageCount? }` | Previous session restored on startup |
 | `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
 
-### Processes (batched)
+### Processes
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `processOutput` | `{ batch }` | Log lines from tracked processes. Batched every 100ms |
 | `processStateChanged` | `{ batch }` | Process state transitions. Batched every 100ms |
 | `resourceSnapshot` | `{ timestamp, container, processes }` | Memory/CPU metrics (every 5s) |
 
 ### Tunnel
 
+System events from the tunnel are broadcast as `tunnelEvent`. Command responses are not broadcast — they're returned as WS response data for the originating action.
+
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `tunnelEvent` | `{ event, ... }` | All tunnel events forwarded as-is |
+| `tunnelEvent` | `{ event, ... }` | Tunnel system events forwarded as-is |
 
-Key tunnel events:
+Key tunnel system events:
 
 | Tunnel Event | Payload | Description |
 |-------------|---------|-------------|
@@ -314,8 +327,8 @@ Key tunnel events:
 | `session-stopping` | | Graceful shutdown initiated |
 | `session-stopped` | | Session fully stopped |
 | `session-expired` | | Platform expired the session |
-| `method-started` | `{ id, method }` | Method execution began |
-| `method-completed` | `{ id, success, duration, error? }` | Method execution finished |
+| `platform-method-started` | `{ id, method }` | Platform-triggered method execution began |
+| `platform-method-completed` | `{ id, success, duration, error? }` | Platform-triggered method execution finished |
 | `scenario-started` | `{ id, name }` | Scenario being applied |
 | `scenario-completed` | `{ id, success, duration, roles, error? }` | Scenario finished |
 | `schema-sync-started` | | Table file change detected, syncing |
@@ -325,20 +338,7 @@ Key tunnel events:
 | `connection-restored` | | Reconnected after loss |
 | `config-changed` | | `mindstudio.json` modified, session restarting |
 | `config-error` | `{ message }` | Non-fatal config error |
-| `command-error` | `{ message }` | Stdin command failed |
 | `error` | `{ message }` | Fatal error |
-
-### Sync Status
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `syncStatusChanged` | `{ specDirty, codeDirty }` | Spec/code sync flags changed |
-
-### View Mode
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `viewModeChanged` | `{ viewMode }` | Editor tab switched (by agent or user) |
 
 ### Bootstrap
 
@@ -350,8 +350,7 @@ Key tunnel events:
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `ptyOutput` | `{ sessionId, data }` | Terminal output |
-| `ptyClosed` | `{ sessionId, exitCode }` | Terminal session closed |
+| `ptyOutput` | `{ batch }` | Terminal output. Batched every 100ms. Each item: `{ sessionId, data }` |
 
 ## Editor State
 
@@ -381,10 +380,6 @@ The server owns all editor state. The frontend renders it and sends actions to m
 ```
 
 Same tab semantics, no expanded dirs (spec sidebar is flat sections).
-
-### `projectHasCode`
-
-Derived from the manifest — `true` when methods or interfaces are declared. Sent in the init frame and via `projectHasCodeChanged` events. The frontend uses this to control whether the Code view toggle is enabled.
 
 ### State flow
 
@@ -473,7 +468,9 @@ npm install monaco-languageclient vscode-ws-jsonrpc
 <iframe src={`https://${cncDomain}/`} />
 ```
 
-Reverse-proxied to the dev server. Available once `tunnelEvent` with `session-started` arrives. Before that, returns 503. Supports HMR.
+Reverse-proxied to the dev server. Available once `tunnelEvent` with `session-started` arrives. Before that, returns 503. Supports HMR — the HMR WebSocket is relayed with buffering during agent file edits to prevent broken intermediate states.
+
+The tunnel's browser automation WebSocket (`/__mindstudio_dev__/ws`) is proxied directly without buffering.
 
 ## Scenarios & Roles
 
@@ -481,10 +478,16 @@ Reverse-proxied to the dev server. Available once `tunnelEvent` with `session-st
 
 **Scenarios** are seed scripts that set up the dev database. Running a scenario (`tunnelRunScenario`) truncates all tables, executes the seed function, and applies the scenario's roles. Scenarios are declared in `mindstudio.json` and listed in the `session-started` tunnel event.
 
+## Snapshots
+
+The snapshot manager periodically commits all workspace state (including gitignored session files) to a `_draft` branch and force-pushes to the remote. On boot, it restores from the draft if one exists. This provides durability against unclean container deaths.
+
+Snapshots use git plumbing commands with a temporary index file, so they're completely isolated from remy's working tree and any in-progress git operations.
+
 ## Health Check
 
 ```
-GET /health → { "status": "ready", "proxyTarget": 3835 }
+GET /health → { "status": "ready|bootstrapping|error", "proxyTarget": 3835|null }
 ```
 
 ## Error Handling

@@ -21,9 +21,7 @@ import { ProcessManager } from './processes/ProcessManager.js';
 import {
   startTunnel,
   createTunnelActions,
-  runScenarioAndWait,
-  runMethodAndWait,
-  runBrowserAndWait,
+  sendCommand as sendTunnelCommand,
 } from './processes/tunnel/index.js';
 import {
   startAgent,
@@ -336,9 +334,14 @@ async function startServices(
             return true;
           }
           log.info(`Agent running scenario: ${scenarioId}`);
-          runScenarioAndWait(processManager, scenarioId).then((result) => {
-            sendToolResult(processManager, id, JSON.stringify(result));
-          });
+          sendTunnelCommand(
+            processManager,
+            'run-scenario',
+            { scenarioId },
+            30_000,
+          ).then((result) =>
+            sendToolResult(processManager, id, JSON.stringify(result)),
+          );
           return true;
         } else if (name === 'runMethod') {
           const method = input.method as string;
@@ -347,30 +350,30 @@ async function startServices(
               processManager,
               id,
               JSON.stringify({
-                method: '',
                 success: false,
-                output: null,
-                error: { message: 'missing method' },
-                stdout: [],
-                duration: 0,
+                error: 'missing method',
               }),
             );
             return true;
           }
           const methodInput = (input.input as Record<string, unknown>) ?? {};
           log.info(`Agent running method: ${method}`);
-          runMethodAndWait(processManager, method, methodInput).then(
-            (result) => {
-              sendToolResult(processManager, id, JSON.stringify(result));
-            },
+          sendTunnelCommand(
+            processManager,
+            'run-method',
+            { method, input: methodInput },
+            30_000,
+          ).then((result) =>
+            sendToolResult(processManager, id, JSON.stringify(result)),
           );
           return true;
         } else if (name === 'browserCommand') {
           const steps = (input.steps as unknown[]) ?? [];
           log.info(`Agent running browser command: ${steps.length} step(s)`);
-          runBrowserAndWait(processManager, steps).then((result) => {
-            sendToolResult(processManager, id, JSON.stringify(result));
-          });
+          sendTunnelCommand(processManager, 'browser', { steps }, 120_000).then(
+            (result) =>
+              sendToolResult(processManager, id, JSON.stringify(result)),
+          );
           return true;
         }
         // Not handled server-side — frontend handles via externalToolResult WS action
