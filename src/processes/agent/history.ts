@@ -1,44 +1,30 @@
 import { SERVER_HANDLED_TOOLS } from './index.js';
 
 /**
- * Transform remy's raw LLM-level history into frontend-friendly format.
+ * Transform remy's history into frontend-friendly format.
  *
- * Raw format:
+ * Remy's format:
  *   { role: "user", content: "hi" }
  *   { role: "assistant", content: [
  *       { type: "thinking", thinking: "...", signature: "..." },
  *       { type: "text", text: "hello" },
- *       { type: "tool_use", id: "tc_1", name: "readFile", input: {...} }
+ *       { type: "tool", id: "tc_1", name: "readFile", input: {...}, result: "...", isError: false }
  *   ]}
  *   { role: "user", content: "result", toolCallId: "tc_1", isToolError: false }
  *
- * Transformed:
- *   { role: "user", content: "hi" }
- *   { role: "assistant", content: [
- *       { type: "thinking", thinking: "...", signature: "..." },
- *       { type: "text", text: "hello" },
- *       { type: "tool", id: "tc_1", name: "readFile", input: {...}, result: "result", isError: false }
- *   ]}
+ * What we do:
+ *   1. Drop user tool-result messages (results are already on the tool blocks)
+ *   2. Drop hidden messages (internal prompts from runCommand)
+ *   3. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
+ *   4. Recurse into subAgentMessages on tool blocks
  */
 export function transformHistory(raw: unknown[]): unknown[] {
-  // Build a map of tool results from user messages for quick lookup
-  const toolResults = new Map<string, { content: string; isError: boolean }>();
-  for (const msg of raw) {
-    const m = msg as Record<string, unknown>;
-    if (m.role === 'user' && m.toolCallId) {
-      toolResults.set(m.toolCallId as string, {
-        content: m.content as string,
-        isError: (m.isToolError as boolean) ?? false,
-      });
-    }
-  }
-
   const result: unknown[] = [];
 
   for (const msg of raw) {
     const m = msg as Record<string, unknown>;
 
-    // Skip tool result messages — merged into assistant blocks
+    // Skip tool result messages — results are on the tool blocks
     if (m.role === 'user' && m.toolCallId) {
       continue;
     }
@@ -60,47 +46,9 @@ export function transformHistory(raw: unknown[]): unknown[] {
       continue;
     }
 
-    if (m.role === 'assistant') {
-      const rawContent = m.content;
-
-      // Handle legacy format: string content + toolCalls array
-      if (typeof rawContent === 'string' || !Array.isArray(rawContent)) {
-        const blocks: unknown[] = [];
-        if (rawContent && typeof rawContent === 'string' && rawContent.trim()) {
-          blocks.push({ type: 'text', text: rawContent });
-        }
-        const toolCalls = m.toolCalls as
-          | Array<{
-              id: string;
-              name: string;
-              input: unknown;
-              parentToolId?: string;
-            }>
-          | undefined;
-        if (toolCalls) {
-          for (const tc of toolCalls) {
-            if (SERVER_HANDLED_TOOLS.has(tc.name)) {
-              continue;
-            }
-            const tr = toolResults.get(tc.id);
-            blocks.push({
-              type: 'tool',
-              id: tc.id,
-              name: tc.name,
-              input: tc.input,
-              result: tr?.content,
-              isError: tr?.isError ?? false,
-              ...(tc.parentToolId ? { parentToolId: tc.parentToolId } : {}),
-            });
-          }
-        }
-        result.push({ role: 'assistant', content: blocks });
-        continue;
-      }
-
-      // New format: ordered content blocks
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
       const blocks: unknown[] = [];
-      for (const block of rawContent as Array<Record<string, unknown>>) {
+      for (const block of m.content as Array<Record<string, unknown>>) {
         if (block.type === 'thinking') {
           blocks.push(block);
           continue;
@@ -113,20 +61,18 @@ export function transformHistory(raw: unknown[]): unknown[] {
           continue;
         }
 
-        if (block.type === 'tool_use') {
+        if (block.type === 'tool') {
           const name = block.name as string;
           if (SERVER_HANDLED_TOOLS.has(name)) {
             continue;
           }
-          const id = block.id as string;
-          const tr = toolResults.get(id);
           const toolBlock: Record<string, unknown> = {
             type: 'tool',
-            id,
+            id: block.id,
             name,
             input: block.input,
-            result: tr?.content,
-            isError: tr?.isError ?? false,
+            result: block.result,
+            isError: block.isError ?? false,
           };
           if (block.parentToolId) {
             toolBlock.parentToolId = block.parentToolId;
