@@ -1,10 +1,11 @@
 /**
  * WebSocket server — HTTP/WS lifecycle, upgrade routing, broadcast.
  *
- * Three WebSocket servers on a single HTTP port:
- *   /ws   — C&C (command & control) for the frontend
- *   /lsp  — TypeScript language server bridge for Monaco
- *   *     — HMR relay with buffering during agent turns
+ * WebSocket servers on a single HTTP port:
+ *   /ws                      — C&C (command & control) for the frontend
+ *   /lsp                     — TypeScript language server bridge for Monaco
+ *   /__mindstudio_dev__/ws   — tunnel automation (direct proxy, no buffering)
+ *   *                        — HMR relay with buffering during agent turns
  */
 
 import http from 'node:http';
@@ -361,6 +362,16 @@ export function startServer(
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit('connection', ws, req);
         });
+      } else if (pathname === '/__mindstudio_dev__/ws') {
+        // Tunnel automation WebSocket — direct proxy, no HMR relay/buffering
+        if (!proxy) {
+          log.warn('Tunnel proxy not ready, returning 503 for automation WS');
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        log.debug('Proxying tunnel automation WebSocket');
+        proxy.ws(req, socket, head);
       } else {
         if (!proxyTarget) {
           log.warn(`HMR proxy not ready, returning 503 for ${pathname}`);

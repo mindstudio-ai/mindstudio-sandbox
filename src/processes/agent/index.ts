@@ -3,10 +3,11 @@
  *
  * Handles startup config, stdout NDJSON event parsing + mapping,
  * chat history retrieval, activity tracking, and WS action handlers.
+ * Uses requestId-based correlation for all stdin commands.
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { parseAgentLine } from './events.js';
+import { parseAgentMessage } from './events.js';
 import { transformHistory } from './history.js';
 import { getOnboardingState, setOnboardingState } from '../../projectStatus.js';
 import { createLogger } from '../../logger.js';
@@ -62,20 +63,17 @@ const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
 /** Maps remy's headless event names to our WebSocket event names. */
 const EVENT_MAP: Record<string, string> = {
   ready: 'agentReady',
-  turn_started: 'agentTurnStarted',
+  completed: 'agentCompleted',
   text: 'agentText',
   thinking: 'agentThinking',
   tool_start: 'agentToolStart',
   tool_input_delta: 'agentToolInputDelta',
   tool_done: 'agentToolDone',
-  turn_done: 'agentTurnDone',
-  turn_cancelled: 'agentTurnCancelled',
   status: 'agentStatus',
   error: 'agentError',
   stopping: 'agentStopping',
   stopped: 'agentStopped',
   session_restored: 'agentSessionRestored',
-  session_cleared: 'agentSessionCleared',
 };
 
 /**
@@ -123,6 +121,9 @@ export const SERVER_VISIBLE_TOOLS = new Set([
 
 let activity: AgentActivity = { busy: false, fileOps: [] };
 
+/** The requestId of the currently in-flight message command (for activity tracking). */
+let activeMessageRequestId: string | null = null;
+
 /** Tracks external tool calls waiting for a result (e.g., promptUser). */
 const pendingExternalTools = new Map<string, PendingExternalTool>();
 
@@ -137,6 +138,55 @@ interface PendingExternalTool {
 
 export function getAgentActivity(): AgentActivity {
   return { busy: activity.busy, fileOps: [...activity.fileOps] };
+}
+
+// ---------------------------------------------------------------------------
+// requestId-based command correlation
+// ---------------------------------------------------------------------------
+
+let requestCounter = 0;
+
+interface PendingCommand {
+  resolve: (response: Record<string, unknown>) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  /** Accumulated data from pre-completed events (e.g., history messages). */
+  data?: Record<string, unknown>;
+}
+
+const pending = new Map<string, PendingCommand>();
+
+/**
+ * Send a command to the agent and wait for the correlated `completed` event.
+ * Returns `{ requestId, response }` so callers can track the requestId
+ * (e.g., for activity tracking on message commands).
+ *
+ * `timeoutMs` is optional — message commands run indefinitely.
+ */
+export function sendAgentCommand(
+  pm: ProcessManager,
+  action: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+): { requestId: string; response: Promise<Record<string, unknown>> } {
+  const requestId = `ac-${++requestCounter}`;
+  if (pm.getState('agent') !== 'running') {
+    return {
+      requestId,
+      response: Promise.resolve({ success: false, error: 'agent not running' }),
+    };
+  }
+  const response = new Promise<Record<string, unknown>>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs) {
+      timer = setTimeout(() => {
+        pending.delete(requestId);
+        resolve({ success: false, error: `timeout (${timeoutMs / 1000}s)` });
+      }, timeoutMs);
+    }
+    pending.set(requestId, { resolve, timer });
+    pm.writeStdin('agent', JSON.stringify({ requestId, action, ...params }));
+  });
+  return { requestId, response };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +222,7 @@ export function startAgent(
   });
 }
 
-/** Send a tool result back to remy for an external tool call. */
+/** Send a tool result back to remy for an external tool call. Fire-and-forget. */
 export function sendToolResult(
   pm: ProcessManager,
   id: string,
@@ -192,17 +242,59 @@ export function sendToolResult(
 // ---------------------------------------------------------------------------
 
 function handleStdout(line: string, cb: AgentCallbacks): void {
-  const event = parseAgentLine(line);
+  const event = parseAgentMessage(line);
   if (!event) {
     return;
   }
 
-  // --- Internal events (not broadcast to frontend) ---
+  // --- Completed events — resolve pending promise ---
 
-  if (event.event === 'history') {
-    resolveHistoryRequest(event.messages);
+  if (event.event === 'completed' && 'requestId' in event && event.requestId) {
+    const entry = pending.get(event.requestId);
+    if (entry) {
+      pending.delete(event.requestId);
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
+      entry.resolve({ ...entry.data, ...event });
+    }
+
+    // If this was the active message, mark not busy
+    if (activeMessageRequestId === event.requestId) {
+      activeMessageRequestId = null;
+      activity = { busy: false, fileOps: [] };
+      pendingExternalTools.clear();
+      serverHandledToolIds.clear();
+      cb.onTurnDone?.();
+      broadcastActivity(cb);
+    }
+
+    // Broadcast to frontend as the turn-done signal
+    const { event: _evt, ...data } = event;
+    cb.broadcast('agentCompleted', data);
     return;
   }
+
+  // --- Data events (history, session_cleared) — accumulate for completed ---
+
+  if (event.event === 'history' && 'requestId' in event && event.requestId) {
+    const entry = pending.get(event.requestId);
+    if (entry) {
+      entry.data = { messages: transformHistory(event.messages) };
+    }
+    return; // internal, don't broadcast
+  }
+
+  if (
+    event.event === 'session_cleared' &&
+    'requestId' in event &&
+    event.requestId
+  ) {
+    // No data to accumulate — completed will resolve it
+    return; // don't broadcast directly, frontend gets agentSessionCleared via EVENT_MAP below
+  }
+
+  // --- editsFinished tool — internal, not broadcast ---
 
   if (
     event.event === 'tool_done' &&
@@ -223,24 +315,20 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   // --- Activity tracking ---
 
   switch (event.event) {
-    case 'turn_started':
-      activity = { busy: true, fileOps: [] };
-      broadcastActivity(cb);
-      break;
     case 'tool_start':
       trackToolStart(event.name, event.id, event.input, cb);
       break;
     case 'tool_done':
       trackToolDone(event.id, cb);
       break;
-    case 'turn_done':
-    case 'turn_cancelled':
     case 'error':
-      activity = { busy: false, fileOps: [] };
-      pendingExternalTools.clear();
-      serverHandledToolIds.clear();
-      cb.onTurnDone?.();
-      broadcastActivity(cb);
+      // System-level error (no requestId) — clear activity
+      if (!('requestId' in event) || !event.requestId) {
+        activity = { busy: false, fileOps: [] };
+        pendingExternalTools.clear();
+        serverHandledToolIds.clear();
+        broadcastActivity(cb);
+      }
       break;
   }
 
@@ -268,8 +356,8 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   ) {
     // Update pending entry with latest streamed content so init frame
     // captures the full content if the client reconnects mid-stream.
-    const pending = pendingExternalTools.get(event.id)!;
-    pending.input = { ...pending.input, content: event.result };
+    const pendingTool = pendingExternalTools.get(event.id)!;
+    pendingTool.input = { ...pendingTool.input, content: event.result };
   } else if (
     event.event === 'tool_done' &&
     pendingExternalTools.has(event.id)
@@ -334,35 +422,14 @@ function trackToolDone(id: string, cb: AgentCallbacks): void {
 }
 
 // ---------------------------------------------------------------------------
-// History request/response
+// History
 // ---------------------------------------------------------------------------
 
-let historyResolvers: Array<(messages: unknown[]) => void> = [];
-
-function resolveHistoryRequest(messages: unknown[]): void {
-  const resolvers = historyResolvers;
-  historyResolvers = [];
-  for (const resolve of resolvers) {
-    resolve(messages);
-  }
-}
-
 /** Request chat history from the agent. Returns [] if agent isn't running or times out. */
-export function getAgentHistory(pm: ProcessManager): Promise<unknown[]> {
-  if (pm.getState('agent') !== 'running') {
-    return Promise.resolve([]);
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      historyResolvers = historyResolvers.filter((r) => r !== resolve);
-      resolve([]);
-    }, 2000);
-    historyResolvers.push((messages) => {
-      clearTimeout(timeout);
-      resolve(transformHistory(messages));
-    });
-    pm.writeStdin('agent', JSON.stringify({ action: 'get_history' }));
-  });
+export async function getAgentHistory(pm: ProcessManager): Promise<unknown[]> {
+  const { response } = sendAgentCommand(pm, 'get_history', {}, 5_000);
+  const result = await response;
+  return (result.messages as unknown[]) ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -375,12 +442,6 @@ export function createAgentActions(
   callbacks?: { onProjectStatusChanged?: () => void },
 ): Record<string, ActionHandler> {
   const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
-  function send(action: string, extra?: Record<string, unknown>): void {
-    if (pm.getState('agent') !== 'running') {
-      throw new Error('agent not running');
-    }
-    pm.writeStdin('agent', JSON.stringify({ action, ...extra }));
-  }
 
   return {
     agentMessage: async (p) => {
@@ -397,36 +458,48 @@ export function createAgentActions(
       if (pendingExternalTools.size > 0) {
         log.info('Cancelling pending external tools before sending message');
         pendingExternalTools.clear();
-        send('cancel');
+        const { response: cancelResponse } = sendAgentCommand(
+          pm,
+          'cancel',
+          {},
+          5_000,
+        );
+        await cancelResponse;
       }
 
-      send('message', {
+      const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
         ...(viewContext ? { viewContext } : {}),
       });
-      return {};
+      activeMessageRequestId = requestId;
+      activity = { busy: true, fileOps: [] };
+      return await response;
     },
     agentSync: async () => {
       log.info('Triggering spec/code sync');
-      send('message', {
+      const { requestId, response } = sendAgentCommand(pm, 'message', {
         text: '',
         runCommand: 'sync',
         onboardingState: getOnboardingState(),
         editorContext: {},
       });
-      return {};
+      activeMessageRequestId = requestId;
+      activity = { busy: true, fileOps: [] };
+      return await response;
     },
     agentPublish: async () => {
       log.info('Triggering publish');
-      send('message', {
+      const { requestId, response } = sendAgentCommand(pm, 'message', {
         text: '',
         runCommand: 'publish',
         onboardingState: getOnboardingState(),
         editorContext: {},
       });
-      return {};
+      activeMessageRequestId = requestId;
+      activity = { busy: true, fileOps: [] };
+      return await response;
     },
     agentBuild: async () => {
       log.info('Triggering build');
@@ -434,21 +507,23 @@ export function createAgentActions(
       if (setOnboardingState('initialCodegen')) {
         onProjectStatusChanged?.();
       }
-      send('message', {
+      const { requestId, response } = sendAgentCommand(pm, 'message', {
         text: '',
         runCommand: 'buildFromInitialSpec',
         onboardingState: getOnboardingState(),
         editorContext: {},
       });
-      return {};
+      activeMessageRequestId = requestId;
+      activity = { busy: true, fileOps: [] };
+      return await response;
     },
     agentCancel: async () => {
-      send('cancel');
-      return {};
+      const { response } = sendAgentCommand(pm, 'cancel', {}, 5_000);
+      return await response;
     },
     agentClear: async () => {
-      send('clear');
-      return {};
+      const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
+      return await response;
     },
   };
 }

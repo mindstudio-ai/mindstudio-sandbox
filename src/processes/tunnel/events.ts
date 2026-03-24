@@ -1,3 +1,5 @@
+import { parseJsonEvent } from '../parseJsonEvent.js';
+
 export interface TunnelRole {
   id: string;
   name: string;
@@ -11,6 +13,10 @@ export interface TunnelScenario {
   path: string;
   roles: string[];
 }
+
+// ---------------------------------------------------------------------------
+// System events — unsolicited, no requestId
+// ---------------------------------------------------------------------------
 
 export type TunnelEvent =
   | { event: 'session-starting'; appId: string; name: string }
@@ -28,10 +34,9 @@ export type TunnelEvent =
   | { event: 'session-stopping' }
   | { event: 'session-stopped' }
   | { event: 'session-expired' }
-  | { event: 'method-run-started'; method: string }
-  | { event: 'method-started'; id: string; method: string }
+  | { event: 'platform-method-started'; id: string; method: string }
   | {
-      event: 'method-completed';
+      event: 'platform-method-completed';
       id: string;
       success: boolean;
       duration: number;
@@ -54,64 +59,27 @@ export type TunnelEvent =
       errors: string[];
     }
   | { event: 'impersonation-changed'; roles: string[] | null }
-  | {
-      event: 'method-run-completed';
-      method: string;
-      success: boolean;
-      output: unknown | null;
-      error: {
-        message: string;
-        stack?: string;
-        code?: string;
-        statusCode?: number;
-        status?: number;
-        response?: string;
-        body?: string;
-        cause?: unknown;
-      } | null;
-      stdout: string[];
-      duration: number;
-    }
-  | {
-      event: 'browser-completed';
-      id: string;
-      steps: Array<{
-        index: number;
-        command: string;
-        result: string;
-        error?: string;
-      }>;
-      snapshot: string;
-      duration: number;
-    }
-  | {
-      event: 'screenshot-completed';
-      url: string;
-      width: number;
-      height: number;
-      duration: number;
-    }
-  | { event: 'browser-status'; connected: boolean }
-  | { event: 'reset-browser-completed' }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }
   | { event: 'config-error'; message: string }
-  | { event: 'command-error'; message: string }
   | { event: 'error'; message: string };
 
-export function parseTunnelLine(line: string): TunnelEvent | null {
-  try {
-    const parsed = JSON.parse(line);
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof parsed.event === 'string'
-    ) {
-      return parsed as TunnelEvent;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+// ---------------------------------------------------------------------------
+// Command responses — always have requestId + status
+// ---------------------------------------------------------------------------
+
+export interface TunnelCommandResponse {
+  event: string;
+  requestId: string;
+  status: 'started' | 'completed';
+  success?: boolean;
+  error?: string;
+  [key: string]: unknown;
 }
+
+export type TunnelMessage = TunnelEvent | TunnelCommandResponse;
+
+/** Parse a stdout line as a tunnel message (system event or command response). */
+export const parseTunnelMessage = (line: string) =>
+  parseJsonEvent<TunnelMessage>(line);
