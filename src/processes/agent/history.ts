@@ -80,6 +80,9 @@ export function transformHistory(raw: unknown[]): unknown[] {
           if (block.startedAt != null) {
             toolBlock.startedAt = block.startedAt;
           }
+          if (block.completedAt != null) {
+            toolBlock.completedAt = block.completedAt;
+          }
           if (Array.isArray(block.subAgentMessages)) {
             toolBlock.subAgentMessages = transformHistory(
               block.subAgentMessages as unknown[],

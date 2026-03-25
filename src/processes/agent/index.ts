@@ -69,6 +69,8 @@ const EVENT_MAP: Record<string, string> = {
   tool_start: 'agentToolStart',
   tool_input_delta: 'agentToolInputDelta',
   tool_done: 'agentToolDone',
+  tool_stopped: 'agentToolStopped',
+  tool_restarted: 'agentToolRestarted',
   status: 'agentStatus',
   error: 'agentError',
   stopping: 'agentStopping',
@@ -523,6 +525,31 @@ export function createAgentActions(
     },
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
+      return await response;
+    },
+    agentStopTool: async (p) => {
+      const { id, mode } = p as { id: string; mode?: 'graceful' | 'hard' };
+      log.info(`Stopping tool ${id} (mode=${mode ?? 'hard'})`);
+      const { response } = sendAgentCommand(
+        pm,
+        'stop_tool',
+        { id, mode: mode ?? 'hard' },
+        5_000,
+      );
+      return await response;
+    },
+    agentRestartTool: async (p) => {
+      const { id, input } = p as {
+        id: string;
+        input?: Record<string, unknown>;
+      };
+      log.info(`Restarting tool ${id}`);
+      const { response } = sendAgentCommand(
+        pm,
+        'restart_tool',
+        { id, ...(input ? { input } : {}) },
+        5_000,
+      );
       return await response;
     },
   };
