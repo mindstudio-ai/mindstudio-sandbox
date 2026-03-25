@@ -216,7 +216,7 @@ export function startAgent(
     stdin: true,
     restartOnCrash: false,
     maxRestarts: 0,
-    critical: false,
+    critical: true,
     logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
     onStdout: (line) => handleStdout(line, callbacks),
   });
