@@ -27,6 +27,8 @@ const lspLog = createLogger('lsp-ws');
 let sandboxToken: string = '';
 let workspaceDir: string = '';
 let proxyTarget: number | null = null;
+/** Clients that haven't received their init frame yet — skip in broadcast. */
+const pendingInit = new Set<WebSocket>();
 let proxy: httpProxy | null = null;
 
 let httpServer: http.Server;
@@ -280,20 +282,23 @@ export function startServer(
     // --- C&C connection ---
     wss.on('connection', async (ws) => {
       log.info(`C&C client connected (total: ${wss.clients.size})`);
+      pendingInit.add(ws);
 
       ws.on('close', (code, reason) => {
+        pendingInit.delete(ws);
         log.debug(
           `C&C client disconnected (code=${code}, reason=${reason.toString() || 'none'}, remaining: ${wss.clients.size})`,
         );
       });
 
-      // Send initial frame
+      // Send initial frame — broadcasts are suppressed until this completes
       try {
         const frame = await buildInitFrame(proxy !== null);
         ws.send(JSON.stringify(frame));
       } catch {
         ws.send(JSON.stringify(buildFallbackInitFrame(proxy !== null)));
       }
+      pendingInit.delete(ws);
 
       // Request dispatch
       ws.on('message', async (raw) => {
@@ -414,7 +419,7 @@ export function broadcast(event: string, data: Record<string, any>): void {
     return;
   }
   for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
+    if (client.readyState === WebSocket.OPEN && !pendingInit.has(client)) {
       try {
         client.send(payload);
       } catch (err) {

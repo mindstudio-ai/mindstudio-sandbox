@@ -294,10 +294,22 @@ async function startServices(
           broadcast('projectStatusChanged', getProjectStatus());
           sendToolResult(processManager, id, 'ok');
           return true;
-        } else if (name === 'setProjectName') {
-          const newName = input.name as string;
-          if (!newName) {
-            sendToolResult(processManager, id, 'error: missing name');
+        } else if (name === 'setProjectMetadata') {
+          const {
+            name: newName,
+            iconUrl,
+            openGraphShareImageUrl,
+          } = input as {
+            name?: string;
+            iconUrl?: string;
+            openGraphShareImageUrl?: string;
+          };
+          if (!newName && !iconUrl && !openGraphShareImageUrl) {
+            sendToolResult(
+              processManager,
+              id,
+              'error: at least one field required',
+            );
             return true;
           }
           try {
@@ -307,7 +319,15 @@ async function startServices(
             );
             const raw = fsSync.readFileSync(manifestPath, 'utf-8');
             const manifest = JSON.parse(raw);
-            manifest.name = newName;
+            if (newName != null) {
+              manifest.name = newName;
+            }
+            if (iconUrl != null) {
+              manifest.iconUrl = iconUrl;
+            }
+            if (openGraphShareImageUrl != null) {
+              manifest.openGraphShareImageUrl = openGraphShareImageUrl;
+            }
             fsSync.writeFileSync(
               manifestPath,
               JSON.stringify(manifest, null, 2) + '\n',
@@ -319,10 +339,15 @@ async function startServices(
                 broadcast('manifestChanged', { app: updated });
               })
               .catch(() => {});
-            log.info(`Project name updated to "${newName}"`);
+            const fields = [
+              newName && 'name',
+              iconUrl && 'iconUrl',
+              openGraphShareImageUrl && 'openGraphShareImageUrl',
+            ].filter(Boolean);
+            log.info(`Project metadata updated: ${fields.join(', ')}`);
           } catch (err) {
             log.error(
-              `Failed to update project name: ${err instanceof Error ? err.message : err}`,
+              `Failed to update project metadata: ${err instanceof Error ? err.message : err}`,
             );
           }
           sendToolResult(processManager, id, 'ok');

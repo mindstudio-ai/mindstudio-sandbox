@@ -26,6 +26,7 @@ export type AgentStreamEvent =
       name: string;
       input: Record<string, unknown>;
       partial?: boolean;
+      background?: boolean;
       requestId?: string;
       parentToolId?: string;
     }
@@ -46,7 +47,35 @@ export type AgentStreamEvent =
       requestId?: string;
       parentToolId?: string;
     }
-  | { event: 'status'; message: string; requestId?: string }
+  | {
+      event: 'tool_stopped';
+      id: string;
+      name: string;
+      mode: 'graceful' | 'hard';
+      requestId?: string;
+      parentToolId?: string;
+    }
+  | {
+      event: 'tool_restarted';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      requestId?: string;
+      parentToolId?: string;
+    }
+  | {
+      event: 'tool_background_complete';
+      id: string;
+      name: string;
+      result: string;
+      requestId?: string;
+    }
+  | {
+      event: 'status';
+      message: string;
+      requestId?: string;
+      parentToolId?: string;
+    }
   | { event: 'error'; message?: string; error?: string; requestId?: string };
 
 /** Data events that precede a completed (carry requestId). */
