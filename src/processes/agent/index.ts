@@ -103,7 +103,7 @@ const INTERNAL_TOOLS = new Set([
 export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
   'setProjectOnboardingState',
-  'setProjectName',
+  'setProjectMetadata',
   'clearSyncStatus',
 ]);
 

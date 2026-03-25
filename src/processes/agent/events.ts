@@ -26,6 +26,7 @@ export type AgentStreamEvent =
       name: string;
       input: Record<string, unknown>;
       partial?: boolean;
+      background?: boolean;
       requestId?: string;
       parentToolId?: string;
     }
