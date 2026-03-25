@@ -106,6 +106,13 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
   if ('requestId' in msg && msg.requestId) {
     const entry = pending.get(msg.requestId as string);
     if (entry) {
+      // Skip intermediate "started" acks — wait for the final result
+      if ((msg as Record<string, unknown>).status === 'started') {
+        log.debug(
+          `Intermediate ack for requestId=${msg.requestId}, waiting for final result`,
+        );
+        return;
+      }
       pending.delete(msg.requestId as string);
       clearTimeout(entry.timer);
       entry.resolve(msg as Record<string, unknown>);
