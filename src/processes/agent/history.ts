@@ -83,6 +83,9 @@ export function transformHistory(raw: unknown[]): unknown[] {
           if (block.completedAt != null) {
             toolBlock.completedAt = block.completedAt;
           }
+          if (block.background) {
+            toolBlock.background = true;
+          }
           if (block.backgroundResult != null) {
             toolBlock.backgroundResult = block.backgroundResult;
           }
