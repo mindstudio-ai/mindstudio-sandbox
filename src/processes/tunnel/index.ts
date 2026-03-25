@@ -261,7 +261,7 @@ export function createTunnelActions(
       return await sendCommand(pm, 'browser', { steps }, 120_000);
     },
     tunnelScreenshot: async () => {
-      return await sendCommand(pm, 'screenshot', {}, 120_000);
+      return await sendCommand(pm, 'screenshotFullPage', {}, 120_000);
     },
     tunnelBrowserStatus: async () => {
       return await sendCommand(pm, 'browser-status', {}, 5_000);

@@ -180,12 +180,12 @@ export class LspSidecar {
                 ? await sendTunnelCommand(this.pm, 'reset-browser', {}, 5_000)
                 : { ok: false };
               break;
-            case '/screenshot':
+            case '/screenshot-full-page':
               result = this.pm
                 ? await sendTunnelCommand(
                     this.pm,
-                    'screenshot',
-                    { fullPage: params.fullPage !== false },
+                    'screenshotFullPage',
+                    {},
                     120_000,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
