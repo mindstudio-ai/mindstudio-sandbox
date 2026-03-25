@@ -64,6 +64,13 @@ export type AgentStreamEvent =
       parentToolId?: string;
     }
   | {
+      event: 'tool_background_complete';
+      id: string;
+      name: string;
+      result: string;
+      requestId?: string;
+    }
+  | {
       event: 'status';
       message: string;
       requestId?: string;

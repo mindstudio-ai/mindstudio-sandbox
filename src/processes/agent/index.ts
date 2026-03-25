@@ -71,6 +71,7 @@ const EVENT_MAP: Record<string, string> = {
   tool_done: 'agentToolDone',
   tool_stopped: 'agentToolStopped',
   tool_restarted: 'agentToolRestarted',
+  tool_background_complete: 'agentToolBackgroundComplete',
   status: 'agentStatus',
   error: 'agentError',
   stopping: 'agentStopping',
