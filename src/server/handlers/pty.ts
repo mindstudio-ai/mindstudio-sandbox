@@ -61,8 +61,7 @@ export async function ptyCreate(params: {
       TERM: 'xterm-256color',
       CLICOLOR: '1',
       FORCE_COLOR: '1',
-      // Custom prompt: purple "mindstudio" label, cyan cwd (relative), reset ▸
-      PS1: '\\[\\e[35m\\]mindstudio \\[\\e[36m\\]\\W\\[\\e[0m\\] ▸ ',
+      PS1: '\\[\\e[38;5;117m\\]remy@mindstudio\\[\\e[0m\\]:\\[\\e[38;5;248m\\]\\w\\[\\e[0m\\]$ ',
     },
   });
 
