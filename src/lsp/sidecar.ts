@@ -244,15 +244,11 @@ export class LspSidecar {
     if (!this.pm) {
       throw new Error('Process manager not available');
     }
-    log.info(`Restarting process (via sidecar): ${name}`);
-    await this.pm.restart(name, {
-      onBeforeRespawn:
-        name === 'devServer'
-          ? () => {
-              sendTunnelCommand(this.pm!, 'dev-server-restarting', {}, 5_000);
-            }
-          : undefined,
-    });
+    log.info('Restarting process', { name });
+    if (name === 'devServer') {
+      await sendTunnelCommand(this.pm!, 'dev-server-restarting', {}, 5_000);
+    }
+    await this.pm.restart(name);
     return { ok: true };
   }
 

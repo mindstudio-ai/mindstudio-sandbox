@@ -446,8 +446,12 @@ function setupFileWatcher(
     if (changeType === 'modified' || changeType === 'created') {
       lspSidecar.onFileChanged(filePath).catch(() => {});
 
-      // Re-read and broadcast manifest when it changes
-      if (filePath === 'mindstudio.json') {
+      // Re-read and broadcast app config when manifest or any interface
+      // config file changes (e.g. web.json, cron.json).
+      const isInterfaceConfig = ctx.appConfig?.interfaces.some(
+        (i) => i.path === filePath,
+      );
+      if (filePath === 'mindstudio.json' || isInterfaceConfig) {
         readAppConfig(config.workspaceDir)
           .then((updated) => {
             ctx.appConfig = updated;
