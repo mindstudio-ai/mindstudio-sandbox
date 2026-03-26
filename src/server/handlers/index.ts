@@ -91,6 +91,13 @@ export const handlers: Record<string, ActionHandler> = {
       throw new Error('Process manager not initialized');
     }
     log.info(`Restarting process: ${name}`);
+
+    // Treat dev server restart as an implicit mindstudio.json change —
+    // file watchers don't always pick up changes reliably.
+    if (name === 'devServer') {
+      ctx.onFileChanged?.('mindstudio.json', 'modified');
+    }
+
     await ctx.processManager.restart(name);
     return {};
   },
