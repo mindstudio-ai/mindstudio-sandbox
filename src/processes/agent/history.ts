@@ -18,7 +18,10 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *   3. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
  *   4. Recurse into subAgentMessages on tool blocks
  */
-export function transformHistory(raw: unknown[]): unknown[] {
+export function transformHistory(
+  raw: unknown[],
+  parentToolId?: string,
+): unknown[] {
   const result: unknown[] = [];
 
   for (const msg of raw) {
@@ -74,8 +77,9 @@ export function transformHistory(raw: unknown[]): unknown[] {
             result: block.result,
             isError: block.isError ?? false,
           };
-          if (block.parentToolId) {
-            toolBlock.parentToolId = block.parentToolId;
+          const resolvedParent = block.parentToolId ?? parentToolId;
+          if (resolvedParent) {
+            toolBlock.parentToolId = resolvedParent;
           }
           if (block.startedAt != null) {
             toolBlock.startedAt = block.startedAt;
@@ -92,6 +96,7 @@ export function transformHistory(raw: unknown[]): unknown[] {
           if (Array.isArray(block.subAgentMessages)) {
             toolBlock.subAgentMessages = transformHistory(
               block.subAgentMessages as unknown[],
+              block.id as string,
             );
           }
           blocks.push(toolBlock);
