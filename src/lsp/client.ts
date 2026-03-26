@@ -13,7 +13,7 @@ import path from 'node:path';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import { createLogger } from '../logger.js';
 
-const log = createLogger('lsp-client');
+const log = createLogger('lsp/client');
 
 type NotificationHandler = (params: unknown) => void;
 

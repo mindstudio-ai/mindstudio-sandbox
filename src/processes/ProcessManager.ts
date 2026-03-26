@@ -23,7 +23,7 @@ export interface ManagedProcessConfig {
 }
 import { createLogger } from '../logger.js';
 
-const log = createLogger('process-manager');
+const log = createLogger('procman');
 
 interface ManagedProcess {
   config: ManagedProcessConfig;

@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.js';
 
-const log = createLogger('project-status');
+const log = createLogger('project');
 
 const SYNC_REF = 'refs/sync-point';
 

@@ -127,14 +127,15 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
 
   // System event — broadcast to frontend + handle
   const tunnelEvent = msg as TunnelEvent;
-  log.debug(
-    `Event: ${tunnelEvent.event} ${JSON.stringify(tunnelEvent).slice(0, 200)}`,
-  );
+  log.debug('Tunnel event', { event: tunnelEvent.event });
   cb.broadcast('tunnelEvent', tunnelEvent);
 
   switch (tunnelEvent.event) {
     case 'session-starting':
-      log.info(`Session starting: ${tunnelEvent.name} (${tunnelEvent.appId})`);
+      log.info('Session starting', {
+        appId: tunnelEvent.appId,
+        name: tunnelEvent.name,
+      });
       break;
     case 'session-started': {
       const {
@@ -145,7 +146,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
         proxyUrl,
         webInterfaceUrl,
       } = tunnelEvent;
-      log.info(`Session started: proxy=${proxyPort}`);
+      log.info('Session started', { proxyPort, sessionId });
       cb.onSessionStarted({
         sessionId,
         releaseId,
@@ -169,51 +170,61 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       cb.onSessionEnded();
       break;
     case 'platform-method-started':
-      log.debug(
-        `Platform method started: ${tunnelEvent.method} (${tunnelEvent.id})`,
-      );
+      log.debug('Platform method started', {
+        method: tunnelEvent.method,
+        id: tunnelEvent.id,
+      });
       break;
     case 'platform-method-completed':
       if (tunnelEvent.success) {
-        log.debug(
-          `Platform method completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
-        );
+        log.debug('Platform method completed', {
+          id: tunnelEvent.id,
+          duration: tunnelEvent.duration,
+        });
       } else {
-        log.warn(
-          `Platform method failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
-        );
+        log.warn('Platform method failed', {
+          id: tunnelEvent.id,
+          error: tunnelEvent.error ?? 'unknown error',
+        });
       }
       break;
     case 'scenario-started':
-      log.info(`Scenario started: ${tunnelEvent.name} (${tunnelEvent.id})`);
+      log.info('Scenario started', {
+        name: tunnelEvent.name,
+        id: tunnelEvent.id,
+      });
       break;
     case 'scenario-completed':
       if (tunnelEvent.success) {
-        log.info(
-          `Scenario completed: ${tunnelEvent.id} (${tunnelEvent.duration}ms)`,
-        );
+        log.info('Scenario completed', {
+          id: tunnelEvent.id,
+          duration: tunnelEvent.duration,
+        });
       } else {
-        log.warn(
-          `Scenario failed: ${tunnelEvent.id} — ${tunnelEvent.error ?? 'unknown error'}`,
-        );
+        log.warn('Scenario failed', {
+          id: tunnelEvent.id,
+          error: tunnelEvent.error ?? 'unknown error',
+        });
       }
       break;
     case 'schema-sync-started':
       log.info('Schema sync started');
       break;
     case 'schema-sync-completed':
-      log.info(
-        `Schema sync completed: created=${tunnelEvent.created.length}, altered=${tunnelEvent.altered.length}, errors=${tunnelEvent.errors.length}`,
-      );
+      log.info('Schema sync completed', {
+        created: tunnelEvent.created.length,
+        altered: tunnelEvent.altered.length,
+        errors: tunnelEvent.errors.length,
+      });
       break;
     case 'impersonation-changed':
-      log.info(
-        `Impersonation changed: ${tunnelEvent.roles ? tunnelEvent.roles.join(', ') : 'cleared'}`,
-      );
+      log.info('Impersonation changed', {
+        roles: tunnelEvent.roles ?? null,
+      });
       cb.onImpersonationChanged(tunnelEvent.roles);
       break;
     case 'connection-lost':
-      log.warn(`Connection lost: ${tunnelEvent.message}`);
+      log.warn('Connection lost', { message: tunnelEvent.message });
       break;
     case 'connection-restored':
       log.info('Connection restored');
@@ -222,10 +233,10 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.info('Config changed — session restarting');
       break;
     case 'config-error':
-      log.warn(`Config error: ${tunnelEvent.message}`);
+      log.warn('Config error', { message: tunnelEvent.message });
       break;
     case 'error':
-      log.error(`Error: ${tunnelEvent.message}`);
+      log.error('Tunnel error', { message: tunnelEvent.message });
       break;
   }
 }

@@ -390,15 +390,14 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 
   const mappedEvent = EVENT_MAP[event.event] || `agent_${event.event}`;
   const { event: _evt, ...data } = event;
-  log.debug(
-    `Event: ${mappedEvent}${'text' in data && data.text ? ` "${String(data.text).slice(0, 80)}..."` : ''}`,
-    {
-      ...('requestId' in event && event.requestId
-        ? { requestId: event.requestId }
-        : {}),
-      ...('id' in event && event.id ? { toolCallId: event.id } : {}),
-    },
-  );
+  log.debug('Agent event', {
+    event: mappedEvent,
+    ...('requestId' in event && event.requestId
+      ? { requestId: event.requestId }
+      : {}),
+    ...('id' in event && event.id ? { toolCallId: event.id } : {}),
+    ...('name' in event && event.name ? { name: event.name } : {}),
+  });
   cb.broadcast(mappedEvent, data);
 }
 
