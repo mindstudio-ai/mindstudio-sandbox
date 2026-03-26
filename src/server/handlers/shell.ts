@@ -12,7 +12,6 @@ export function initShell(dir: string, reg: ProcessRegistry): void {
 
 function pipeOutput(
   stream: NodeJS.ReadableStream | null,
-  streamName: 'stdout' | 'stderr',
   accum: { value: string },
   procName: string,
 ): void {
@@ -21,7 +20,7 @@ function pipeOutput(
     accum.value += text;
     for (const line of text.split('\n')) {
       if (line) {
-        registry?.appendLog(procName, streamName, line);
+        registry?.appendLog(procName, line);
       }
     }
   });
@@ -57,8 +56,8 @@ export async function shell(params: {
       child.kill('SIGKILL');
     }, timeout);
 
-    pipeOutput(child.stdout, 'stdout', stdout, shellId);
-    pipeOutput(child.stderr, 'stderr', stderr, shellId);
+    pipeOutput(child.stdout, stdout, shellId);
+    pipeOutput(child.stderr, stderr, shellId);
 
     child.on('close', (code) => {
       clearTimeout(timer);

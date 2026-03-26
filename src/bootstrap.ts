@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import type { Config } from './config.js';
-import type { AppConfig, WebConfig } from './types.js';
+import type { AppConfig } from './types.js';
 import type { ProcessRegistry } from './processes/ProcessRegistry.js';
 import { createLogger } from './logger.js';
 
@@ -37,7 +37,7 @@ function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
     log.info(`Completed in ${elapsed}ms: ${label}`);
     if (result.trim()) {
       for (const line of result.trim().split('\n')) {
-        registry?.appendLog(procName, 'stdout', line);
+        registry?.appendLog(procName, line);
       }
     }
     registry?.setState(procName, 'completed', { exitCode: 0 });
@@ -54,12 +54,12 @@ function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
     log.error(`  Exit code: ${execErr.status}`);
     if (execErr.stderr) {
       for (const line of execErr.stderr.trim().split('\n')) {
-        registry?.appendLog(procName, 'stderr', line);
+        registry?.appendLog(procName, line, { level: 'error' });
       }
     }
     if (execErr.stdout) {
       for (const line of execErr.stdout.trim().split('\n')) {
-        registry?.appendLog(procName, 'stdout', line);
+        registry?.appendLog(procName, line);
       }
     }
     registry?.setState(procName, 'crashed', { exitCode: execErr.status ?? 1 });
@@ -307,35 +307,25 @@ export async function readAppConfig(workspaceDir: string): Promise<AppConfig> {
     `  Interfaces: ${config.interfaces?.length ?? 0} (${config.interfaces?.map((i) => i.type).join(', ') || 'none'})`,
   );
 
+  // Resolve interface configs — read each config file and extract the
+  // inner object keyed by type (e.g. web.json → { "web": {...} } → {...}).
+  // Mirrors the deploy pipeline's readManifestFromRepo behavior.
+  for (const iface of config.interfaces ?? []) {
+    try {
+      const configPath = path.join(workspaceDir, iface.path);
+      const raw = await fs.readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const inner = parsed[iface.type];
+      if (inner && typeof inner === 'object') {
+        iface.config = inner;
+        log.debug(`  ${iface.type} config resolved from ${iface.path}`);
+      }
+    } catch {
+      log.debug(`  ${iface.type} config not found at ${iface.path}`);
+    }
+  }
+
   return config;
-}
-
-export async function readWebConfig(
-  workspaceDir: string,
-  appConfig: AppConfig,
-): Promise<WebConfig | null> {
-  const webInterface = appConfig.interfaces.find((i) => i.type === 'web');
-  if (!webInterface) {
-    log.info('No web interface defined in mindstudio.json');
-    return null;
-  }
-
-  const webJsonPath = path.join(workspaceDir, webInterface.path);
-  log.debug(`Reading web config from ${webJsonPath}`);
-
-  try {
-    const raw = await fs.readFile(webJsonPath, 'utf-8');
-    const config = JSON.parse(raw) as WebConfig;
-    log.debug(
-      `Web config: devPort=${config.web?.devPort}, devCommand="${config.web?.devCommand}"`,
-    );
-    return config;
-  } catch (err) {
-    log.error(
-      `Failed to read web config: ${err instanceof Error ? err.message : err}`,
-    );
-    return null;
-  }
 }
 
 export async function installDependencies(

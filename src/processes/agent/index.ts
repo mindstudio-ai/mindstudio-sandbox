@@ -232,10 +232,12 @@ export function sendToolResult(
   result: string,
 ): void {
   if (pm.getState('agent') !== 'running') {
-    log.error(`sendToolResult: agent not running (id=${id})`);
+    log.error(`sendToolResult: agent not running (id=${id})`, {
+      toolCallId: id,
+    });
     return;
   }
-  log.info(`Sending tool_result for ${id}`);
+  log.info(`Sending tool_result for ${id}`, { toolCallId: id });
   pendingExternalTools.delete(id);
   pm.writeStdin('agent', JSON.stringify({ action: 'tool_result', id, result }));
 }
@@ -390,6 +392,12 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   const { event: _evt, ...data } = event;
   log.debug(
     `Event: ${mappedEvent}${'text' in data && data.text ? ` "${String(data.text).slice(0, 80)}..."` : ''}`,
+    {
+      ...('requestId' in event && event.requestId
+        ? { requestId: event.requestId }
+        : {}),
+      ...('id' in event && event.id ? { toolCallId: event.id } : {}),
+    },
   );
   cb.broadcast(mappedEvent, data);
 }
@@ -530,7 +538,9 @@ export function createAgentActions(
     },
     agentStopTool: async (p) => {
       const { id, mode } = p as { id: string; mode?: 'graceful' | 'hard' };
-      log.info(`Stopping tool ${id} (mode=${mode ?? 'hard'})`);
+      log.info(`Stopping tool ${id} (mode=${mode ?? 'hard'})`, {
+        toolCallId: id,
+      });
       const { response } = sendAgentCommand(
         pm,
         'stop_tool',
@@ -544,7 +554,7 @@ export function createAgentActions(
         id: string;
         input?: Record<string, unknown>;
       };
-      log.info(`Restarting tool ${id}`);
+      log.info(`Restarting tool ${id}`, { toolCallId: id });
       const { response } = sendAgentCommand(
         pm,
         'restart_tool',

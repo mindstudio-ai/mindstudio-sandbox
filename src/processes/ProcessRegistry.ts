@@ -79,7 +79,7 @@ export class ProcessRegistry {
   register(name: string, type: ProcessType, command: string): void {
     // Sanitize name for filename (replace colons, slashes, etc.)
     const safeFilename = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const logFile = `.logs/${safeFilename}.log`;
+    const logFile = `.logs/${safeFilename}.ndjson`;
 
     this.entries.set(name, {
       info: {
@@ -169,16 +169,16 @@ export class ProcessRegistry {
     });
   }
 
-  appendLog(name: string, stream: 'stdout' | 'stderr', line: string): void {
+  appendLog(name: string, line: string, ctx?: Record<string, unknown>): void {
     const entry = this.entries.get(name);
     if (!entry) {
       return;
     }
 
-    const ts = new Date().toISOString();
+    const record = JSON.stringify({ ts: Date.now(), msg: line, ...ctx });
     const fullPath = path.join(this.logsDir, path.basename(entry.info.logFile));
     try {
-      fs.appendFileSync(fullPath, `[${ts}] [${stream}] ${line}\n`);
+      fs.appendFileSync(fullPath, record + '\n');
       entry.appendCount++;
       if (entry.appendCount % ROTATION_CHECK_INTERVAL === 0) {
         this.maybeRotate(fullPath);

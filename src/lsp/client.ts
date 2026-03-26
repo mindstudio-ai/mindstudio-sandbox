@@ -65,7 +65,7 @@ export class LspClient {
       const rl = createInterface({ input: this.process.stderr });
       rl.on('line', (line) => {
         log.debug(`stderr: ${line}`);
-        this.registry?.appendLog('lsp', 'stderr', line);
+        this.registry?.appendLog('lsp', line);
       });
     }
 
@@ -150,8 +150,8 @@ export class LspClient {
     this.onNotification('window/logMessage', (params) => {
       const p = params as { type: number; message: string };
       // LSP log types: 1=Error, 2=Warning, 3=Info, 4=Log
-      const stream = p.type <= 2 ? 'stderr' : 'stdout';
-      this.registry?.appendLog('lsp', stream, p.message);
+      const level = p.type <= 2 ? 'error' : 'info';
+      this.registry?.appendLog('lsp', p.message, { level });
     });
 
     log.info('Ready');
