@@ -22,7 +22,7 @@ import { HmrRelay, HmrRelayManager } from './server/HmrRelay.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
-const lspLog = createLogger('lsp-ws');
+const lspLog = createLogger('lsp/ws');
 
 let sandboxToken: string = '';
 let workspaceDir: string = '';

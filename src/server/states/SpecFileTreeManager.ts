@@ -12,7 +12,7 @@ import type { TreeEntry } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { TREE_HIDDEN } from '../../processes/fileWatcher.js';
 
-const log = createLogger('spec-file-tree');
+const log = createLogger('spec-tree');
 
 const REBUILD_DEBOUNCE_MS = 50;
 

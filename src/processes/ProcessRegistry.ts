@@ -175,7 +175,14 @@ export class ProcessRegistry {
       return;
     }
 
-    const record = JSON.stringify({ ts: Date.now(), msg: line, ...ctx });
+    // If the line is already NDJSON (from a process that emits structured
+    // logs), pass it through as-is instead of double-wrapping it.
+    let record: string;
+    if (line.startsWith('{') && line.endsWith('}')) {
+      record = line;
+    } else {
+      record = JSON.stringify({ ts: Date.now(), msg: line, ...ctx });
+    }
     const fullPath = path.join(this.logsDir, path.basename(entry.info.logFile));
     try {
       fs.appendFileSync(fullPath, record + '\n');

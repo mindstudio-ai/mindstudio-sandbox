@@ -14,7 +14,7 @@ import type { TreeEntry } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { TREE_COLLAPSED, TREE_HIDDEN } from '../../processes/fileWatcher.js';
 
-const log = createLogger('file-tree');
+const log = createLogger('code-tree');
 
 const REBUILD_DEBOUNCE_MS = 50;
 

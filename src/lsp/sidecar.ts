@@ -11,7 +11,7 @@ import type { ProcessManager } from '../processes/ProcessManager.js';
 import { sendCommand as sendTunnelCommand } from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
-const log = createLogger('lsp-sidecar');
+const log = createLogger('lsp/sidecar');
 
 interface DiagnosticItem {
   file: string;

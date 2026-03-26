@@ -70,7 +70,7 @@ import {
 } from './projectStatus.js';
 import type { AppConfig } from './types.js';
 
-const log = createLogger('cnc');
+const log = createLogger('controller');
 
 // ---------------------------------------------------------------------------
 // State manager construction
@@ -360,7 +360,7 @@ async function startServices(
             sendToolResult(processManager, id, 'error: missing scenarioId');
             return true;
           }
-          log.info(`Agent running scenario: ${scenarioId}`, { toolCallId: id });
+          log.info('Agent running scenario', { toolCallId: id, scenarioId });
           sendTunnelCommand(
             processManager,
             'run-scenario',
@@ -384,7 +384,7 @@ async function startServices(
             return true;
           }
           const methodInput = (input.input as Record<string, unknown>) ?? {};
-          log.info(`Agent running method: ${method}`, { toolCallId: id });
+          log.info('Agent running method', { toolCallId: id, method });
           sendTunnelCommand(
             processManager,
             'run-method',
@@ -396,8 +396,9 @@ async function startServices(
           return true;
         } else if (name === 'browserCommand') {
           const steps = (input.steps as unknown[]) ?? [];
-          log.info(`Agent running browser command: ${steps.length} step(s)`, {
+          log.info('Agent running browser command', {
             toolCallId: id,
+            steps: steps.length,
           });
           sendTunnelCommand(processManager, 'browser', { steps }, 120_000).then(
             (result) =>

@@ -28,7 +28,7 @@ export interface SystemResourceMetrics {
 import type { ProcessRegistry } from './ProcessRegistry.js';
 import { createLogger } from '../logger.js';
 
-const log = createLogger('resource-monitor');
+const log = createLogger('monitor');
 
 const DEFAULT_INTERVAL_MS = 5_000;
 
