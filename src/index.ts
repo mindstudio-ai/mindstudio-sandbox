@@ -12,7 +12,6 @@ import {
   cloneAppRepo,
   configureGit,
   readAppConfig,
-  readWebConfig,
   installDependencies,
   setBootstrapRegistry,
 } from './bootstrap.js';
@@ -69,7 +68,7 @@ import {
   setOnboardingState,
   type ProjectOnboardingState,
 } from './projectStatus.js';
-import type { AppConfig, WebConfig } from './types.js';
+import type { AppConfig } from './types.js';
 
 const log = createLogger('cnc');
 
@@ -144,9 +143,11 @@ function createStateManagers(config: Config): Managers {
   registry.register('system', 'system', 'cnc-server');
   registry.setState('system', 'running');
   onLog((entry) => {
-    const stream =
-      entry.level === 'error' || entry.level === 'warn' ? 'stderr' : 'stdout';
-    registry.appendLog('system', stream, `[${entry.module}] ${entry.message}`);
+    registry.appendLog('system', entry.message, {
+      level: entry.level,
+      module: entry.module,
+      ...entry.ctx,
+    });
   });
 
   setBootstrapRegistry(registry);
@@ -173,7 +174,6 @@ async function startServices(
   config: Config,
   managers: Managers,
   appConfig: AppConfig,
-  webConfig: WebConfig | null,
   progress: (step: string, message: string) => void,
   snapshotManager: SnapshotManager,
 ): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
@@ -192,15 +192,14 @@ async function startServices(
   log.info('LSP sidecar ready on port 4388');
 
   // Dev server
-  const devPort = webConfig?.web.devPort ?? 5173;
-  const devCommand = webConfig?.web.devCommand ?? 'npm run dev';
-  const webDir = webConfig
-    ? path.resolve(
-        config.workspaceDir,
-        path.dirname(
-          appConfig.interfaces.find((i) => i.type === 'web')?.path ?? '',
-        ),
-      )
+  const webInterface = appConfig.interfaces.find((i) => i.type === 'web');
+  const webConfig = webInterface?.config as
+    | { devCommand?: string; devPort?: number }
+    | undefined;
+  const devPort = webConfig?.devPort ?? 5173;
+  const devCommand = webConfig?.devCommand ?? 'npm run dev';
+  const webDir = webInterface
+    ? path.resolve(config.workspaceDir, path.dirname(webInterface.path))
     : null;
 
   if (webDir) {
@@ -344,10 +343,13 @@ async function startServices(
               iconUrl && 'iconUrl',
               openGraphShareImageUrl && 'openGraphShareImageUrl',
             ].filter(Boolean);
-            log.info(`Project metadata updated: ${fields.join(', ')}`);
+            log.info(`Project metadata updated: ${fields.join(', ')}`, {
+              toolCallId: id,
+            });
           } catch (err) {
             log.error(
               `Failed to update project metadata: ${err instanceof Error ? err.message : err}`,
+              { toolCallId: id },
             );
           }
           sendToolResult(processManager, id, 'ok');
@@ -358,7 +360,7 @@ async function startServices(
             sendToolResult(processManager, id, 'error: missing scenarioId');
             return true;
           }
-          log.info(`Agent running scenario: ${scenarioId}`);
+          log.info(`Agent running scenario: ${scenarioId}`, { toolCallId: id });
           sendTunnelCommand(
             processManager,
             'run-scenario',
@@ -382,7 +384,7 @@ async function startServices(
             return true;
           }
           const methodInput = (input.input as Record<string, unknown>) ?? {};
-          log.info(`Agent running method: ${method}`);
+          log.info(`Agent running method: ${method}`, { toolCallId: id });
           sendTunnelCommand(
             processManager,
             'run-method',
@@ -394,7 +396,9 @@ async function startServices(
           return true;
         } else if (name === 'browserCommand') {
           const steps = (input.steps as unknown[]) ?? [];
-          log.info(`Agent running browser command: ${steps.length} step(s)`);
+          log.info(`Agent running browser command: ${steps.length} step(s)`, {
+            toolCallId: id,
+          });
           sendTunnelCommand(processManager, 'browser', { steps }, 120_000).then(
             (result) =>
               sendToolResult(processManager, id, JSON.stringify(result)),
@@ -587,7 +591,6 @@ async function main(): Promise<void> {
 
     // 8. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
-    const webConfig = await readWebConfig(config.workspaceDir, appConfig);
     ctx.appConfig = appConfig;
     log.info(`App: ${appConfig.name} (${appConfig.appId})`);
 
@@ -643,7 +646,6 @@ async function main(): Promise<void> {
       config,
       managers,
       appConfig,
-      webConfig,
       progress,
       snapshotManager,
     );

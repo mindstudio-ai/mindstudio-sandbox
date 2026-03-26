@@ -110,6 +110,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       if ((msg as Record<string, unknown>).status === 'started') {
         log.debug(
           `Intermediate ack for requestId=${msg.requestId}, waiting for final result`,
+          { requestId: msg.requestId as string },
         );
         return;
       }
@@ -117,7 +118,9 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       clearTimeout(entry.timer);
       entry.resolve(msg as Record<string, unknown>);
     } else {
-      log.debug(`No pending resolver for requestId=${msg.requestId}`);
+      log.debug(`No pending resolver for requestId=${msg.requestId}`, {
+        requestId: msg.requestId as string,
+      });
     }
     return;
   }

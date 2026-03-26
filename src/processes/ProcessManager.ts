@@ -109,7 +109,7 @@ export class ProcessManager {
           if (shouldLogStdout) {
             const logLine =
               line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
-            this.registry.appendLog(config.name, 'stdout', logLine);
+            this.registry.appendLog(config.name, logLine);
           }
           config.onStdout?.(line);
         } catch (err) {
@@ -128,7 +128,7 @@ export class ProcessManager {
       const rl = createInterface({ input: child.stderr });
       rl.on('line', (line) => {
         try {
-          this.registry.appendLog(config.name, 'stderr', line);
+          this.registry.appendLog(config.name, line);
           config.onStderr?.(line);
         } catch (err) {
           log.error(

@@ -60,7 +60,11 @@ export interface AppConfig {
     path: string;
     export: string;
   }>;
-  interfaces: Array<{ type: string; path: string }>;
+  interfaces: Array<{
+    type: string;
+    path: string;
+    config?: Record<string, unknown>;
+  }>;
   scenarios?: Array<{
     id: string;
     name: string;
@@ -77,6 +81,7 @@ export interface WebConfig {
   web: {
     devCommand: string;
     devPort: number;
+    defaultPreviewMode?: 'mobile' | 'desktop';
   };
 }
 
