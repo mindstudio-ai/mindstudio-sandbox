@@ -477,51 +477,18 @@ export function createAgentActions(
         await cancelResponse;
       }
 
+      // Advance onboarding to initialCodegen when build is triggered
+      if (text.startsWith('@@automated::buildFromInitialSpec@@')) {
+        if (setOnboardingState('initialCodegen')) {
+          onProjectStatusChanged?.();
+        }
+      }
+
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
         ...(viewContext ? { viewContext } : {}),
-      });
-      activeMessageRequestId = requestId;
-      activity = { busy: true, fileOps: [] };
-      return await response;
-    },
-    agentSync: async () => {
-      log.info('Triggering spec/code sync');
-      const { requestId, response } = sendAgentCommand(pm, 'message', {
-        text: '',
-        runCommand: 'sync',
-        onboardingState: getOnboardingState(),
-        editorContext: {},
-      });
-      activeMessageRequestId = requestId;
-      activity = { busy: true, fileOps: [] };
-      return await response;
-    },
-    agentPublish: async () => {
-      log.info('Triggering publish');
-      const { requestId, response } = sendAgentCommand(pm, 'message', {
-        text: '',
-        runCommand: 'publish',
-        onboardingState: getOnboardingState(),
-        editorContext: {},
-      });
-      activeMessageRequestId = requestId;
-      activity = { busy: true, fileOps: [] };
-      return await response;
-    },
-    agentBuild: async () => {
-      log.info('Triggering build');
-      // Advance onboarding to initialCodegen when build is triggered
-      if (setOnboardingState('initialCodegen')) {
-        onProjectStatusChanged?.();
-      }
-      const { requestId, response } = sendAgentCommand(pm, 'message', {
-        text: '',
-        runCommand: 'buildFromInitialSpec',
-        onboardingState: getOnboardingState(),
-        editorContext: {},
       });
       activeMessageRequestId = requestId;
       activity = { busy: true, fileOps: [] };

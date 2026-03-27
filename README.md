@@ -221,10 +221,28 @@ All agent actions await the agent's `completed` event and return it as the WS re
 | Action | Params | Description |
 |--------|--------|-------------|
 | `agentMessage` | `{ text, attachments?, viewContext? }` | Send a message to the agent. Returns on `completed` |
-| `agentSync` | `{}` | Trigger spec ↔ code sync |
-| `agentPublish` | `{}` | Trigger publish flow |
-| `agentBuild` | `{}` | Trigger initial build from spec |
 | `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed |
+
+#### Automated Actions
+
+Trigger automated actions by sending `agentMessage` with the `@@automated::` sentinel format in `text`:
+
+```
+@@automated::actionName@@
+@@automated::actionName@@{"param": "value"}
+```
+
+Params JSON goes right after the closing `@@`. Each key is interpolated into `{{key}}` placeholders in the action prompt.
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `sync` | — | Spec ↔ code sync |
+| `publish` | — | Publish flow |
+| `buildFromInitialSpec` | — | Initial build from spec |
+| `buildFromRoadmap` | `{ path }` | Build a roadmap item |
+| `reviseFromAnnotatedImage` | — | Revise from annotated image |
+
+Messages with `@@automated::` prefix in history are automated — use the prefix to identify them for UI rendering. `@@automated::background_results@@` messages continue to work as before.
 | `agentClear` | `{}` | Clear conversation, start fresh session |
 | `externalToolResult` | `{ id, result }` | Send a result back for any external tool (promptUser, presentSyncPlan, etc.). Fire-and-forget |
 | `setProjectOnboardingState` | `{ state }` | Advance onboarding state |
