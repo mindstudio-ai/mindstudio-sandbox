@@ -14,7 +14,7 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *
  * What we do:
  *   1. Drop user tool-result messages (results are already on the tool blocks)
- *   2. Drop hidden messages (internal prompts from runCommand)
+ *   2. Drop hidden messages (internal prompts)
  *   3. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
  *   4. Recurse into subAgentMessages on tool blocks
  */
