@@ -484,11 +484,13 @@ export function createAgentActions(
         }
       }
 
+      const isAutomated = text.startsWith('@@automated::');
+
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
-        ...(viewContext ? { viewContext } : {}),
+        ...(!isAutomated && viewContext ? { viewContext } : {}),
       });
       activeMessageRequestId = requestId;
       activity = { busy: true, fileOps: [] };
