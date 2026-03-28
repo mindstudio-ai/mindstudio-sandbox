@@ -67,14 +67,24 @@ function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
   }
 }
 
-function verifyInstalled(binaryName: string): void {
+function isInstalled(binaryName: string): boolean {
   try {
-    const result = execSync(`which ${binaryName}`, {
+    execSync(`which ${binaryName}`, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    log.info(`${binaryName} installed at: ${result.trim()}`);
+    return true;
   } catch {
+    return false;
+  }
+}
+
+function verifyInstalled(binaryName: string): void {
+  if (isInstalled(binaryName)) {
+    log.info(
+      `${binaryName} installed at: ${execSync(`which ${binaryName}`, { encoding: 'utf-8' }).trim()}`,
+    );
+  } else {
     log.warn(`${binaryName} not found after install`);
   }
 }
@@ -110,6 +120,12 @@ function installFromSource(opts: {
 export async function installTunnel(progress: ProgressFn): Promise<void> {
   const devBranch = process.env['TUNNEL_DEV_BRANCH'];
 
+  if (!devBranch && isInstalled('mindstudio-local')) {
+    progress('installTunnel', 'Already installed, skipping');
+    log.info('mindstudio-local already installed, skipping');
+    return;
+  }
+
   if (devBranch) {
     progress(
       'installTunnel',
@@ -135,6 +151,12 @@ export async function installTunnel(progress: ProgressFn): Promise<void> {
 export async function installAgent(progress: ProgressFn): Promise<void> {
   const devBranch = process.env['AGENT_DEV_BRANCH'];
 
+  if (!devBranch && isInstalled('remy')) {
+    progress('installAgent', 'Already installed, skipping');
+    log.info('remy already installed, skipping');
+    return;
+  }
+
   if (devBranch) {
     progress('installAgent', `Installing remy from source (${devBranch})...`);
     installFromSource({
@@ -156,6 +178,20 @@ export async function installAgent(progress: ProgressFn): Promise<void> {
 export async function installAgentSdk(progress: ProgressFn): Promise<void> {
   const devBranch = process.env['AGENT_SDK_DEV_BRANCH'];
 
+  if (!devBranch) {
+    try {
+      execSync('npm list -g @mindstudio-ai/agent', {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      progress('installAgentSdk', 'Already installed, skipping');
+      log.info('agent SDK already installed, skipping');
+      return;
+    } catch {
+      // Not installed, proceed with install
+    }
+  }
+
   if (devBranch) {
     progress(
       'installAgentSdk',
@@ -176,6 +212,12 @@ export async function installAgentSdk(progress: ProgressFn): Promise<void> {
 }
 
 export async function installLsp(progress: ProgressFn): Promise<void> {
+  if (isInstalled('typescript-language-server')) {
+    progress('installLsp', 'Already installed, skipping');
+    log.info('typescript-language-server already installed, skipping');
+    return;
+  }
+
   progress('installLsp', 'Installing TypeScript language server...');
   run('npm install -g typescript-language-server typescript', {
     label: 'npm install -g typescript-language-server typescript',
