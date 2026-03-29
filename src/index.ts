@@ -25,6 +25,7 @@ import {
 import {
   startAgent,
   createAgentActions,
+  sendAgentCommand,
   sendToolResult,
 } from './processes/agent/index.js';
 import { startDevServer } from './processes/devServer/index.js';
@@ -254,6 +255,13 @@ async function startServices(
         } else if (name === 'setProjectOnboardingState') {
           const state = input.state as ProjectOnboardingState;
           setOnboardingState(state);
+
+          // Side effect: when onboarding finishes, trigger compaction to
+          // reclaim context consumed by the onboarding conversation.
+          if (state === 'onboardingFinished') {
+            sendAgentCommand(processManager, 'compact', {}, 30_000);
+            log.info('Triggered compaction after onboarding finished');
+          }
 
           // Side effect: when entering initialSpecAuthoring, clear src/app.md
           // if it's still the untouched scaffold version, then open it in the
