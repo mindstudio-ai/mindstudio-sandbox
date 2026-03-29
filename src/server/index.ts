@@ -101,6 +101,36 @@ export function startServer(
         return;
       }
 
+      if (req.url === '/agent-stats' || req.url?.startsWith('/agent-stats?')) {
+        const corsHeaders = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET',
+        };
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, corsHeaders);
+          res.end();
+          return;
+        }
+        const statsPath = path.join(workspaceDir, '.remy-stats.json');
+        fs.readFile(statsPath, 'utf-8')
+          .then((content) => {
+            res.writeHead(200, {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              ...corsHeaders,
+            });
+            res.end(content);
+          })
+          .catch(() => {
+            res.writeHead(404, {
+              'Content-Type': 'application/json',
+              ...corsHeaders,
+            });
+            res.end(JSON.stringify({ error: 'Stats not available yet' }));
+          });
+        return;
+      }
+
       if (req.url?.startsWith('/logs/')) {
         const corsHeaders = {
           'Access-Control-Allow-Origin': '*',

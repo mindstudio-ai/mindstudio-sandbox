@@ -1,8 +1,6 @@
 name: Rebuild V2 Sandbox Snapshot
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:

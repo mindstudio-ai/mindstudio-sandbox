@@ -299,6 +299,15 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     return; // don't broadcast directly, frontend gets agentSessionCleared via EVENT_MAP below
   }
 
+  if (
+    event.event === 'compaction_complete' &&
+    'requestId' in event &&
+    event.requestId
+  ) {
+    // No data to accumulate — completed will resolve it
+    return;
+  }
+
   // --- editsFinished tool — internal, not broadcast ---
 
   if (
@@ -502,6 +511,10 @@ export function createAgentActions(
     },
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
+      return await response;
+    },
+    agentCompact: async () => {
+      const { response } = sendAgentCommand(pm, 'compact', {}, 30_000);
       return await response;
     },
     agentStopTool: async (p) => {
