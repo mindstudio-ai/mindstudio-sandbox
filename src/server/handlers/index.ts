@@ -222,7 +222,7 @@ export const handlers: Record<string, ActionHandler> = {
   ptyGetScrollback: (p) => ptyGetScrollback(p as { sessionId: string }),
 
   // --- Ping ---
-  ping: async () => ({}),
+  ping: async () => ({ pong: true }),
 
   // Agent and tunnel actions are merged in at runtime via Object.assign
 };
