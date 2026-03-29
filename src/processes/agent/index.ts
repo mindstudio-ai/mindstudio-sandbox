@@ -466,7 +466,13 @@ export function createAgentActions(
     agentMessage: async (p) => {
       const { text, attachments, viewContext } = p as {
         text: string;
-        attachments?: Array<{ url: string; extractedTextUrl?: string }>;
+        attachments?: Array<{
+          url: string;
+          extractedTextUrl?: string;
+          transcript?: string;
+          durationMs?: number;
+          isVoice?: boolean;
+        }>;
         viewContext?: Record<string, unknown>;
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
