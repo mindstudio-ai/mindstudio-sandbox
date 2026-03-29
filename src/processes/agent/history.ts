@@ -14,9 +14,10 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *
  * What we do:
  *   1. Drop user tool-result messages (results are already on the tool blocks)
- *   2. Drop hidden messages (internal prompts)
- *   3. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
- *   4. Recurse into subAgentMessages on tool blocks
+ *   2. Pass through hidden user messages (@@automated prefixed — frontend matches by sentinel)
+ *   3. Drop hidden assistant messages (internal prompts)
+ *   4. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
+ *   5. Recurse into subAgentMessages on tool blocks
  */
 export function transformHistory(
   raw: unknown[],
@@ -32,8 +33,8 @@ export function transformHistory(
       continue;
     }
 
-    // Skip internal prompts
-    if (m.hidden) {
+    // Skip hidden assistant messages (internal prompts)
+    if (m.hidden && m.role !== 'user') {
       continue;
     }
 
