@@ -81,7 +81,8 @@ export type AgentStreamEvent =
 /** Data events that precede a completed (carry requestId). */
 export type AgentDataEvent =
   | { event: 'history'; messages: unknown[]; requestId?: string }
-  | { event: 'session_cleared'; requestId?: string };
+  | { event: 'session_cleared'; requestId?: string }
+  | { event: 'compaction_complete'; requestId?: string; error?: string };
 
 /** Terminal event — exactly one per command. */
 export interface AgentCompletedEvent {
