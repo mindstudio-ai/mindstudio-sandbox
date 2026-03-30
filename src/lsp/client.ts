@@ -301,6 +301,17 @@ export class LspClient {
     return uri;
   }
 
+  /** Close a file in the language server. No-op if not open. */
+  closeFile(relativePath: string): void {
+    const uri = this.pathToUri(relativePath);
+    if (!this.openFiles.has(uri)) {
+      return;
+    }
+    this.notify('textDocument/didClose', {
+      textDocument: { uri },
+    });
+  }
+
   // --- Helpers ---
 
   pathToUri(relativePath: string): string {

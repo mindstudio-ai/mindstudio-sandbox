@@ -232,6 +232,11 @@ export class LspSidecar {
     }
   }
 
+  /** Notify the sidecar that a file was deleted. */
+  onFileDeleted(relativePath: string): void {
+    this.lsp.closeFile(relativePath);
+  }
+
   // --- Endpoint handlers ---
 
   private async handleRestartProcess(

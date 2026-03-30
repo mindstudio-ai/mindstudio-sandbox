@@ -470,6 +470,7 @@ function setupFileWatcher(
     }
 
     if (changeType === 'deleted') {
+      lspSidecar.onFileDeleted(filePath);
       editorManager.onFileDeleted(filePath);
       specEditorManager.onFileDeleted(filePath);
     }
