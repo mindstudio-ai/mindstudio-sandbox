@@ -72,6 +72,11 @@ export const handlers: Record<string, ActionHandler> = {
     const result = await renameFile(params);
     ctx.editorState?.onFileRenamed(params.oldPath, params.newPath);
     ctx.specEditorState?.onFileRenamed(params.oldPath, params.newPath);
+    // Re-open renamed file in LSP if it was being tracked
+    if (ctx.lspClient?.isFileOpen(ctx.lspClient.pathToUri(params.oldPath))) {
+      ctx.lspClient.closeFile(params.oldPath);
+      ctx.lspClient.ensureFileOpen(params.newPath).catch(() => {});
+    }
     ctx.onFileChanged?.(params.oldPath, 'deleted');
     ctx.onFileChanged?.(params.newPath, 'created');
     return result;
