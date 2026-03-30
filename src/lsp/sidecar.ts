@@ -185,7 +185,7 @@ export class LspSidecar {
                 ? await sendTunnelCommand(
                     this.pm,
                     'screenshotFullPage',
-                    {},
+                    params.path ? { path: params.path } : {},
                     120_000,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
