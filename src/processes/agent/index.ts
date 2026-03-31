@@ -252,29 +252,32 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     return;
   }
 
-  // --- Completed events — resolve pending promise ---
+  // --- Completed events — resolve pending promise & broadcast ---
 
-  if (event.event === 'completed' && 'requestId' in event && event.requestId) {
-    const entry = pending.get(event.requestId);
-    if (entry) {
-      pending.delete(event.requestId);
-      if (entry.timer) {
-        clearTimeout(entry.timer);
+  if (event.event === 'completed') {
+    // Resolve pending request if there is one
+    if (event.requestId) {
+      const entry = pending.get(event.requestId);
+      if (entry) {
+        pending.delete(event.requestId);
+        if (entry.timer) {
+          clearTimeout(entry.timer);
+        }
+        entry.resolve({ ...entry.data, ...event });
       }
-      entry.resolve({ ...entry.data, ...event });
+
+      // If this was the active message, mark not busy
+      if (activeMessageRequestId === event.requestId) {
+        activeMessageRequestId = null;
+        activity = { busy: false, fileOps: [] };
+        pendingExternalTools.clear();
+        serverHandledToolIds.clear();
+        cb.onTurnDone?.();
+        broadcastActivity(cb);
+      }
     }
 
-    // If this was the active message, mark not busy
-    if (activeMessageRequestId === event.requestId) {
-      activeMessageRequestId = null;
-      activity = { busy: false, fileOps: [] };
-      pendingExternalTools.clear();
-      serverHandledToolIds.clear();
-      cb.onTurnDone?.();
-      broadcastActivity(cb);
-    }
-
-    // Broadcast to frontend as the turn-done signal
+    // Always broadcast to frontend as the turn-done signal
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
     return;
