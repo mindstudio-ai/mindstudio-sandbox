@@ -86,7 +86,7 @@ export class SnapshotManager {
     log.info('Checking for draft snapshot to restore...');
     try {
       const fetched = await this.exec(
-        `git fetch --no-tags origin ${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
+        `git fetch --no-tags origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
       );
       if (fetched === null) {
         log.info('No _draft branch on remote, skipping restore');
