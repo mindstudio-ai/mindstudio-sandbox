@@ -27,6 +27,7 @@ export function createAgentActions(
   const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
 
   return {
+    // User sends a message to the agent
     agentMessage: async (p) => {
       const { text, attachments, viewContext } = p as {
         text: string;
@@ -74,18 +75,22 @@ export function createAgentActions(
       startTurn(requestId);
       return await response;
     },
+    // User cancel in-progress agent message
     agentCancel: async () => {
       const { response } = sendAgentCommand(pm, 'cancel', {}, 5_000);
       return await response;
     },
+    // Clear conversation
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
       return await response;
     },
+    // Compact conversation
     agentCompact: async () => {
       const { response } = sendAgentCommand(pm, 'compact', {}, 30_000);
       return await response;
     },
+    // Stop a tool
     agentStopTool: async (p) => {
       const { id, mode } = p as { id: string; mode?: 'graceful' | 'hard' };
       log.info(`Stopping tool ${id} (mode=${mode ?? 'hard'})`, {
@@ -99,6 +104,7 @@ export function createAgentActions(
       );
       return await response;
     },
+    // Restart a tool
     agentRestartTool: async (p) => {
       const { id, input } = p as {
         id: string;
