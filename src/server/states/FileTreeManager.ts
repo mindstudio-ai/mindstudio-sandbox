@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { TreeEntry } from '../../types.js';
 import { createLogger } from '../../logger.js';
-import { TREE_COLLAPSED, TREE_HIDDEN } from '../../processes/fileWatcher.js';
+import { TREE_COLLAPSED, TREE_HIDDEN } from '../../fileWatcher/index.js';
 
 const log = createLogger('code-tree');
 

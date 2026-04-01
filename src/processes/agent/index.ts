@@ -2,34 +2,44 @@
  * Agent process — manages the remy AI coding agent.
  *
  * Handles startup config, stdout NDJSON event parsing + mapping,
- * chat history retrieval, activity tracking, and WS action handlers.
- * Uses requestId-based correlation for all stdin commands.
+ * request correlation, and tool routing. Activity tracking lives in
+ * activity.ts; WS action handlers live in actions.ts.
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
 import { parseAgentMessage } from './events.js';
 import { transformHistory } from './history.js';
-import { getOnboardingState, setOnboardingState } from '../../projectStatus.js';
+import {
+  getAgentActivity,
+  broadcastActivity,
+  endTurn,
+  clearActivityOnError,
+  trackToolStart,
+  trackToolDone,
+  addPendingExternalTool,
+  hasPendingExternalTool,
+  getPendingExternalTool,
+  deletePendingExternalTool,
+  updatePendingExternalToolInput,
+  addServerHandledToolId,
+  isServerHandledToolId,
+  deleteServerHandledToolId,
+} from './activity.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('agent');
 
+// Re-export types and functions used by external consumers
+export { getAgentActivity } from './activity.js';
+export type {
+  AgentActivity,
+  AgentFileOp,
+  AgentFileAction,
+} from './activity.js';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export type AgentFileAction = 'reading' | 'writing' | 'editing';
-
-export interface AgentFileOp {
-  toolCallId: string;
-  path: string;
-  action: AgentFileAction;
-}
-
-export interface AgentActivity {
-  busy: boolean;
-  fileOps: AgentFileOp[];
-}
 
 export interface AgentCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
@@ -43,22 +53,9 @@ export interface AgentCallbacks {
   onTurnDone?: () => void;
 }
 
-type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Maps remy tool names to file actions. */
-const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
-  readFile: 'reading',
-  writeFile: 'writing',
-  editFile: 'editing',
-  multiEdit: 'editing',
-  readSpec: 'reading',
-  writeSpec: 'writing',
-  editSpec: 'editing',
-};
 
 /** Maps remy's headless event names to our WebSocket event names. */
 const EVENT_MAP: Record<string, string> = {
@@ -87,7 +84,13 @@ const EVENT_MAP: Record<string, string> = {
  * external tools without any sandbox code changes.
  */
 const INTERNAL_TOOLS = new Set([
-  ...Object.keys(FILE_TOOL_ACTIONS),
+  'readFile',
+  'writeFile',
+  'editFile',
+  'multiEdit',
+  'readSpec',
+  'writeSpec',
+  'editSpec',
   'bash',
   'grep',
   'glob',
@@ -117,31 +120,6 @@ export const SERVER_VISIBLE_TOOLS = new Set([
   'runMethod',
   'browserCommand',
 ]);
-
-// ---------------------------------------------------------------------------
-// Module state
-// ---------------------------------------------------------------------------
-
-let activity: AgentActivity = { busy: false, fileOps: [] };
-
-/** The requestId of the currently in-flight message command (for activity tracking). */
-let activeMessageRequestId: string | null = null;
-
-/** Tracks external tool calls waiting for a result (e.g., promptUser). */
-const pendingExternalTools = new Map<string, PendingExternalTool>();
-
-/** Tool IDs handled server-side — suppress broadcast to frontend for these. */
-const serverHandledToolIds = new Set<string>();
-
-interface PendingExternalTool {
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-}
-
-export function getAgentActivity(): AgentActivity {
-  return { busy: activity.busy, fileOps: [...activity.fileOps] };
-}
 
 // ---------------------------------------------------------------------------
 // requestId-based command correlation
@@ -238,7 +216,7 @@ export function sendToolResult(
     return;
   }
   log.info(`Sending tool_result for ${id}`, { toolCallId: id });
-  pendingExternalTools.delete(id);
+  deletePendingExternalTool(id);
   pm.writeStdin('agent', JSON.stringify({ action: 'tool_result', id, result }));
 }
 
@@ -267,13 +245,9 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       }
 
       // If this was the active message, mark not busy
-      if (activeMessageRequestId === event.requestId) {
-        activeMessageRequestId = null;
-        activity = { busy: false, fileOps: [] };
-        pendingExternalTools.clear();
-        serverHandledToolIds.clear();
+      if (endTurn(event.requestId)) {
         cb.onTurnDone?.();
-        broadcastActivity(cb);
+        broadcastActivity(cb.broadcast);
       }
     }
 
@@ -333,18 +307,16 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 
   switch (event.event) {
     case 'tool_start':
-      trackToolStart(event.name, event.id, event.input, cb);
+      trackToolStart(event.name, event.id, event.input, cb.broadcast);
       break;
     case 'tool_done':
-      trackToolDone(event.id, cb);
+      trackToolDone(event.id, cb.broadcast);
       break;
     case 'error':
       // System-level error (no requestId) — clear activity
       if (!('requestId' in event) || !event.requestId) {
-        activity = { busy: false, fileOps: [] };
-        pendingExternalTools.clear();
-        serverHandledToolIds.clear();
-        broadcastActivity(cb);
+        clearActivityOnError();
+        broadcastActivity(cb.broadcast);
       }
       break;
   }
@@ -353,15 +325,11 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 
   if (event.event === 'tool_start' && !INTERNAL_TOOLS.has(event.name)) {
     const input = event.input ?? {};
-    pendingExternalTools.set(event.id, {
-      id: event.id,
-      name: event.name,
-      input,
-    });
+    addPendingExternalTool(event.id, event.name, input);
     // Suppress broadcast immediately for server-handled tools (before partial
     // streams leak to the frontend).
     if (SERVER_HANDLED_TOOLS.has(event.name)) {
-      serverHandledToolIds.add(event.id);
+      addServerHandledToolId(event.id);
     }
     // Only trigger external tool handling on the final tool_start (no partial flag)
     if (!event.partial) {
@@ -369,17 +337,17 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     }
   } else if (
     event.event === 'tool_input_delta' &&
-    pendingExternalTools.has(event.id)
+    hasPendingExternalTool(event.id)
   ) {
     // Update pending entry with latest streamed content so init frame
     // captures the full content if the client reconnects mid-stream.
-    const pendingTool = pendingExternalTools.get(event.id)!;
-    pendingTool.input = { ...pendingTool.input, content: event.result };
-  } else if (
-    event.event === 'tool_done' &&
-    pendingExternalTools.has(event.id)
-  ) {
-    pendingExternalTools.delete(event.id);
+    const pendingTool = getPendingExternalTool(event.id)!;
+    updatePendingExternalToolInput(event.id, {
+      ...pendingTool.input,
+      content: event.result,
+    });
+  } else if (event.event === 'tool_done' && hasPendingExternalTool(event.id)) {
+    deletePendingExternalTool(event.id);
   }
 
   // --- Broadcast to frontend ---
@@ -392,10 +360,10 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       event.event === 'tool_done' ||
       event.event === 'tool_input_delta') &&
     'id' in event &&
-    serverHandledToolIds.has(event.id)
+    isServerHandledToolId(event.id)
   ) {
     if (event.event === 'tool_done') {
-      serverHandledToolIds.delete(event.id);
+      deleteServerHandledToolId(event.id);
     }
     return;
   }
@@ -413,36 +381,6 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   cb.broadcast(mappedEvent, data);
 }
 
-function broadcastActivity(cb: AgentCallbacks): void {
-  cb.broadcast('agentActivityChanged', getAgentActivity());
-}
-
-function trackToolStart(
-  name: string,
-  id: string,
-  input: Record<string, unknown>,
-  cb: AgentCallbacks,
-): void {
-  const fileAction = FILE_TOOL_ACTIONS[name];
-  if (!fileAction) {
-    return;
-  }
-  const filePath = (input.path ?? input.file) as string | undefined;
-  if (!filePath) {
-    return;
-  }
-  activity.fileOps.push({ toolCallId: id, path: filePath, action: fileAction });
-  broadcastActivity(cb);
-}
-
-function trackToolDone(id: string, cb: AgentCallbacks): void {
-  const idx = activity.fileOps.findIndex((op) => op.toolCallId === id);
-  if (idx !== -1) {
-    activity.fileOps.splice(idx, 1);
-    broadcastActivity(cb);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
@@ -452,106 +390,4 @@ export async function getAgentHistory(pm: ProcessManager): Promise<unknown[]> {
   const { response } = sendAgentCommand(pm, 'get_history', {}, 5_000);
   const result = await response;
   return (result.messages as unknown[]) ?? [];
-}
-
-// ---------------------------------------------------------------------------
-// WS action handlers
-// ---------------------------------------------------------------------------
-
-/** Create WS action handlers for agent commands. */
-export function createAgentActions(
-  pm: ProcessManager,
-  callbacks?: { onProjectStatusChanged?: () => void },
-): Record<string, ActionHandler> {
-  const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
-
-  return {
-    agentMessage: async (p) => {
-      const { text, attachments, viewContext } = p as {
-        text: string;
-        attachments?: Array<{
-          url: string;
-          extractedTextUrl?: string;
-          transcript?: string;
-          durationMs?: number;
-          isVoice?: boolean;
-        }>;
-        viewContext?: Record<string, unknown>;
-      };
-      log.info(`Sending message: ${text.slice(0, 100)}...`);
-
-      // If remy is blocked waiting for an external tool result (e.g., a
-      // promptUser that was never answered), cancel the current turn first
-      // so remy can accept the new message.
-      if (pendingExternalTools.size > 0) {
-        log.info('Cancelling pending external tools before sending message');
-        pendingExternalTools.clear();
-        const { response: cancelResponse } = sendAgentCommand(
-          pm,
-          'cancel',
-          {},
-          5_000,
-        );
-        await cancelResponse;
-      }
-
-      // Advance onboarding to initialCodegen when build is triggered
-      if (text.startsWith('@@automated::buildFromInitialSpec@@')) {
-        if (setOnboardingState('initialCodegen')) {
-          onProjectStatusChanged?.();
-        }
-      }
-
-      const isAutomated = text.startsWith('@@automated::');
-
-      const { requestId, response } = sendAgentCommand(pm, 'message', {
-        text,
-        onboardingState: getOnboardingState(),
-        ...(attachments?.length ? { attachments } : {}),
-        ...(!isAutomated && viewContext ? { viewContext } : {}),
-      });
-      activeMessageRequestId = requestId;
-      activity = { busy: true, fileOps: [] };
-      return await response;
-    },
-    agentCancel: async () => {
-      const { response } = sendAgentCommand(pm, 'cancel', {}, 5_000);
-      return await response;
-    },
-    agentClear: async () => {
-      const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
-      return await response;
-    },
-    agentCompact: async () => {
-      const { response } = sendAgentCommand(pm, 'compact', {}, 30_000);
-      return await response;
-    },
-    agentStopTool: async (p) => {
-      const { id, mode } = p as { id: string; mode?: 'graceful' | 'hard' };
-      log.info(`Stopping tool ${id} (mode=${mode ?? 'hard'})`, {
-        toolCallId: id,
-      });
-      const { response } = sendAgentCommand(
-        pm,
-        'stop_tool',
-        { id, mode: mode ?? 'hard' },
-        5_000,
-      );
-      return await response;
-    },
-    agentRestartTool: async (p) => {
-      const { id, input } = p as {
-        id: string;
-        input?: Record<string, unknown>;
-      };
-      log.info(`Restarting tool ${id}`, { toolCallId: id });
-      const { response } = sendAgentCommand(
-        pm,
-        'restart_tool',
-        { id, ...(input ? { input } : {}) },
-        5_000,
-      );
-      return await response;
-    },
-  };
 }

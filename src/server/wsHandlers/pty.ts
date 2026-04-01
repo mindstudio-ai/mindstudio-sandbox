@@ -8,7 +8,7 @@
 
 import * as pty from 'node-pty';
 import type { ProcessRegistry } from '../../processes/ProcessRegistry.js';
-import type { BroadcastBatcher } from '../server/BroadcastBatcher.js';
+import type { BroadcastBatcher } from '../BroadcastBatcher.js';
 import { generateId } from '../../utils/paths.js';
 import { createLogger } from '../../logger.js';
 

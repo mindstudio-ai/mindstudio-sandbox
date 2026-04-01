@@ -11,10 +11,10 @@
 
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
-import { getProjectStatus } from '../projectStatus.js';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import type { BroadcastBatcher } from './server/BroadcastBatcher.js';
+import type { BroadcastBatcher } from './BroadcastBatcher.js';
 import type { EditorStateManager } from './states/EditorStateManager.js';
 import type { SpecEditorStateManager } from './states/SpecEditorStateManager.js';
 import type { FileTreeManager } from './states/FileTreeManager.js';
@@ -22,7 +22,7 @@ import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
-import { getActiveSessionIds } from './handlers/pty.js';
+import { getActiveSessionIds } from './wsHandlers/pty.js';
 
 export interface ServerContext {
   status: ServerStatus;

@@ -11,7 +11,7 @@
 
 import { exec as execCb } from 'node:child_process';
 import fs from 'node:fs';
-import { createLogger } from './logger.js';
+import { createLogger } from '../logger.js';
 
 const log = createLogger('snapshot');
 
@@ -20,7 +20,7 @@ const DRAFT_BRANCH = '_draft';
 const DRAFT_REF = `refs/heads/${DRAFT_BRANCH}`;
 const REMOTE_DRAFT_REF = `refs/remotes/origin/${DRAFT_BRANCH}`;
 
-export class SnapshotManager {
+export class DraftSnapshotManager {
   private workspaceDir: string;
   private timer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
