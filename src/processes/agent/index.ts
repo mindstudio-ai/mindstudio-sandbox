@@ -13,6 +13,7 @@ import {
   getAgentActivity,
   broadcastActivity,
   startTurn,
+  startBackgroundTurn,
   endTurn,
   clearActivityOnError,
   trackToolStart,
@@ -237,11 +238,11 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   if (event.event === 'turn_started') {
     if (!event.requestId) {
       // Background turn (e.g., background tool results) — remy initiated
-      // this turn itself. Use a synthetic ID so activity tracking and
-      // onTurnDone (snapshot scheduling) work correctly.
+      // this turn itself. Track it so endTurn/onTurnDone (snapshot
+      // scheduling) fire on completion, but don't set busy — the user
+      // shouldn't be blocked by background work.
       const syntheticId = `bg-${++backgroundTurnCounter}`;
-      startTurn(syntheticId);
-      broadcastActivity(cb.broadcast);
+      startBackgroundTurn(syntheticId);
     }
     return;
   }

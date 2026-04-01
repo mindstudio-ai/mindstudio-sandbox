@@ -75,6 +75,11 @@ export function startTurn(requestId: string): void {
   activity = { busy: true, fileOps: [] };
 }
 
+/** Track a background turn (no busy state, no activity broadcast). */
+export function startBackgroundTurn(requestId: string): void {
+  activeMessageRequestId = requestId;
+}
+
 /**
  * End the active turn. Returns true if a turn was ended.
  * If requestId is provided, only ends the turn if it matches.
