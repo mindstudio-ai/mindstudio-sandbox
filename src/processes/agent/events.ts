@@ -7,6 +7,7 @@ import { parseJsonEvent } from '../parseJsonEvent.js';
 /** System events — no requestId, lifecycle only. */
 export type AgentSystemEvent =
   | { event: 'ready' }
+  | { event: 'turn_started'; requestId?: string }
   | { event: 'session_restored'; messageCount?: number }
   | { event: 'stopping' }
   | { event: 'stopped' };
@@ -87,7 +88,7 @@ export type AgentDataEvent =
 /** Terminal event — exactly one per command. */
 export interface AgentCompletedEvent {
   event: 'completed';
-  requestId: string;
+  requestId?: string;
   success: boolean;
   error?: string;
 }

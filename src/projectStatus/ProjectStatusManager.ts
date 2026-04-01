@@ -12,7 +12,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createLogger } from './logger.js';
+import { createLogger } from '../logger.js';
 
 const log = createLogger('project');
 
@@ -24,13 +24,13 @@ const SYNC_REF = 'refs/sync-point';
 
 export type ProjectOnboardingState =
   | 'intake'
-  | 'initialSpecAuthoring'
+  | 'initialSpecReview'
   | 'initialCodegen'
   | 'onboardingFinished';
 
 const ONBOARDING_ORDER: ProjectOnboardingState[] = [
   'intake',
-  'initialSpecAuthoring',
+  'initialSpecReview',
   'initialCodegen',
   'onboardingFinished',
 ];

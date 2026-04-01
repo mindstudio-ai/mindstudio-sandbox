@@ -4,7 +4,7 @@
  * per-line WS overhead from chatty process output.
  */
 
-const DEFAULT_INTERVAL_MS = 100;
+const DEFAULT_INTERVAL_MS = 50;
 
 export interface BroadcastBatcherOpts {
   flush: (event: string, batch: unknown[]) => void;

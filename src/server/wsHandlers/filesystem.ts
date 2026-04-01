@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { suppressPath } from '../../processes/fileWatcher.js';
+import { suppressPath } from '../../fileWatcher/index.js';
 import { resolveSafe } from '../../utils/paths.js';
 
 let workspaceDir: string;
