@@ -12,6 +12,7 @@ import { transformHistory } from './history.js';
 import {
   getAgentActivity,
   broadcastActivity,
+  startTurn,
   endTurn,
   clearActivityOnError,
   trackToolStart,
@@ -126,6 +127,7 @@ export const SERVER_VISIBLE_TOOLS = new Set([
 // ---------------------------------------------------------------------------
 
 let requestCounter = 0;
+let backgroundTurnCounter = 0;
 
 interface PendingCommand {
   resolve: (response: Record<string, unknown>) => void;
@@ -230,6 +232,20 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     return;
   }
 
+  // --- Turn started — track background (remy-initiated) turns ---
+
+  if (event.event === 'turn_started') {
+    if (!event.requestId) {
+      // Background turn (e.g., background tool results) — remy initiated
+      // this turn itself. Use a synthetic ID so activity tracking and
+      // onTurnDone (snapshot scheduling) work correctly.
+      const syntheticId = `bg-${++backgroundTurnCounter}`;
+      startTurn(syntheticId);
+      broadcastActivity(cb.broadcast);
+    }
+    return;
+  }
+
   // --- Completed events — resolve pending promise & broadcast ---
 
   if (event.event === 'completed') {
@@ -243,12 +259,12 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
         }
         entry.resolve({ ...entry.data, ...event });
       }
+    }
 
-      // If this was the active message, mark not busy
-      if (endTurn(event.requestId)) {
-        cb.onTurnDone?.();
-        broadcastActivity(cb.broadcast);
-      }
+    // End the active turn (whether user-initiated or background)
+    if (endTurn(event.requestId)) {
+      cb.onTurnDone?.();
+      broadcastActivity(cb.broadcast);
     }
 
     // Always broadcast to frontend as the turn-done signal

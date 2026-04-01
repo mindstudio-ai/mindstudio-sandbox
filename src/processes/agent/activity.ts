@@ -75,9 +75,16 @@ export function startTurn(requestId: string): void {
   activity = { busy: true, fileOps: [] };
 }
 
-/** Returns true if the completed requestId matches the active turn. */
-export function endTurn(requestId: string): boolean {
-  if (activeMessageRequestId !== requestId) {
+/**
+ * End the active turn. Returns true if a turn was ended.
+ * If requestId is provided, only ends the turn if it matches.
+ * If requestId is undefined (background turns), ends whatever turn is active.
+ */
+export function endTurn(requestId: string | undefined): boolean {
+  if (!activeMessageRequestId) {
+    return false;
+  }
+  if (requestId && activeMessageRequestId !== requestId) {
     return false;
   }
   activeMessageRequestId = null;
