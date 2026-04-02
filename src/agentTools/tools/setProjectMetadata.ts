@@ -43,8 +43,8 @@ export const setProjectMetadataTool: ExternalToolHandler = {
         .then((updated) => {
           if (updated) {
             ctx.setAppConfig(updated);
+            ctx.broadcast('manifestChanged', { app: updated });
           }
-          ctx.broadcast('manifestChanged', { app: updated });
         })
         .catch(() => {});
       const fields = [

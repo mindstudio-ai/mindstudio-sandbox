@@ -66,8 +66,10 @@ export function setupFileWatcher(
       if (filePath === 'mindstudio.json' || isInterfaceConfig) {
         readAppConfig(config.workspaceDir)
           .then((updated) => {
-            ctx.appConfig = updated;
-            broadcast('manifestChanged', { app: updated });
+            if (updated) {
+              ctx.appConfig = updated;
+              broadcast('manifestChanged', { app: updated });
+            }
           })
           .catch(() => {});
       }

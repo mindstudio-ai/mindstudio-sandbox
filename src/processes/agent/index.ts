@@ -121,6 +121,7 @@ export const SERVER_VISIBLE_TOOLS = new Set([
   'runScenario',
   'runMethod',
   'browserCommand',
+  'dbQuery',
 ]);
 
 // ---------------------------------------------------------------------------
