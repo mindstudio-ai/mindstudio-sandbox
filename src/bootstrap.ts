@@ -329,14 +329,31 @@ export function configureGit(workspaceDir: string): void {
   }
 }
 
-export async function readAppConfig(workspaceDir: string): Promise<AppConfig> {
+export async function readAppConfig(
+  workspaceDir: string,
+): Promise<AppConfig | null> {
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
   log.debug(`Reading app config from ${manifestPath}`);
 
-  const raw = await fs.readFile(manifestPath, 'utf-8');
-  // Parse the full manifest — AppConfig is the typed subset but we
-  // store the complete object so we can forward it to clients
-  const config = JSON.parse(raw) as AppConfig;
+  let raw: string;
+  try {
+    raw = await fs.readFile(manifestPath, 'utf-8');
+  } catch {
+    log.error(`App config not found at ${manifestPath}`);
+    return null;
+  }
+
+  let config: AppConfig;
+  try {
+    // Parse the full manifest — AppConfig is the typed subset but we
+    // store the complete object so we can forward it to clients
+    config = JSON.parse(raw) as AppConfig;
+  } catch (err) {
+    log.error(
+      `Failed to parse app config: ${err instanceof Error ? err.message : err}`,
+    );
+    return null;
+  }
 
   log.info(`App: "${config.name}" (${config.appId})`);
   log.debug(

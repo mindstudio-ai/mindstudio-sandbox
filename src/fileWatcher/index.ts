@@ -5,7 +5,7 @@ import type { FileTreeManager } from '../server/states/FileTreeManager.js';
 import type { SpecFileTreeManager } from '../server/states/SpecFileTreeManager.js';
 import type { SpecEditorStateManager } from '../server/states/SpecEditorStateManager.js';
 import type { LspSidecar } from '../lsp/sidecar.js';
-import type { AppConfig } from '../types.js';
+// AppConfig type removed — setupFileWatcher reads from ctx.appConfig directly
 import { ctx } from '../server/context.js';
 import { broadcast } from '../server/index.js';
 import { readAppConfig } from '../bootstrap.js';
@@ -36,7 +36,6 @@ interface FileWatcherManagers {
 export function setupFileWatcher(
   config: Config,
   managers: FileWatcherManagers,
-  appConfig: AppConfig,
   lspSidecar: LspSidecar,
 ): void {
   const {

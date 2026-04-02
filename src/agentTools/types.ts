@@ -16,7 +16,7 @@ export interface ToolContext {
     timeoutMs?: number,
   ) => { requestId: string; response: Promise<Record<string, unknown>> };
   workspaceDir: string;
-  readAppConfig: () => Promise<AppConfig>;
+  readAppConfig: () => Promise<AppConfig | null>;
   setAppConfig: (config: AppConfig) => void;
 }
 

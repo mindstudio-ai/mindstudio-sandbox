@@ -170,7 +170,7 @@ function createStateManagers(config: Config): Managers {
 async function startServices(
   config: Config,
   managers: Managers,
-  appConfig: AppConfig,
+  appConfig: AppConfig | null,
   progress: (step: string, message: string) => void,
   snapshotManager: DraftSnapshotManager,
 ): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
@@ -189,7 +189,7 @@ async function startServices(
   log.info('LSP sidecar ready on port 4388');
 
   // Dev server
-  const webInterface = appConfig.interfaces.find((i) => i.type === 'web');
+  const webInterface = appConfig?.interfaces.find((i) => i.type === 'web');
   const webConfig = webInterface?.config as
     | { devCommand?: string; devPort?: number }
     | undefined;
@@ -367,7 +367,13 @@ async function main(): Promise<void> {
     // 8. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
     ctx.appConfig = appConfig;
-    log.info(`App: ${appConfig.name} (${appConfig.appId})`);
+    if (appConfig) {
+      log.info(`App: ${appConfig.name} (${appConfig.appId})`);
+    } else {
+      log.error(
+        'App config missing or corrupted — sandbox will start without it',
+      );
+    }
 
     // 9. Install dependencies
     await installDependencies(config.workspaceDir, progress);
@@ -400,7 +406,7 @@ async function main(): Promise<void> {
     // overwritten it with "stopped" from the previous session's snapshot).
     managers.registry.setState('system', 'running');
 
-    if (managers.editorManager.isEmpty()) {
+    if (managers.editorManager.isEmpty() && appConfig) {
       managers.editorManager.expandFromAppConfig(appConfig);
     }
     if (managers.specEditorManager.isEmpty()) {
@@ -427,7 +433,7 @@ async function main(): Promise<void> {
     lspClientRef = lspClient;
 
     // 14. File watcher
-    setupFileWatcher(config, managers, appConfig, lspSidecar);
+    setupFileWatcher(config, managers, lspSidecar);
 
     // 15. Start periodic snapshots
     snapshotManager.start();

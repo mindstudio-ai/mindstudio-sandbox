@@ -128,7 +128,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
   // System event — broadcast to frontend + handle
   const tunnelEvent = msg as TunnelEvent;
   log.debug('Tunnel event', { event: tunnelEvent.event });
-  cb.broadcast('tunnelEvent', tunnelEvent);
+  cb.broadcast('tunnelEvent', { tunnelEvent });
 
   switch (tunnelEvent.event) {
     case 'session-starting':
