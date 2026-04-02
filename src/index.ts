@@ -291,6 +291,7 @@ async function main(): Promise<void> {
   let lspClientRef: LspClient | null = null;
   const snapshotManager = new DraftSnapshotManager(config.workspaceDir);
   let shuttingDown = false;
+  let bootstrapComplete = false;
   const shutdown = async () => {
     if (shuttingDown) {
       return;
@@ -302,7 +303,9 @@ async function main(): Promise<void> {
     managers.batcher.stop();
     stopAutoSave();
     await saveState();
-    await snapshotManager.snapshot();
+    if (bootstrapComplete) {
+      await snapshotManager.snapshot();
+    }
     snapshotManager.stop();
     closeAllPty();
     stopWatcher();
@@ -439,6 +442,7 @@ async function main(): Promise<void> {
     snapshotManager.start();
 
     // Ready
+    bootstrapComplete = true;
     setStatus('ready');
     progress('ready', 'C&C server is ready');
     log.info('Bootstrap complete');
