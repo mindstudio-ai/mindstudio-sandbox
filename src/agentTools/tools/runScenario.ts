@@ -10,9 +10,18 @@ export const runScenarioTool: ExternalToolHandler = {
       ctx.sendToolResult(id, 'error: missing scenarioId');
       return true;
     }
-    log.info('Agent running scenario', { toolCallId: id, scenarioId });
+    const skipTruncate = input.skipTruncate === true;
+    log.info('Agent running scenario', {
+      toolCallId: id,
+      scenarioId,
+      skipTruncate,
+    });
     ctx
-      .sendTunnelCommand('run-scenario', { scenarioId }, 30_000)
+      .sendTunnelCommand(
+        'run-scenario',
+        { scenarioId, ...(skipTruncate ? { skipTruncate } : {}) },
+        30_000,
+      )
       .then((result) => ctx.sendToolResult(id, JSON.stringify(result)));
     return true;
   },
