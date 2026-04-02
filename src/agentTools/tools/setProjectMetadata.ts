@@ -41,7 +41,9 @@ export const setProjectMetadataTool: ExternalToolHandler = {
       ctx
         .readAppConfig()
         .then((updated) => {
-          ctx.setAppConfig(updated);
+          if (updated) {
+            ctx.setAppConfig(updated);
+          }
           ctx.broadcast('manifestChanged', { app: updated });
         })
         .catch(() => {});
