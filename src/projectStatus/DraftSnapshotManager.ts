@@ -73,6 +73,8 @@ export class DraftSnapshotManager {
       log.debug('Snapshot already in progress, skipping');
       return false;
     }
+    // Temporary: trace who is calling snapshot
+    log.info(`snapshot() called from:\n${new Error().stack}`);
     this.inProgress = true;
     try {
       return await this.doSnapshot();
@@ -89,7 +91,11 @@ export class DraftSnapshotManager {
         `git fetch --no-tags origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
       );
       if (fetched === null) {
-        log.info('No _draft branch on remote, skipping restore');
+        // Fetch failed — either no _draft branch or it's corrupted (dangling
+        // ref from an interrupted push). Try to delete the remote ref so
+        // future snapshot pushes can start fresh.
+        log.info('No usable _draft branch on remote, skipping restore');
+        await this.exec(`git push origin --delete ${DRAFT_BRANCH}`);
         return false;
       }
 
@@ -182,10 +188,14 @@ export class DraftSnapshotManager {
       return true;
     }
 
-    // Create commit object
+    // Create commit object. Use the current _draft as parent (if it exists)
+    // so git can delta-compress the push — only changed objects are transferred.
+    // The old commit becomes unreachable after update-ref, so history stays shallow.
+    const parent = (await this.exec(`git rev-parse ${DRAFT_REF}`))?.trim();
+    const parentFlag = parent ? `-p ${parent}` : '';
     const msg = `snapshot ${new Date().toISOString()}`;
     const commitSha = (
-      await this.exec(`git commit-tree ${treeSha} -m "${msg}"`)
+      await this.exec(`git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`)
     )?.trim();
     if (!commitSha) {
       log.error('Snapshot failed: could not create commit');
@@ -205,8 +215,16 @@ export class DraftSnapshotManager {
     if (
       (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
     ) {
-      log.warn('Snapshot committed locally but push failed');
-      return false;
+      // Push failed — remote ref may be corrupted (dangling object from an
+      // interrupted push). Delete it and retry once.
+      log.warn('Push failed, attempting to delete corrupted remote ref');
+      await this.exec(`git push origin --delete ${DRAFT_BRANCH}`);
+      if (
+        (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
+      ) {
+        log.warn('Snapshot committed locally but push failed after retry');
+        return false;
+      }
     }
 
     this.lastTreeSha = treeSha;
