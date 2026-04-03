@@ -1,9 +1,9 @@
 import { createLogger } from '../../logger.js';
 import type { ExternalToolHandler } from '../types.js';
 
-const log = createLogger('tool:dbQuery');
+const log = createLogger('tool:queryDatabase');
 
-export const dbQueryTool: ExternalToolHandler = {
+export const queryDatabaseTool: ExternalToolHandler = {
   handle(id, input, ctx) {
     const sql = input.sql as string;
     if (!sql) {

@@ -74,7 +74,6 @@ export class DraftSnapshotManager {
       return false;
     }
     // Temporary: trace who is calling snapshot
-    log.info(`snapshot() called from:\n${new Error().stack}`);
     this.inProgress = true;
     try {
       return await this.doSnapshot();
