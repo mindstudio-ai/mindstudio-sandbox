@@ -39,30 +39,33 @@ const cached: Versions = {
   typescriptLanguageServer: { version: 'unknown', devBranch: null },
 };
 
-function execVersion(cmd: string): Promise<string> {
+function npmVersion(pkg: string): Promise<string> {
   return new Promise((resolve) => {
-    execCb(cmd, { encoding: 'utf-8', timeout: 5_000 }, (err, stdout) => {
-      if (err) {
-        resolve('unknown');
-        return;
-      }
-      resolve(stdout.trim());
-    });
+    execCb(
+      `npm list -g ${pkg} --depth=0`,
+      { encoding: 'utf-8', timeout: 10_000 },
+      (err, stdout) => {
+        // npm list exits non-zero when the package is missing, but still
+        // prints output — try to parse either way.
+        const output = stdout ?? '';
+        const match = output.match(new RegExp(`${pkg}@(.+)`));
+        resolve(match ? match[1].trim() : 'unknown');
+      },
+    );
   });
 }
 
 /** Shell out to get binary versions. Call once at boot. */
 export async function cacheVersions(): Promise<void> {
   const [remy, tunnel, agentSdk, tls] = await Promise.all([
-    execVersion('remy --version'),
-    execVersion('mindstudio-local --version'),
-    execVersion('npm list -g @mindstudio-ai/agent --depth=0'),
-    execVersion('typescript-language-server --version'),
+    npmVersion('@mindstudio-ai/remy'),
+    npmVersion('@mindstudio-ai/local-model-tunnel'),
+    npmVersion('@mindstudio-ai/agent'),
+    npmVersion('typescript-language-server'),
   ]);
   cached.remy.version = remy;
   cached.mindstudioLocal.version = tunnel;
-  cached.agentSdk.version =
-    agentSdk.match(/@mindstudio-ai\/agent@(.+)/)?.[1] ?? agentSdk;
+  cached.agentSdk.version = agentSdk;
   cached.typescriptLanguageServer.version = tls;
   log.info('Cached binary versions', { ...cached });
 }
