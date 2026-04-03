@@ -5,7 +5,7 @@ import { setProjectMetadataTool } from './tools/setProjectMetadata.js';
 import { runScenarioTool } from './tools/runScenario.js';
 import { runMethodTool } from './tools/runMethod.js';
 import { browserCommandTool } from './tools/browserCommand.js';
-import { dbQueryTool } from './tools/dbQuery.js';
+import { queryDatabaseTool } from './tools/queryDatabase.js';
 
 export const toolRegistry = new Map<string, ExternalToolHandler>([
   ['clearSyncStatus', clearSyncStatusTool],
@@ -14,5 +14,5 @@ export const toolRegistry = new Map<string, ExternalToolHandler>([
   ['runScenario', runScenarioTool],
   ['runMethod', runMethodTool],
   ['browserCommand', browserCommandTool],
-  ['dbQuery', dbQueryTool],
+  ['queryDatabase', queryDatabaseTool],
 ]);
