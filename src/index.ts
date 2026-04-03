@@ -66,6 +66,7 @@ import {
 import type { AppConfig } from './types.js';
 import { toolRegistry } from './agentTools/index.js';
 import { setupFileWatcher } from './fileWatcher/index.js';
+import { cacheVersions } from './server/versionCache.js';
 
 const log = createLogger('controller');
 
@@ -290,6 +291,7 @@ async function main(): Promise<void> {
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
   const snapshotManager = new DraftSnapshotManager(config.workspaceDir);
+  ctx.snapshotManager = snapshotManager;
   let shuttingDown = false;
   let bootstrapComplete = false;
   const shutdown = async () => {
@@ -356,6 +358,9 @@ async function main(): Promise<void> {
       installAgentSdk(progress),
       installLsp(progress),
     ]);
+
+    // 5b. Cache binary versions (non-blocking — best effort)
+    await cacheVersions();
 
     // 6. Prepare workspace
     await writeTunnelConfig(config);

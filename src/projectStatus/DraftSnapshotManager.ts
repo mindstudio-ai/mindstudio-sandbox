@@ -26,6 +26,10 @@ export class DraftSnapshotManager {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private inProgress = false;
   private lastTreeSha: string | null = null;
+  private lastAttemptAt: number | null = null;
+  private lastSuccessAt: number | null = null;
+  private lastDurationMs: number | null = null;
+  private lastError: string | null = null;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -65,6 +69,17 @@ export class DraftSnapshotManager {
       this.snapshot().catch(() => {});
     }, delayMs);
     this.debounceTimer.unref();
+  }
+
+  /** Return snapshot health info for the /status endpoint. */
+  getSnapshotStatus() {
+    return {
+      inProgress: this.inProgress,
+      lastAttemptAt: this.lastAttemptAt,
+      lastSuccessAt: this.lastSuccessAt,
+      lastDurationMs: this.lastDurationMs,
+      lastError: this.lastError,
+    };
   }
 
   /** Take a snapshot: commit workspace to _draft and force-push. */
@@ -136,6 +151,7 @@ export class DraftSnapshotManager {
 
   private async doSnapshot(): Promise<boolean> {
     const startTime = Date.now();
+    this.lastAttemptAt = startTime;
     log.info('Starting snapshot...');
 
     // Clean any stale temp index
@@ -149,12 +165,14 @@ export class DraftSnapshotManager {
 
     // Seed the temp index from HEAD so git has a valid base
     if ((await this.exec('git read-tree HEAD', { env })) === null) {
+      this.lastError = 'could not read-tree HEAD';
       log.error('Snapshot failed: could not read-tree HEAD');
       return false;
     }
 
     // Stage all workspace files (respects .gitignore)
     if ((await this.exec('git add -A', { env })) === null) {
+      this.lastError = 'could not stage files';
       log.error('Snapshot failed: could not stage files');
       return false;
     }
@@ -173,6 +191,7 @@ export class DraftSnapshotManager {
     // Write tree object from temp index
     const treeSha = (await this.exec('git write-tree', { env }))?.trim();
     if (!treeSha) {
+      this.lastError = 'could not write tree';
       log.error('Snapshot failed: could not write tree');
       return false;
     }
@@ -199,6 +218,7 @@ export class DraftSnapshotManager {
       await this.exec(`git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`)
     )?.trim();
     if (!commitSha) {
+      this.lastError = 'could not create commit';
       log.error('Snapshot failed: could not create commit');
       return false;
     }
@@ -208,6 +228,7 @@ export class DraftSnapshotManager {
     if (
       (await this.exec(`git update-ref ${DRAFT_REF} ${commitSha}`)) === null
     ) {
+      this.lastError = 'could not update ref';
       log.error('Snapshot failed: could not update ref');
       return false;
     }
@@ -223,6 +244,7 @@ export class DraftSnapshotManager {
       if (
         (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
       ) {
+        this.lastError = 'push failed after retry';
         log.warn('Snapshot committed locally but push failed after retry');
         return false;
       }
@@ -238,6 +260,9 @@ export class DraftSnapshotManager {
     }
 
     const elapsed = Date.now() - startTime;
+    this.lastSuccessAt = Date.now();
+    this.lastDurationMs = elapsed;
+    this.lastError = null;
     log.info(`Snapshot completed in ${elapsed}ms (${commitSha.slice(0, 8)})`);
     return true;
   }

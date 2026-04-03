@@ -4,6 +4,9 @@ import path from 'node:path';
 import type httpProxy from 'http-proxy';
 import { ctx } from './context.js';
 import { createLogger } from '../logger.js';
+import { getVersions } from './versionCache.js';
+import { getAgentActivity } from '../processes/agent/activity.js';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 
 const log = createLogger('http');
 
@@ -42,6 +45,16 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       res.end(
         JSON.stringify({ status: ctx.status, proxyTarget: getProxyTarget() }),
       );
+      return;
+    }
+
+    if (req.url === '/status' || req.url?.startsWith('/status?')) {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        ...CORS_HEADERS,
+      });
+      res.end(JSON.stringify(buildStatusResponse()));
       return;
     }
 
@@ -84,6 +97,52 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
         res.end('<html><body><p>Preview unavailable</p></body></html>');
       }
     });
+  };
+}
+
+function redactCommand(command: string): string {
+  return command.replace(/(--api-key)\s+\S+/g, '$1 [REDACTED]');
+}
+
+function buildStatusResponse() {
+  const processes = (ctx.registry?.getAllInfo() ?? []).map((p) => ({
+    name: p.name,
+    type: p.type,
+    command: redactCommand(p.command),
+    state: p.state,
+    startedAt: p.startedAt,
+    endedAt: p.endedAt,
+    duration: p.duration,
+    exitCode: p.exitCode,
+    signal: p.signal,
+    restartCount: p.restartCount,
+    pid: p.pid,
+  }));
+
+  const appConfig = ctx.appConfig;
+  const app = appConfig
+    ? {
+        appId: appConfig.appId,
+        name: appConfig.name,
+        methodCount: appConfig.methods.length,
+        tableCount: appConfig.tables.length,
+        interfaceCount: appConfig.interfaces.length,
+        scenarioCount: appConfig.scenarios?.length ?? 0,
+      }
+    : null;
+
+  return {
+    timestamp: Date.now(),
+    serverStatus: ctx.status,
+    uptime: process.uptime() * 1000,
+    versions: getVersions(),
+    app,
+    tunnel: ctx.tunnelSession,
+    processes,
+    resources: ctx.resourceMonitor?.collectNow() ?? null,
+    agent: getAgentActivity(),
+    projectStatus: getProjectStatus(),
+    snapshot: ctx.snapshotManager?.getSnapshotStatus() ?? null,
   };
 }
 

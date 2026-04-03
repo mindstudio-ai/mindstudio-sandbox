@@ -21,6 +21,7 @@ import type { FileTreeManager } from './states/FileTreeManager.js';
 import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
+import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './wsHandlers/pty.js';
 
@@ -37,6 +38,7 @@ export interface ServerContext {
   fileTreeManager: FileTreeManager | null;
   specFileTreeManager: SpecFileTreeManager | null;
   lspClient: LspClient | null;
+  snapshotManager: DraftSnapshotManager | null;
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
@@ -58,6 +60,7 @@ export const ctx: ServerContext = {
   fileTreeManager: null,
   specFileTreeManager: null,
   lspClient: null,
+  snapshotManager: null,
   activeImpersonation: null,
   onFileChanged: null,
   onUserSave: null,
