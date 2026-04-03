@@ -86,15 +86,17 @@ export class DraftSnapshotManager {
   async restore(): Promise<boolean> {
     log.info('Checking for draft snapshot to restore...');
     try {
+      // Use a longer timeout for the fetch — after long idle the git server
+      // can be slow (we've seen --unshallow take 36s on the same server).
       const fetched = await this.exec(
         `git fetch --no-tags origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
+        { timeout: 90_000 },
       );
       if (fetched === null) {
-        // Fetch failed — either no _draft branch or it's corrupted (dangling
-        // ref from an interrupted push). Try to delete the remote ref so
-        // future snapshot pushes can start fresh.
-        log.info('No usable _draft branch on remote, skipping restore');
-        await this.exec(`git push origin --delete ${DRAFT_BRANCH}`);
+        // Fetch failed — could be a missing branch, corrupted ref, or just a
+        // slow/cold git server. Do NOT delete the remote ref here: a transient
+        // timeout would permanently destroy a valid backup.
+        log.info('Could not fetch _draft branch from remote, skipping restore');
         return false;
       }
 
@@ -214,10 +216,10 @@ export class DraftSnapshotManager {
     if (
       (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
     ) {
-      // Push failed — remote ref may be corrupted (dangling object from an
-      // interrupted push). Delete it and retry once.
-      log.warn('Push failed, attempting to delete corrupted remote ref');
-      await this.exec(`git push origin --delete ${DRAFT_BRANCH}`);
+      // Push failed (e.g., transient 502, slow server). Retry once without
+      // deleting the remote ref — a failed push should never destroy the last
+      // good snapshot. The + prefix already forces the update.
+      log.warn('Push failed, retrying once');
       if (
         (await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`)) === null
       ) {
@@ -246,7 +248,7 @@ export class DraftSnapshotManager {
    */
   private exec(
     cmd: string,
-    opts?: { env?: NodeJS.ProcessEnv },
+    opts?: { env?: NodeJS.ProcessEnv; timeout?: number },
   ): Promise<string | null> {
     return new Promise((resolve) => {
       execCb(
@@ -254,7 +256,7 @@ export class DraftSnapshotManager {
         {
           cwd: this.workspaceDir,
           encoding: 'utf-8',
-          timeout: 30_000,
+          timeout: opts?.timeout ?? 30_000,
           ...(opts?.env ? { env: opts.env } : {}),
         },
         (err, stdout, stderr) => {
