@@ -11,14 +11,14 @@ export const setProjectMetadataTool: ExternalToolHandler = {
       name: newName,
       iconUrl,
       openGraphShareImageUrl,
-      shortDescription,
+      description,
     } = input as {
       name?: string;
       iconUrl?: string;
       openGraphShareImageUrl?: string;
-      shortDescription?: string;
+      description?: string;
     };
-    if (!newName && !iconUrl && !openGraphShareImageUrl && !shortDescription) {
+    if (!newName && !iconUrl && !openGraphShareImageUrl && !description) {
       ctx.sendToolResult(id, 'error: at least one field required');
       return true;
     }
@@ -35,8 +35,8 @@ export const setProjectMetadataTool: ExternalToolHandler = {
       if (openGraphShareImageUrl != null) {
         manifest.openGraphShareImageUrl = openGraphShareImageUrl;
       }
-      if (shortDescription != null) {
-        manifest.shortDescription = shortDescription;
+      if (description != null) {
+        manifest.description = description;
       }
       fsSync.writeFileSync(
         manifestPath,
