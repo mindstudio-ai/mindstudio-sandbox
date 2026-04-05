@@ -16,7 +16,7 @@ export const runMethodTool: ExternalToolHandler = {
     const methodInput = (input.input as Record<string, unknown>) ?? {};
     log.info('Agent running method', { toolCallId: id, method });
     ctx
-      .sendTunnelCommand('run-method', { method, input: methodInput }, 30_000)
+      .sendTunnelCommand('run-method', { method, input: methodInput }, 300_000)
       .then((result) => ctx.sendToolResult(id, JSON.stringify(result)));
     return true;
   },
