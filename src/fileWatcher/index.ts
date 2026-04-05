@@ -8,7 +8,7 @@ import type { LspSidecar } from '../lsp/sidecar.js';
 // AppConfig type removed — setupFileWatcher reads from ctx.appConfig directly
 import { ctx } from '../server/context.js';
 import { broadcast } from '../server/index.js';
-import { readAppConfig } from '../bootstrap.js';
+import { readAppConfig } from '../bootstrap/index.js';
 import { startWatcher } from './watcher.js';
 export {
   stopWatcher,

@@ -1,121 +1,32 @@
-import { execSync, type ExecSyncOptions } from 'node:child_process';
+import { exec, execSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Config } from './config.js';
-import type { AppConfig } from './types.js';
-import type { ProcessRegistry } from './processes/ProcessRegistry.js';
-import { createLogger } from './logger.js';
+import type { Config } from '../config.js';
+import type { AppConfig } from '../types.js';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
+import { createLogger } from '../logger.js';
+import {
+  run,
+  runAsync,
+  isInstalled,
+  verifyInstalled,
+  installFromSource,
+  setRegistry,
+} from './helpers.js';
 
 const log = createLogger('bootstrap');
 
-let registry: ProcessRegistry | null = null;
-
-export function setBootstrapRegistry(r: ProcessRegistry): void {
-  registry = r;
-}
-
 type ProgressFn = (step: string, message: string) => void;
 
-function run(cmd: string, opts?: ExecSyncOptions & { label?: string }): string {
-  const label = opts?.label ?? cmd;
-  const procName = `bootstrap:${(label ?? cmd).replace(/\s+/g, '-').slice(0, 60)}`;
-
-  registry?.register(procName, 'task', cmd);
-  registry?.setState(procName, 'running');
-
-  log.info(`Running: ${label}`);
-  const startTime = Date.now();
-  try {
-    const result = execSync(cmd, {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 300000, // 5 minutes
-      ...opts,
-    }) as string;
-    const elapsed = Date.now() - startTime;
-    log.info(`Completed in ${elapsed}ms: ${label}`);
-    if (result.trim()) {
-      for (const line of result.trim().split('\n')) {
-        registry?.appendLog(procName, line);
-      }
-    }
-    registry?.setState(procName, 'completed', { exitCode: 0 });
-    return result;
-  } catch (err: unknown) {
-    const elapsed = Date.now() - startTime;
-    const execErr = err as {
-      stderr?: string;
-      stdout?: string;
-      status?: number;
-      message?: string;
-    };
-    log.error(`FAILED after ${elapsed}ms: ${label}`);
-    log.error(`  Exit code: ${execErr.status}`);
-    if (execErr.stderr) {
-      for (const line of execErr.stderr.trim().split('\n')) {
-        registry?.appendLog(procName, line, { level: 'error' });
-      }
-    }
-    if (execErr.stdout) {
-      for (const line of execErr.stdout.trim().split('\n')) {
-        registry?.appendLog(procName, line);
-      }
-    }
-    registry?.setState(procName, 'crashed', { exitCode: execErr.status ?? 1 });
-    throw err;
-  }
+export function setBootstrapRegistry(r: ProcessRegistry): void {
+  setRegistry(r);
 }
 
-function isInstalled(binaryName: string): boolean {
-  try {
-    execSync(`which ${binaryName}`, {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function verifyInstalled(binaryName: string): void {
-  if (isInstalled(binaryName)) {
-    log.info(
-      `${binaryName} installed at: ${execSync(`which ${binaryName}`, { encoding: 'utf-8' }).trim()}`,
-    );
-  } else {
-    log.warn(`${binaryName} not found after install`);
-  }
-}
-
-/**
- * Clone a git repo, build from source, and npm install -g the result.
- * Used for dev branches where the published npm package won't work.
- */
-function installFromSource(opts: {
-  repoUrl: string;
-  branch: string;
-  tmpDir: string;
-  label: string;
-}): void {
-  run(`rm -rf ${opts.tmpDir}`, { label: `Clean ${opts.label} dir` });
-  run(
-    `git clone --depth 1 --branch ${opts.branch} ${opts.repoUrl} ${opts.tmpDir}`,
-    { label: `git clone ${opts.label} (${opts.branch})` },
-  );
-  run('npm install', {
-    cwd: opts.tmpDir,
-    label: `npm install in ${opts.label}`,
-  });
-  run('npm run build', {
-    cwd: opts.tmpDir,
-    label: `npm run build in ${opts.label}`,
-  });
-  run(`npm install -g ${opts.tmpDir}`, {
-    label: `npm install -g (link built ${opts.label})`,
-  });
-}
+// ---------------------------------------------------------------------------
+// Binary installers
+// ---------------------------------------------------------------------------
 
 export async function installTunnel(progress: ProgressFn): Promise<void> {
   const devBranch = process.env['TUNNEL_DEV_BRANCH'];
@@ -226,6 +137,10 @@ export async function installLsp(progress: ProgressFn): Promise<void> {
   verifyInstalled('typescript-language-server');
 }
 
+// ---------------------------------------------------------------------------
+// Workspace setup
+// ---------------------------------------------------------------------------
+
 export async function writeTunnelConfig(config: Config): Promise<void> {
   const configDir = path.join(os.homedir(), '.mindstudio-local-tunnel');
   const configPath = path.join(configDir, 'config.json');
@@ -260,34 +175,48 @@ export async function cloneAppRepo(
   config: Config,
   progress: ProgressFn,
 ): Promise<void> {
-  const manifestPath = path.join(config.workspaceDir, 'mindstudio.json');
-  log.debug(`Checking for ${manifestPath}...`);
+  const { workspaceDir, gitRepoUrl } = config;
+  const gitDir = path.join(workspaceDir, '.git');
 
-  // Skip if workspace already has a mindstudio.json
-  try {
-    await fs.access(manifestPath);
-    log.info('mindstudio.json exists, skipping clone');
-    return;
-  } catch {
-    log.info('mindstudio.json not found, will clone');
+  // If the snapshot baked in the scaffold, the workspace already exists with
+  // a .git dir pointing at the GitHub scaffold repo. Switch to the user's
+  // repo via fetch+reset so node_modules (gitignored) survives intact.
+  const hasGit = fsSync.existsSync(gitDir);
+
+  if (hasGit) {
+    progress('cloneApp', 'Syncing workspace to app repo...');
+    log.info(`Workspace has .git, switching remote to ${gitRepoUrl}`);
+    run(`git remote set-url origin ${gitRepoUrl}`, {
+      cwd: workspaceDir,
+      label: 'git remote set-url',
+    });
+    run('git fetch --depth 1 origin main', {
+      cwd: workspaceDir,
+      label: 'git fetch origin main',
+    });
+    run('git reset --hard origin/main', {
+      cwd: workspaceDir,
+      label: 'git reset --hard origin/main',
+    });
+  } else {
+    progress('cloneApp', 'Cloning app repo...');
+    log.debug(`Creating workspace dir: ${workspaceDir}`);
+    await fs.mkdir(workspaceDir, { recursive: true });
+    log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
+    run(`git clone --depth 1 ${gitRepoUrl} ${workspaceDir}`, {
+      label: `git clone → ${workspaceDir}`,
+    });
   }
 
-  progress('cloneApp', `Cloning app repo...`);
-  log.debug(`Creating workspace dir: ${config.workspaceDir}`);
-  await fs.mkdir(config.workspaceDir, { recursive: true });
-  log.info(`Cloning ${config.gitRepoUrl} → ${config.workspaceDir}`);
-  run(`git clone --depth 1 ${config.gitRepoUrl} ${config.workspaceDir}`, {
-    label: `git clone → ${config.workspaceDir}`,
-  });
-
-  // Verify clone succeeded
+  // Verify workspace has a manifest
+  const manifestPath = path.join(workspaceDir, 'mindstudio.json');
   try {
     await fs.access(manifestPath);
-    log.info('Clone successful — mindstudio.json found');
+    log.info('Workspace ready — mindstudio.json found');
   } catch {
-    log.warn('Clone completed but mindstudio.json not found');
+    log.warn('Workspace ready but mindstudio.json not found');
     try {
-      const files = await fs.readdir(config.workspaceDir);
+      const files = await fs.readdir(workspaceDir);
       log.warn(`Workspace contents: ${files.join(', ')}`);
     } catch (e) {
       log.error(`Cannot list workspace: ${e}`);
@@ -295,39 +224,93 @@ export async function cloneAppRepo(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Git configuration
+// ---------------------------------------------------------------------------
+
+function unshallowAsync(workspaceDir: string): void {
+  const start = Date.now();
+  exec(
+    'git fetch --unshallow',
+    { cwd: workspaceDir, encoding: 'utf-8', timeout: 120_000 },
+    (err) => {
+      const elapsed = Date.now() - start;
+      if (err) {
+        log.info(
+          `git fetch --unshallow skipped in ${elapsed}ms (repo already has full history or fetch failed)`,
+        );
+      } else {
+        log.info(`git fetch --unshallow completed in ${elapsed}ms`);
+      }
+    },
+  );
+}
+
 export function configureGit(workspaceDir: string): void {
-  run('git config user.name "MindStudio"', {
+  const metadataEnv: {
+    userName: string;
+    userEmail: string;
+  } = process.env['USER_METADATA']
+    ? JSON.parse(process.env['USER_METADATA'])
+    : {
+        userName: 'MindStudio',
+        userEmail: 'noreply@mindstudio.ai',
+      };
+
+  run(`git config user.name "${metadataEnv.userName}"`, {
     cwd: workspaceDir,
     label: 'git config user.name',
   });
-  run('git config user.email "noreply@mindstudio.ai"', {
+  run(`git config user.email "${metadataEnv.userEmail}"`, {
     cwd: workspaceDir,
     label: 'git config user.email',
   });
+
   // Prevent git from ever opening an interactive editor (would hang in sandbox)
   run('git config core.editor true', {
     cwd: workspaceDir,
     label: 'git config core.editor',
   });
+
   // Prevent git from using a pager (less may not be installed, would hang)
   run('git config core.pager cat', {
     cwd: workspaceDir,
     label: 'git config core.pager',
   });
+
   // Avoid "dubious ownership" errors in container environments
   run('git config --global safe.directory "*"', {
     label: 'git config safe.directory',
   });
-  // Unshallow so remy can see full history for diffs and commits
+
+  // Unshallow so remy can see full history for diffs and commits.
+  // Runs in the background — nothing in boot needs deep history, and remy
+  // only needs it when the user first asks for a diff/commit.
+  unshallowAsync(workspaceDir);
+
+  // Install commit-msg hook to add Remy as coauthor on all commits
+  const hooksDir = path.join(workspaceDir, '.git', 'hooks');
+  const hookPath = path.join(hooksDir, 'commit-msg');
+  const hook = [
+    '#!/bin/sh',
+    '# Added by sandbox — tag Remy as coauthor on all commits',
+    'if ! grep -q "^Co-Authored-By: Remy" "$1"; then',
+    '  echo "" >> "$1"',
+    '  echo "Co-Authored-By: Remy <remy@mindstudio.ai>" >> "$1"',
+    'fi',
+  ].join('\n');
   try {
-    run('git fetch --unshallow', {
-      cwd: workspaceDir,
-      label: 'git fetch --unshallow',
-    });
-  } catch {
-    log.info('git fetch --unshallow skipped (repo already has full history)');
+    fsSync.mkdirSync(hooksDir, { recursive: true });
+    fsSync.writeFileSync(hookPath, hook, { mode: 0o755 });
+    log.info('Installed commit-msg hook (Remy coauthor)');
+  } catch (err) {
+    log.warn(`Failed to install commit-msg hook: ${err}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// App config
+// ---------------------------------------------------------------------------
 
 export async function readAppConfig(
   workspaceDir: string,
@@ -387,6 +370,10 @@ export async function readAppConfig(
   return config;
 }
 
+// ---------------------------------------------------------------------------
+// Dependencies
+// ---------------------------------------------------------------------------
+
 export async function installDependencies(
   workspaceDir: string,
   progress: ProgressFn,
@@ -421,9 +408,11 @@ export async function installDependencies(
   );
 
   const startTime = Date.now();
-  for (const dir of installDirs) {
-    run('npm install', { cwd: dir, label: `npm install in ${dir}` });
-  }
+  await Promise.all(
+    installDirs.map((dir) =>
+      runAsync('npm install', { cwd: dir, label: `npm install in ${dir}` }),
+    ),
+  );
   const elapsed = Date.now() - startTime;
   log.info(`All npm installs completed in ${elapsed}ms`);
 }

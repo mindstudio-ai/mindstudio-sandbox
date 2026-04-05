@@ -13,7 +13,7 @@ import {
   readAppConfig,
   installDependencies,
   setBootstrapRegistry,
-} from './bootstrap.js';
+} from './bootstrap/index.js';
 import { ProcessRegistry } from './processes/ProcessRegistry.js';
 import { ProcessManager } from './processes/ProcessManager.js';
 import {
