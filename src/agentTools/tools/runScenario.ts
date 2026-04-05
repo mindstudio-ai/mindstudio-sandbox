@@ -20,7 +20,7 @@ export const runScenarioTool: ExternalToolHandler = {
       .sendTunnelCommand(
         'run-scenario',
         { scenarioId, ...(skipTruncate ? { skipTruncate } : {}) },
-        30_000,
+        300_000,
       )
       .then((result) => ctx.sendToolResult(id, JSON.stringify(result)));
     return true;
