@@ -314,14 +314,19 @@ export function configureGit(workspaceDir: string): void {
 
 export function linkProdCli(): void {
   const cliSource = '/vercel/sandbox/dist/cli/prod.js';
-  const cliTarget = '/usr/local/bin/mindstudio-prod';
-
-  if (fsSync.existsSync(cliTarget)) {
-    log.debug('mindstudio-prod CLI already linked');
-    return;
-  }
+  const binDir = path.join(os.homedir(), '.local', 'bin');
+  const cliTarget = path.join(binDir, 'mindstudio-prod');
 
   try {
+    // tsc outputs 644 — make executable so the shebang works
+    fsSync.chmodSync(cliSource, 0o755);
+    fsSync.mkdirSync(binDir, { recursive: true });
+    // Remove stale symlink if present (e.g., pointing to old path)
+    try {
+      fsSync.unlinkSync(cliTarget);
+    } catch {
+      // doesn't exist yet
+    }
     fsSync.symlinkSync(cliSource, cliTarget);
     log.info('Linked mindstudio-prod CLI');
   } catch (err) {

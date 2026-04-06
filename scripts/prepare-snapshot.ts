@@ -15,6 +15,7 @@
 
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const SCAFFOLD_REPO =
@@ -108,9 +109,12 @@ if (allDeps.size > 0) {
 // ---------------------------------------------------------------------------
 
 const cliSource = '/vercel/sandbox/dist/cli/prod.js';
-const cliTarget = '/usr/local/bin/mindstudio-prod';
+const binDir = path.join(os.homedir(), '.local', 'bin');
+const cliTarget = path.join(binDir, 'mindstudio-prod');
 
 try {
+  fs.chmodSync(cliSource, 0o755);
+  fs.mkdirSync(binDir, { recursive: true });
   if (fs.existsSync(cliTarget)) fs.unlinkSync(cliTarget);
   fs.symlinkSync(cliSource, cliTarget);
   console.log(`\nSymlinked ${cliTarget} → ${cliSource}`);
