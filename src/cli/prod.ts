@@ -268,22 +268,39 @@ async function releasesStatus(appId: string, args: string[]) {
 
   const wait = hasFlag(args, 'wait');
   const timeout = parseInt(getFlag(args, 'timeout') ?? '120', 10) * 1000;
-  const start = Date.now();
+  const startTime = Date.now();
 
-  while (true) {
+  // Terminal statuses — anything that isn't actively building/compiling
+  const TERMINAL = new Set([
+    'live',
+    'compiled',
+    'preview',
+    'failed',
+    'superseded',
+  ]);
+
+  if (!wait) {
     const release = await api(
       'GET',
       `/_internal/v2/apps/${appId}/releases/${releaseId}`,
     );
     out(release);
+    return;
+  }
 
-    if (!wait) {
-      break;
+  // Poll silently, only print the final result
+  while (true) {
+    const release = await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/releases/${releaseId}`,
+    );
+
+    if (TERMINAL.has(release.status)) {
+      out(release);
+      return;
     }
-    if (release.status === 'live' || release.status === 'failed') {
-      break;
-    }
-    if (Date.now() - start > timeout) {
+
+    if (Date.now() - startTime > timeout) {
       fatal(`Timed out waiting for release ${releaseId} (${timeout / 1000}s)`);
     }
 
