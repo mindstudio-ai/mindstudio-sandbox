@@ -369,7 +369,7 @@ async function dbQuery(appId: string, args: string[]) {
   }
   out(
     await api('POST', `/_internal/v2/apps/${appId}/db/query`, {
-      queries: [sql],
+      queries: [{ sql }],
     }),
   );
 }
@@ -378,7 +378,9 @@ async function dbTables(appId: string) {
   out(
     await api('POST', `/_internal/v2/apps/${appId}/db/query`, {
       queries: [
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        {
+          sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        },
       ],
     }),
   );
@@ -518,13 +520,15 @@ Subcommands:
   tables   List all tables in the database
 
 Usage:
+  mindstudio-prod db <sql>
   mindstudio-prod db query <sql>
   mindstudio-prod db tables
 
 Examples:
   mindstudio-prod db tables
-  mindstudio-prod db query "SELECT * FROM users LIMIT 10"
-  mindstudio-prod db query "INSERT INTO categories (name) VALUES ('Electronics')"`;
+  mindstudio-prod db "SELECT * FROM users LIMIT 10"
+  mindstudio-prod db "INSERT INTO categories (name) VALUES ('Electronics')"
+  mindstudio-prod db query "SELECT * FROM users LIMIT 10"`;
 
 const HELP_METHODS = `mindstudio-prod methods — List and invoke methods.
 
@@ -650,9 +654,8 @@ async function main() {
         case 'tables':
           return dbTables(appId);
         default:
-          fatal(
-            `Unknown subcommand: db ${sub}. Run 'mindstudio-prod db --help'`,
-          );
+          // Treat unknown subcommand as SQL: `mindstudio-prod db "SELECT ..."`
+          return dbQuery(appId, [sub, ...rest]);
       }
       break;
 
