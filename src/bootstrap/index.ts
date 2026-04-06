@@ -309,6 +309,27 @@ export function configureGit(workspaceDir: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// CLI tools
+// ---------------------------------------------------------------------------
+
+export function linkProdCli(): void {
+  const cliSource = '/home/vercel-sandbox/dist/cli/prod.js';
+  const cliTarget = '/usr/local/bin/mindstudio-prod';
+
+  if (fsSync.existsSync(cliTarget)) {
+    log.debug('mindstudio-prod CLI already linked');
+    return;
+  }
+
+  try {
+    fsSync.symlinkSync(cliSource, cliTarget);
+    log.info('Linked mindstudio-prod CLI');
+  } catch (err) {
+    log.warn(`Failed to link mindstudio-prod CLI: ${err}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // App config
 // ---------------------------------------------------------------------------
 

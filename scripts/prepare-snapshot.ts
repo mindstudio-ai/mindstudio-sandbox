@@ -104,6 +104,21 @@ if (allDeps.size > 0) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Symlink mindstudio-prod CLI onto PATH
+// ---------------------------------------------------------------------------
+
+const cliSource = '/home/vercel-sandbox/dist/cli/prod.js';
+const cliTarget = '/usr/local/bin/mindstudio-prod';
+
+try {
+  if (fs.existsSync(cliTarget)) fs.unlinkSync(cliTarget);
+  fs.symlinkSync(cliSource, cliTarget);
+  console.log(`\nSymlinked ${cliTarget} → ${cliSource}`);
+} catch (err) {
+  console.warn(`Warning: could not symlink CLI: ${err}`);
+}
+
+// ---------------------------------------------------------------------------
 // Done
 // ---------------------------------------------------------------------------
 

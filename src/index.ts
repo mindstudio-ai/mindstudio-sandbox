@@ -12,6 +12,7 @@ import {
   configureGit,
   readAppConfig,
   installDependencies,
+  linkProdCli,
   setBootstrapRegistry,
 } from './bootstrap/index.js';
 import { ProcessRegistry } from './processes/ProcessRegistry.js';
@@ -366,6 +367,7 @@ async function main(): Promise<void> {
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
     configureGit(config.workspaceDir);
+    linkProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
     await snapshotManager.restore();
 

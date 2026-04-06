@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "mindstudio-prod": "./dist/cli/prod.js"
+  },
   "engines": {
     "node": ">=22"
   },
