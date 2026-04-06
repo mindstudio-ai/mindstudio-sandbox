@@ -76,6 +76,7 @@ const EVENT_MAP: Record<string, string> = {
   stopping: 'agentStopping',
   stopped: 'agentStopped',
   session_restored: 'agentSessionRestored',
+  user_message: 'agentUserMessage',
 };
 
 /**
@@ -244,6 +245,25 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       // shouldn't be blocked by background work.
       const syntheticId = `bg-${++backgroundTurnCounter}`;
       startBackgroundTurn(syntheticId);
+    }
+    return;
+  }
+
+  // --- User messages (background work results from remy) ---
+
+  if (event.event === 'user_message') {
+    if (!event.requestId) {
+      // Remy-initiated user message (e.g., background tool results being
+      // fed back). Set busy so the frontend knows the agent is processing
+      // and disables input — prevents "already processing" errors.
+      const syntheticId = `bg-${++backgroundTurnCounter}`;
+      startTurn(syntheticId);
+      broadcastActivity(cb.broadcast);
+    }
+    // Broadcast non-hidden messages so frontend can show a marker in chat
+    if (!event.hidden) {
+      const { event: _evt, ...data } = event;
+      cb.broadcast('agentUserMessage', data);
     }
     return;
   }
