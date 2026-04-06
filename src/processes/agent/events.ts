@@ -12,6 +12,14 @@ export type AgentSystemEvent =
   | { event: 'stopping' }
   | { event: 'stopped' };
 
+/** User message injected by remy (e.g., background work results). */
+export interface AgentUserMessageEvent {
+  event: 'user_message';
+  text: string;
+  hidden?: boolean;
+  requestId?: string;
+}
+
 /** Streaming events during a command — carry requestId. */
 export type AgentStreamEvent =
   | { event: 'text'; text: string; requestId?: string; parentToolId?: string }
@@ -97,7 +105,8 @@ export type AgentEvent =
   | AgentSystemEvent
   | AgentStreamEvent
   | AgentDataEvent
-  | AgentCompletedEvent;
+  | AgentCompletedEvent
+  | AgentUserMessageEvent;
 
 /** Parse a stdout line as an agent event. */
 export const parseAgentMessage = (line: string) =>
