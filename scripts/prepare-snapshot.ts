@@ -107,7 +107,7 @@ if (allDeps.size > 0) {
 // 4. Symlink mindstudio-prod CLI onto PATH
 // ---------------------------------------------------------------------------
 
-const cliSource = '/home/vercel-sandbox/dist/cli/prod.js';
+const cliSource = '/vercel/sandbox/dist/cli/prod.js';
 const cliTarget = '/usr/local/bin/mindstudio-prod';
 
 try {

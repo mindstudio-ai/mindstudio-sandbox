@@ -313,7 +313,7 @@ export function configureGit(workspaceDir: string): void {
 // ---------------------------------------------------------------------------
 
 export function linkProdCli(): void {
-  const cliSource = '/home/vercel-sandbox/dist/cli/prod.js';
+  const cliSource = '/vercel/sandbox/dist/cli/prod.js';
   const cliTarget = '/usr/local/bin/mindstudio-prod';
 
   if (fsSync.existsSync(cliTarget)) {
