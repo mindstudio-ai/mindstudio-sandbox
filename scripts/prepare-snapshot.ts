@@ -15,6 +15,7 @@
 
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const SCAFFOLD_REPO =
@@ -101,6 +102,24 @@ if (allDeps.size > 0) {
   run(`npm cache add ${[...allDeps].join(' ')}`);
 } else {
   console.log('\nNo dependencies found, skipping cache warm');
+}
+
+// ---------------------------------------------------------------------------
+// 4. Symlink mindstudio-prod CLI onto PATH
+// ---------------------------------------------------------------------------
+
+const cliSource = '/vercel/sandbox/dist/cli/prod.js';
+const binDir = path.join(os.homedir(), '.local', 'bin');
+const cliTarget = path.join(binDir, 'mindstudio-prod');
+
+try {
+  fs.chmodSync(cliSource, 0o755);
+  fs.mkdirSync(binDir, { recursive: true });
+  if (fs.existsSync(cliTarget)) fs.unlinkSync(cliTarget);
+  fs.symlinkSync(cliSource, cliTarget);
+  console.log(`\nSymlinked ${cliTarget} → ${cliSource}`);
+} catch (err) {
+  console.warn(`Warning: could not symlink CLI: ${err}`);
 }
 
 // ---------------------------------------------------------------------------
