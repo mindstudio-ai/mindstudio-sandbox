@@ -180,6 +180,19 @@ export class LspSidecar {
                 ? await sendTunnelCommand(this.pm, 'reset-browser', {}, 5_000)
                 : { ok: false };
               break;
+            case '/setup-browser':
+              result = this.pm
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'setup-browser',
+                    {
+                      ...(params.auth ? { auth: params.auth } : {}),
+                      ...(params.path ? { path: params.path } : {}),
+                    },
+                    15_000,
+                  )
+                : { success: false, error: 'tunnel not available' };
+              break;
             case '/screenshot-full-page':
               result = this.pm
                 ? await sendTunnelCommand(
