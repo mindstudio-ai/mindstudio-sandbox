@@ -422,6 +422,65 @@ async function dbTables(appId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — secrets
+// ---------------------------------------------------------------------------
+
+async function secretsList(appId: string) {
+  out(await api('GET', `/_internal/v2/apps/${appId}/secrets`));
+}
+
+async function secretsGet(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal('Usage: mindstudio-prod secrets get <KEY>');
+  }
+  out(await api('GET', `/_internal/v2/apps/${appId}/secrets/${key}`));
+}
+
+async function secretsSet(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal(
+      'Usage: mindstudio-prod secrets set <KEY> [--dev <value>] [--prod <value>] [--dev-clear] [--prod-clear]',
+    );
+  }
+
+  const body: Record<string, unknown> = {};
+  const dev = getFlag(args, 'dev');
+  const prod = getFlag(args, 'prod');
+  const devClear = hasFlag(args, 'dev-clear');
+  const prodClear = hasFlag(args, 'prod-clear');
+
+  if (dev !== undefined) {
+    body.devValue = dev;
+  } else if (devClear) {
+    body.devValue = null;
+  }
+
+  if (prod !== undefined) {
+    body.prodValue = prod;
+  } else if (prodClear) {
+    body.prodValue = null;
+  }
+
+  if (!('devValue' in body) && !('prodValue' in body)) {
+    fatal(
+      'At least one of --dev <value>, --prod <value>, --dev-clear, or --prod-clear is required',
+    );
+  }
+
+  out(await api('PUT', `/_internal/v2/apps/${appId}/secrets/${key}`, body));
+}
+
+async function secretsDelete(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal('Usage: mindstudio-prod secrets delete <KEY>');
+  }
+  out(await api('DELETE', `/_internal/v2/apps/${appId}/secrets/${key}`));
+}
+
+// ---------------------------------------------------------------------------
 // Commands — methods
 // ---------------------------------------------------------------------------
 
@@ -478,6 +537,7 @@ Commands:
   domains     Manage custom subdomain
   users       Manage app users and roles
   db          Query the production database
+  secrets     Manage app secrets (env vars)
   methods     List and invoke methods
 
 Run 'mindstudio-prod <command> --help' for details on each command.
@@ -571,6 +631,37 @@ Examples:
   mindstudio-prod db "INSERT INTO categories (name) VALUES ('Electronics')"
   mindstudio-prod db query "SELECT * FROM users LIMIT 10"`;
 
+const HELP_SECRETS = `mindstudio-prod secrets — Manage app secrets (environment variables).
+
+Subcommands:
+  list     List all secret keys (values are not shown, only which environments have values)
+  get      Get decrypted values for a secret
+  set      Create or update a secret's value for dev and/or prod
+  delete   Delete a secret entirely (both dev and prod values)
+
+Usage:
+  mindstudio-prod secrets list
+  mindstudio-prod secrets get <KEY>
+  mindstudio-prod secrets set <KEY> [--dev <value>] [--prod <value>] [--dev-clear] [--prod-clear]
+  mindstudio-prod secrets delete <KEY>
+
+The set command updates only the environments you specify:
+  --dev <value>    Set the dev environment value
+  --prod <value>   Set the prod environment value
+  --dev-clear      Clear the dev environment value
+  --prod-clear     Clear the prod environment value
+  Omitted fields are left unchanged.
+
+Note: Setting or deleting secrets stops all active sandboxes for this app.
+
+Examples:
+  mindstudio-prod secrets list
+  mindstudio-prod secrets get STRIPE_SECRET_KEY
+  mindstudio-prod secrets set STRIPE_SECRET_KEY --dev sk_test_abc --prod sk_live_xyz
+  mindstudio-prod secrets set OPENAI_API_KEY --prod sk-abc123
+  mindstudio-prod secrets set OLD_KEY --prod-clear
+  mindstudio-prod secrets delete OLD_KEY`;
+
 const HELP_METHODS = `mindstudio-prod methods — List and invoke methods.
 
 Subcommands:
@@ -610,6 +701,7 @@ async function main() {
     domains: HELP_DOMAINS,
     users: HELP_USERS,
     db: HELP_DB,
+    secrets: HELP_SECRETS,
     methods: HELP_METHODS,
   };
   if (!sub || sub === '--help' || sub === '-h') {
@@ -701,6 +793,23 @@ async function main() {
         default:
           // Treat unknown subcommand as SQL: `mindstudio-prod db "SELECT ..."`
           return dbQuery(appId, [sub, ...rest]);
+      }
+      break;
+
+    case 'secrets':
+      switch (sub) {
+        case 'list':
+          return secretsList(appId);
+        case 'get':
+          return secretsGet(appId, rest);
+        case 'set':
+          return secretsSet(appId, rest);
+        case 'delete':
+          return secretsDelete(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: secrets ${sub}. Run 'mindstudio-prod secrets --help'`,
+          );
       }
       break;
 
