@@ -182,12 +182,12 @@ function serveLogs(
           res.end('');
           return;
         }
-        const content = await fs.readFile(fullPath, 'utf-8');
-        const slice = content.slice(start);
+        const buf = await fs.readFile(fullPath);
+        const slice = buf.subarray(start);
         res.writeHead(206, {
           'Content-Type': contentType,
           'Content-Range': `bytes ${start}-${stat.size - 1}/${stat.size}`,
-          'Content-Length': String(Buffer.byteLength(slice)),
+          'Content-Length': String(slice.length),
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'no-cache',
           ...CORS_HEADERS,
