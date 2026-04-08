@@ -362,6 +362,24 @@ async function usersList(appId: string, args: string[]) {
   out(await api('GET', `/_internal/v2/apps/${appId}/users${qs}`));
 }
 
+async function usersCreateApiKey(appId: string, args: string[]) {
+  const userId = getPositional(args, 0);
+  if (!userId) {
+    fatal('Usage: mindstudio-prod users create-api-key <userId>');
+  }
+  out(await api('POST', `/_internal/v2/apps/${appId}/users/${userId}/api-key`));
+}
+
+async function usersRevokeApiKey(appId: string, args: string[]) {
+  const userId = getPositional(args, 0);
+  if (!userId) {
+    fatal('Usage: mindstudio-prod users revoke-api-key <userId>');
+  }
+  out(
+    await api('DELETE', `/_internal/v2/apps/${appId}/users/${userId}/api-key`),
+  );
+}
+
 async function usersSetRole(appId: string, args: string[]) {
   const userId = getPositional(args, 0);
   const role = getPositional(args, 1);
@@ -401,6 +419,65 @@ async function dbTables(appId: string) {
       ],
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Commands — secrets
+// ---------------------------------------------------------------------------
+
+async function secretsList(appId: string) {
+  out(await api('GET', `/_internal/v2/apps/${appId}/secrets`));
+}
+
+async function secretsGet(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal('Usage: mindstudio-prod secrets get <KEY>');
+  }
+  out(await api('GET', `/_internal/v2/apps/${appId}/secrets/${key}`));
+}
+
+async function secretsSet(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal(
+      'Usage: mindstudio-prod secrets set <KEY> [--dev <value>] [--prod <value>] [--dev-clear] [--prod-clear]',
+    );
+  }
+
+  const body: Record<string, unknown> = {};
+  const dev = getFlag(args, 'dev');
+  const prod = getFlag(args, 'prod');
+  const devClear = hasFlag(args, 'dev-clear');
+  const prodClear = hasFlag(args, 'prod-clear');
+
+  if (dev !== undefined) {
+    body.devValue = dev;
+  } else if (devClear) {
+    body.devValue = null;
+  }
+
+  if (prod !== undefined) {
+    body.prodValue = prod;
+  } else if (prodClear) {
+    body.prodValue = null;
+  }
+
+  if (!('devValue' in body) && !('prodValue' in body)) {
+    fatal(
+      'At least one of --dev <value>, --prod <value>, --dev-clear, or --prod-clear is required',
+    );
+  }
+
+  out(await api('PUT', `/_internal/v2/apps/${appId}/secrets/${key}`, body));
+}
+
+async function secretsDelete(appId: string, args: string[]) {
+  const key = getPositional(args, 0);
+  if (!key) {
+    fatal('Usage: mindstudio-prod secrets delete <KEY>');
+  }
+  out(await api('DELETE', `/_internal/v2/apps/${appId}/secrets/${key}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +537,7 @@ Commands:
   domains     Manage custom subdomain
   users       Manage app users and roles
   db          Query the production database
+  secrets     Manage app secrets (env vars)
   methods     List and invoke methods
 
 Run 'mindstudio-prod <command> --help' for details on each command.
@@ -516,19 +594,25 @@ Usage:
   mindstudio-prod domains set my-app
   mindstudio-prod domains check my-app`;
 
-const HELP_USERS = `mindstudio-prod users — Manage app users and roles.
+const HELP_USERS = `mindstudio-prod users — Manage app users, roles, and API keys.
 
 Subcommands:
-  list       List app users
-  set-role   Set a user's role
+  list              List app users (includes apiKeyMasked per user)
+  set-role          Set a user's role
+  create-api-key    Generate an API key for a user (returns full key once)
+  revoke-api-key    Revoke a user's API key (immediate, in-flight requests will fail)
 
 Usage:
   mindstudio-prod users list [--limit 50] [--offset 0]
   mindstudio-prod users set-role <userId> <role>
+  mindstudio-prod users create-api-key <userId>
+  mindstudio-prod users revoke-api-key <userId>
 
 Examples:
   mindstudio-prod users list --limit 20
-  mindstudio-prod users set-role usr_abc123 admin`;
+  mindstudio-prod users set-role usr_abc123 admin
+  mindstudio-prod users create-api-key usr_abc123
+  mindstudio-prod users revoke-api-key usr_abc123`;
 
 const HELP_DB = `mindstudio-prod db — Query the production database.
 
@@ -546,6 +630,37 @@ Examples:
   mindstudio-prod db "SELECT * FROM users LIMIT 10"
   mindstudio-prod db "INSERT INTO categories (name) VALUES ('Electronics')"
   mindstudio-prod db query "SELECT * FROM users LIMIT 10"`;
+
+const HELP_SECRETS = `mindstudio-prod secrets — Manage app secrets (environment variables).
+
+Subcommands:
+  list     List all secret keys (values are not shown, only which environments have values)
+  get      Get decrypted values for a secret
+  set      Create or update a secret's value for dev and/or prod
+  delete   Delete a secret entirely (both dev and prod values)
+
+Usage:
+  mindstudio-prod secrets list
+  mindstudio-prod secrets get <KEY>
+  mindstudio-prod secrets set <KEY> [--dev <value>] [--prod <value>] [--dev-clear] [--prod-clear]
+  mindstudio-prod secrets delete <KEY>
+
+The set command updates only the environments you specify:
+  --dev <value>    Set the dev environment value
+  --prod <value>   Set the prod environment value
+  --dev-clear      Clear the dev environment value
+  --prod-clear     Clear the prod environment value
+  Omitted fields are left unchanged.
+
+Note: Setting or deleting secrets stops all active sandboxes for this app.
+
+Examples:
+  mindstudio-prod secrets list
+  mindstudio-prod secrets get STRIPE_SECRET_KEY
+  mindstudio-prod secrets set STRIPE_SECRET_KEY --dev sk_test_abc --prod sk_live_xyz
+  mindstudio-prod secrets set OPENAI_API_KEY --prod sk-abc123
+  mindstudio-prod secrets set OLD_KEY --prod-clear
+  mindstudio-prod secrets delete OLD_KEY`;
 
 const HELP_METHODS = `mindstudio-prod methods — List and invoke methods.
 
@@ -586,6 +701,7 @@ async function main() {
     domains: HELP_DOMAINS,
     users: HELP_USERS,
     db: HELP_DB,
+    secrets: HELP_SECRETS,
     methods: HELP_METHODS,
   };
   if (!sub || sub === '--help' || sub === '-h') {
@@ -657,6 +773,10 @@ async function main() {
           return usersList(appId, rest);
         case 'set-role':
           return usersSetRole(appId, rest);
+        case 'create-api-key':
+          return usersCreateApiKey(appId, rest);
+        case 'revoke-api-key':
+          return usersRevokeApiKey(appId, rest);
         default:
           fatal(
             `Unknown subcommand: users ${sub}. Run 'mindstudio-prod users --help'`,
@@ -673,6 +793,23 @@ async function main() {
         default:
           // Treat unknown subcommand as SQL: `mindstudio-prod db "SELECT ..."`
           return dbQuery(appId, [sub, ...rest]);
+      }
+      break;
+
+    case 'secrets':
+      switch (sub) {
+        case 'list':
+          return secretsList(appId);
+        case 'get':
+          return secretsGet(appId, rest);
+        case 'set':
+          return secretsSet(appId, rest);
+        case 'delete':
+          return secretsDelete(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: secrets ${sub}. Run 'mindstudio-prod secrets --help'`,
+          );
       }
       break;
 
