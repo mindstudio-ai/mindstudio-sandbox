@@ -281,8 +281,14 @@ export class LspSidecar {
     // Open/update the file so the language server analyzes it
     await this.lsp.updateFileContent(file);
 
+    // Clear stale cache — we just sent a didChange, so any cached diagnostics
+    // are from the previous version. Without this, waitForDiagnostics starts a
+    // premature settle timer from the stale cache and returns old errors before
+    // the LSP has time to re-analyze.
+    this.diagnosticsCache.delete(file);
+
     // Wait for diagnostics to settle (the LSP pushes them asynchronously)
-    const diagnostics = await this.waitForDiagnostics(file, 2000, 500);
+    const diagnostics = await this.waitForDiagnostics(file, 5000, 800);
     return { diagnostics };
   }
 

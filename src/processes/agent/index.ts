@@ -235,16 +235,16 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     return;
   }
 
-  // --- Turn started — track background (remy-initiated) turns ---
+  // --- Turn started — track remy-initiated turns ---
 
   if (event.event === 'turn_started') {
     if (!event.requestId) {
-      // Background turn (e.g., background tool results) — remy initiated
-      // this turn itself. Track it so endTurn/onTurnDone (snapshot
-      // scheduling) fire on completion, but don't set busy — the user
-      // shouldn't be blocked by background work.
+      // Remy-initiated turn (session restore, background tool results, etc.).
+      // Set busy — remy can't accept new messages while processing, so the
+      // frontend should disable input regardless of how the turn started.
       const syntheticId = `bg-${++backgroundTurnCounter}`;
-      startBackgroundTurn(syntheticId);
+      startTurn(syntheticId);
+      broadcastActivity(cb.broadcast);
     }
     return;
   }

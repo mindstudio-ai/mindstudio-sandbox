@@ -362,6 +362,24 @@ async function usersList(appId: string, args: string[]) {
   out(await api('GET', `/_internal/v2/apps/${appId}/users${qs}`));
 }
 
+async function usersCreateApiKey(appId: string, args: string[]) {
+  const userId = getPositional(args, 0);
+  if (!userId) {
+    fatal('Usage: mindstudio-prod users create-api-key <userId>');
+  }
+  out(await api('POST', `/_internal/v2/apps/${appId}/users/${userId}/api-key`));
+}
+
+async function usersRevokeApiKey(appId: string, args: string[]) {
+  const userId = getPositional(args, 0);
+  if (!userId) {
+    fatal('Usage: mindstudio-prod users revoke-api-key <userId>');
+  }
+  out(
+    await api('DELETE', `/_internal/v2/apps/${appId}/users/${userId}/api-key`),
+  );
+}
+
 async function usersSetRole(appId: string, args: string[]) {
   const userId = getPositional(args, 0);
   const role = getPositional(args, 1);
@@ -516,19 +534,25 @@ Usage:
   mindstudio-prod domains set my-app
   mindstudio-prod domains check my-app`;
 
-const HELP_USERS = `mindstudio-prod users — Manage app users and roles.
+const HELP_USERS = `mindstudio-prod users — Manage app users, roles, and API keys.
 
 Subcommands:
-  list       List app users
-  set-role   Set a user's role
+  list              List app users (includes apiKeyMasked per user)
+  set-role          Set a user's role
+  create-api-key    Generate an API key for a user (returns full key once)
+  revoke-api-key    Revoke a user's API key (immediate, in-flight requests will fail)
 
 Usage:
   mindstudio-prod users list [--limit 50] [--offset 0]
   mindstudio-prod users set-role <userId> <role>
+  mindstudio-prod users create-api-key <userId>
+  mindstudio-prod users revoke-api-key <userId>
 
 Examples:
   mindstudio-prod users list --limit 20
-  mindstudio-prod users set-role usr_abc123 admin`;
+  mindstudio-prod users set-role usr_abc123 admin
+  mindstudio-prod users create-api-key usr_abc123
+  mindstudio-prod users revoke-api-key usr_abc123`;
 
 const HELP_DB = `mindstudio-prod db — Query the production database.
 
@@ -657,6 +681,10 @@ async function main() {
           return usersList(appId, rest);
         case 'set-role':
           return usersSetRole(appId, rest);
+        case 'create-api-key':
+          return usersCreateApiKey(appId, rest);
+        case 'revoke-api-key':
+          return usersRevokeApiKey(appId, rest);
         default:
           fatal(
             `Unknown subcommand: users ${sub}. Run 'mindstudio-prod users --help'`,
