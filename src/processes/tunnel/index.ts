@@ -259,9 +259,11 @@ export function createTunnelActions(
       return await sendCommand(pm, 'run-scenario', { scenarioId }, 30_000);
     },
     tunnelRunMethod: async (p) => {
-      const { method, input } = p as {
+      const { method, input, roles, userId } = p as {
         method: string;
         input?: Record<string, unknown>;
+        roles?: string[];
+        userId?: string;
       };
       if (!method) {
         throw new Error('Missing "method" parameter');
@@ -270,7 +272,12 @@ export function createTunnelActions(
       return await sendCommand(
         pm,
         'run-method',
-        { method, input: input ?? {} },
+        {
+          method,
+          input: input ?? {},
+          ...(roles ? { roles } : {}),
+          ...(userId ? { userId } : {}),
+        },
         30_000,
       );
     },
