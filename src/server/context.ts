@@ -76,9 +76,9 @@ type InitFrame = Record<string, any>;
 export async function buildInitFrame(
   proxyAvailable: boolean,
 ): Promise<InitFrame> {
-  const chatHistory = ctx.processManager
+  const historyResult = ctx.processManager
     ? await getAgentHistory(ctx.processManager)
-    : [];
+    : { messages: [] };
 
   return {
     event: 'init',
@@ -88,7 +88,11 @@ export async function buildInitFrame(
     tunnelSession: ctx.tunnelSession,
     activeImpersonation: ctx.activeImpersonation,
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
-    chatHistory,
+    chatHistory: historyResult.messages,
+    ...(historyResult.running ? { agentRunning: true } : {}),
+    ...(historyResult.currentRequestId
+      ? { agentCurrentRequestId: historyResult.currentRequestId }
+      : {}),
     processes: ctx.registry?.getAllInfo() ?? [],
     agentActivity: getAgentActivity(),
     ptySessionIds: getActiveSessionIds(),

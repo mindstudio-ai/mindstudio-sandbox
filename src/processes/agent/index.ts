@@ -300,7 +300,13 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   if (event.event === 'history' && 'requestId' in event && event.requestId) {
     const entry = pending.get(event.requestId);
     if (entry) {
-      entry.data = { messages: transformHistory(event.messages) };
+      entry.data = {
+        messages: transformHistory(event.messages),
+        ...(event.running ? { running: true } : {}),
+        ...(event.currentRequestId
+          ? { currentRequestId: event.currentRequestId }
+          : {}),
+      };
     }
     return; // internal, don't broadcast
   }
@@ -423,9 +429,23 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
 // History
 // ---------------------------------------------------------------------------
 
-/** Request chat history from the agent. Returns [] if agent isn't running or times out. */
-export async function getAgentHistory(pm: ProcessManager): Promise<unknown[]> {
+export interface AgentHistoryResult {
+  messages: unknown[];
+  running?: boolean;
+  currentRequestId?: string;
+}
+
+/** Request chat history from the agent. Returns empty if agent isn't running or times out. */
+export async function getAgentHistory(
+  pm: ProcessManager,
+): Promise<AgentHistoryResult> {
   const { response } = sendAgentCommand(pm, 'get_history', {}, 5_000);
   const result = await response;
-  return (result.messages as unknown[]) ?? [];
+  return {
+    messages: (result.messages as unknown[]) ?? [],
+    ...(result.running ? { running: true } : {}),
+    ...(result.currentRequestId
+      ? { currentRequestId: result.currentRequestId as string }
+      : {}),
+  };
 }
