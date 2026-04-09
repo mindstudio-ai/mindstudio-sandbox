@@ -154,11 +154,15 @@ export class DraftSnapshotManager {
     this.lastAttemptAt = startTime;
     log.info('Starting snapshot...');
 
-    // Clean any stale temp index
-    try {
-      fs.unlinkSync(TMP_INDEX);
-    } catch {
-      // doesn't exist, fine
+    // Clean any stale temp index and its lock file (git creates
+    // TMP_INDEX.lock during operations — if a previous snapshot was
+    // killed mid-op, the lock file persists and blocks future runs)
+    for (const f of [TMP_INDEX, `${TMP_INDEX}.lock`]) {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        // doesn't exist, fine
+      }
     }
 
     const env = { ...process.env, GIT_INDEX_FILE: TMP_INDEX };
