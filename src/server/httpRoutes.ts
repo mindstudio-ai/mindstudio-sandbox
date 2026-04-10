@@ -79,6 +79,30 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
+    if (
+      req.url === '/agent-session' ||
+      req.url?.startsWith('/agent-session?')
+    ) {
+      const sessionPath = path.join(workspaceDir, '.remy-session.json');
+      fs.readFile(sessionPath, 'utf-8')
+        .then((content) => {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            ...CORS_HEADERS,
+          });
+          res.end(content);
+        })
+        .catch(() => {
+          res.writeHead(404, {
+            'Content-Type': 'application/json',
+            ...CORS_HEADERS,
+          });
+          res.end(JSON.stringify({ error: 'Session not available' }));
+        });
+      return;
+    }
+
     if (req.url?.startsWith('/logs/')) {
       serveLogs(req, res, workspaceDir);
       return;
