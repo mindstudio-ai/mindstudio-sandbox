@@ -165,7 +165,16 @@ export class DraftSnapshotManager {
       }
     }
 
-    const env = { ...process.env, GIT_INDEX_FILE: TMP_INDEX };
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: TMP_INDEX,
+      // Ensure snapshots never fail due to missing/empty git identity —
+      // this is a system operation, not a user commit.
+      GIT_AUTHOR_NAME: 'MindStudio Snapshot',
+      GIT_AUTHOR_EMAIL: 'noreply@mindstudio.ai',
+      GIT_COMMITTER_NAME: 'MindStudio Snapshot',
+      GIT_COMMITTER_EMAIL: 'noreply@mindstudio.ai',
+    };
 
     // Seed the temp index from HEAD so git has a valid base
     if ((await this.exec('git read-tree HEAD', { env })) === null) {

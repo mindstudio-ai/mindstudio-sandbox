@@ -257,6 +257,14 @@ export function configureGit(workspaceDir: string): void {
         userEmail: 'noreply@mindstudio.ai',
       };
 
+  // Git refuses commits with an empty ident name — fall back to defaults
+  if (!metadataEnv.userName?.trim()) {
+    metadataEnv.userName = 'MindStudio';
+  }
+  if (!metadataEnv.userEmail?.trim()) {
+    metadataEnv.userEmail = 'noreply@mindstudio.ai';
+  }
+
   run(`git config user.name "${metadataEnv.userName}"`, {
     cwd: workspaceDir,
     label: 'git config user.name',
