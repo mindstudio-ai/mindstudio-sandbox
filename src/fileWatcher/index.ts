@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { Config } from '../config.js';
 import type { BroadcastBatcher } from '../server/BroadcastBatcher.js';
 import type { EditorStateManager } from '../server/states/EditorStateManager.js';
@@ -79,6 +81,17 @@ export function setupFileWatcher(
       lspSidecar.onFileDeleted(filePath);
       editorManager.onFileDeleted(filePath);
       specEditorManager.onFileDeleted(filePath);
+    }
+
+    // Plan file changes
+    if (filePath === '.remy-plan.md') {
+      if (changeType === 'deleted') {
+        broadcast('planChanged', { plan: null });
+      } else {
+        fs.readFile(path.join(config.workspaceDir, filePath), 'utf-8')
+          .then((content) => broadcast('planChanged', { plan: content }))
+          .catch(() => {});
+      }
     }
 
     fileTreeManager.onFileChanged(filePath, changeType);

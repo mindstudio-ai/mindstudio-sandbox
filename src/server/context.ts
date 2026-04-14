@@ -9,6 +9,8 @@
  * to WebSocket clients on connection.
  */
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
@@ -26,6 +28,7 @@ import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import { getActiveSessionIds } from './wsHandlers/pty.js';
 
 export interface ServerContext {
+  workspaceDir: string | null;
   status: ServerStatus;
   appConfig: AppConfig | null;
   tunnelSession: TunnelSessionState | null;
@@ -48,6 +51,7 @@ export interface ServerContext {
 }
 
 export const ctx: ServerContext = {
+  workspaceDir: null,
   status: 'bootstrapping',
   appConfig: null,
   tunnelSession: null,
@@ -80,6 +84,18 @@ export async function buildInitFrame(
     ? await getAgentHistory(ctx.processManager)
     : { messages: [] };
 
+  let plan: string | null = null;
+  if (ctx.workspaceDir) {
+    try {
+      plan = await fs.readFile(
+        path.join(ctx.workspaceDir, '.remy-plan.md'),
+        'utf-8',
+      );
+    } catch {
+      // file doesn't exist
+    }
+  }
+
   return {
     event: 'init',
     status: ctx.status,
@@ -107,6 +123,7 @@ export async function buildInitFrame(
       activeTab: null,
     },
     projectStatus: getProjectStatus(),
+    plan,
   };
 }
 

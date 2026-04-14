@@ -337,6 +337,7 @@ async function main(): Promise<void> {
 
   // 4. Start HTTP/WS server (health returns "bootstrapping")
   await startServer(config.port, config.sandboxToken, config.workspaceDir);
+  ctx.workspaceDir = config.workspaceDir;
   ctx.batcher = managers.batcher;
   ctx.registry = managers.registry;
   ctx.editorState = managers.editorManager;
