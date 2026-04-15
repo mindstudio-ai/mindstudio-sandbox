@@ -30,31 +30,11 @@ export const handlers: Record<string, ActionHandler> = {
   readFile: (p) => readFile(p as { path: string }),
   writeFile: async (p) => {
     const params = p as { path: string; content: string };
-
-    // Check if content actually changed before marking dirty
-    let contentChanged = true;
-    try {
-      const existing = await readFile({ path: params.path });
-      if (
-        existing &&
-        typeof existing === 'object' &&
-        'content' in existing &&
-        (existing as { content: string }).content === params.content
-      ) {
-        contentChanged = false;
-      }
-    } catch {
-      // File doesn't exist yet — it's a new file, content changed
-    }
-
     const result = await writeFile(params);
     // Watcher events are suppressed for server-initiated writes,
     // so manually fire the shared handler. Use 'created' since
     // FileTreeManager ignores 'modified' — this could be a new file.
     ctx.onFileChanged?.(params.path, 'created');
-    if (contentChanged) {
-      ctx.onUserSave?.(params.path);
-    }
     return result;
   },
   deleteFile: async (p) => {

@@ -251,12 +251,20 @@ export function createTunnelActions(
 ): Record<string, ActionHandler> {
   return {
     tunnelRunScenario: async (p) => {
-      const { scenarioId } = p as { scenarioId: string };
+      const { scenarioId, skipTruncate } = p as {
+        scenarioId: string;
+        skipTruncate?: boolean;
+      };
       if (!scenarioId) {
         throw new Error('Missing "scenarioId" parameter');
       }
       log.info(`Running scenario: ${scenarioId}`);
-      return await sendCommand(pm, 'run-scenario', { scenarioId }, 30_000);
+      return await sendCommand(
+        pm,
+        'run-scenario',
+        { scenarioId, ...(skipTruncate ? { skipTruncate } : {}) },
+        30_000,
+      );
     },
     tunnelRunMethod: async (p) => {
       const { method, input, roles, userId } = p as {
