@@ -18,11 +18,7 @@ export {
   TREE_HIDDEN,
   TREE_COLLAPSED,
 } from './watcher.js';
-import {
-  getProjectStatus,
-  markSpecDirty,
-  markCodeDirty,
-} from '../projectStatus/ProjectStatusManager.js';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fileWatcher');
@@ -104,19 +100,6 @@ export function setupFileWatcher(
 
   // Expose so handlers can call it for suppressed writes
   ctx.onFileChanged = handleFileChanged;
-
-  // Track user saves for sync status
-  ctx.onUserSave = (filePath: string) => {
-    if (filePath.startsWith('src/')) {
-      if (markSpecDirty()) {
-        broadcast('projectStatusChanged', getProjectStatus());
-      }
-    } else if (filePath.startsWith('dist/')) {
-      if (markCodeDirty()) {
-        broadcast('projectStatusChanged', getProjectStatus());
-      }
-    }
-  };
 
   // Broadcast project status changes (onboarding state set by user)
   ctx.onProjectStatusChanged = () => {

@@ -46,7 +46,6 @@ export interface ServerContext {
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
   activeImpersonation: string[] | null;
-  onUserSave: ((path: string) => void) | null;
   onProjectStatusChanged: (() => void) | null;
 }
 
@@ -67,7 +66,6 @@ export const ctx: ServerContext = {
   snapshotManager: null,
   activeImpersonation: null,
   onFileChanged: null,
-  onUserSave: null,
   onProjectStatusChanged: null,
 };
 

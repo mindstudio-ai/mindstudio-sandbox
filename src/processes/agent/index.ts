@@ -111,7 +111,6 @@ export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
   'setProjectOnboardingState',
   'setProjectMetadata',
-  'clearSyncStatus',
 ]);
 
 /**
@@ -397,8 +396,7 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   // --- Broadcast to frontend ---
 
   // Suppress tool_start/tool_done/tool_input_delta for server-handled tools
-  // (e.g., setProjectOnboardingState, clearSyncStatus) — frontend doesn't
-  // need to see these.
+  // (e.g., setProjectOnboardingState) — frontend doesn't need to see these.
   if (
     (event.event === 'tool_start' ||
       event.event === 'tool_done' ||

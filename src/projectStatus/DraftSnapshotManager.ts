@@ -191,11 +191,7 @@ export class DraftSnapshotManager {
     }
 
     // Force-add ignored state files (only if they exist)
-    for (const f of [
-      '.sandbox-state.json',
-      '.remy-session.json',
-      '.project-status.json',
-    ]) {
+    for (const f of ['.sandbox-state.json', '.remy-session.json']) {
       if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
         await this.exec(`git add --force ${f}`, { env });
       }
