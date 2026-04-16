@@ -256,7 +256,20 @@ async function startServices(
     },
     {
       broadcast,
-      onEditsFinished: flushHmr,
+      onEditsFinished: () => {
+        flushHmr();
+        // Re-read manifest after agent edits — chokidar may miss changes
+        // on long-running containers (inotify limits), so this ensures
+        // manifestChanged fires when the agent updates interface configs.
+        readAppConfig(config.workspaceDir)
+          .then((updated) => {
+            if (updated) {
+              ctx.appConfig = updated;
+              broadcast('manifestChanged', { app: updated });
+            }
+          })
+          .catch(() => {});
+      },
       onExternalTool: (id, name, input) => {
         const handler = toolRegistry.get(name);
         if (!handler) {
