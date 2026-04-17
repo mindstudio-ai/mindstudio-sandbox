@@ -54,6 +54,7 @@ export interface ProcessSnapshot {
 
 const MAX_RESTART_HISTORY = 20;
 const MAX_LOG_SIZE = 2 * 1024 * 1024; // 2MB per log file
+const ROTATION_TAIL_SIZE = 512 * 1024; // keep last 512KB on rotation
 const ROTATION_CHECK_INTERVAL = 500; // only check file size every N appends
 
 interface RegistryEntry {
@@ -195,12 +196,26 @@ export class ProcessRegistry {
     }
   }
 
-  /** Truncate log file if it exceeds the size cap. */
+  /** Keep the tail of the log file when it exceeds the size cap. */
   private maybeRotate(fullPath: string): void {
     try {
       const stat = fs.statSync(fullPath);
-      if (stat.size > MAX_LOG_SIZE) {
-        fs.writeFileSync(fullPath, '');
+      if (stat.size <= MAX_LOG_SIZE) {
+        return;
+      }
+      // Read just the tail, align to the next newline so we don't start
+      // mid-record, and atomically replace the file.
+      const fd = fs.openSync(fullPath, 'r');
+      try {
+        const buf = Buffer.alloc(ROTATION_TAIL_SIZE);
+        const start = stat.size - ROTATION_TAIL_SIZE;
+        fs.readSync(fd, buf, 0, ROTATION_TAIL_SIZE, start);
+        const nlIdx = buf.indexOf(0x0a);
+        const tail =
+          nlIdx >= 0 && nlIdx + 1 < buf.length ? buf.subarray(nlIdx + 1) : buf;
+        fs.writeFileSync(fullPath, tail);
+      } finally {
+        fs.closeSync(fd);
       }
     } catch {
       // ignore
