@@ -7,7 +7,7 @@ const log = createLogger('file-watcher');
 // Directories excluded from file watching.
 const IGNORED_DIRS = ['node_modules', '.git', '.vite', '.logs'] as const;
 
-// Entries hidden entirely from the file tree.
+// Entries hidden from the file tree AND ignored by the watcher.
 export const TREE_HIDDEN = new Set([
   '.git',
   '.vite',
@@ -15,6 +15,10 @@ export const TREE_HIDDEN = new Set([
   '.sandbox-state.json',
   '.remy-session.json',
 ]);
+
+// Entries hidden from the file tree but still watched, so we can react to
+// changes (e.g. broadcast agent stats derived from .remy-stats.json).
+export const TREE_HIDDEN_WATCHED = new Set(['.remy-stats.json']);
 
 // Directories shown in the file tree but not expanded (collapsed).
 export const TREE_COLLAPSED = new Set(['node_modules']);

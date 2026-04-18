@@ -25,6 +25,10 @@ import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
 import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
+import {
+  readAgentStats,
+  type AgentStats,
+} from '../processes/agent/agentStats.js';
 import { getActiveSessionIds } from './wsHandlers/pty.js';
 
 export interface ServerContext {
@@ -94,6 +98,11 @@ export async function buildInitFrame(
     }
   }
 
+  let agentStats: AgentStats | null = null;
+  if (ctx.workspaceDir) {
+    agentStats = await readAgentStats(ctx.workspaceDir);
+  }
+
   return {
     event: 'init',
     status: ctx.status,
@@ -122,6 +131,7 @@ export async function buildInitFrame(
     },
     projectStatus: getProjectStatus(),
     plan,
+    agentStats,
   };
 }
 
@@ -143,5 +153,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specFileTree: [],
     specEditorState: { tabs: [], activeTab: null },
     projectStatus: getProjectStatus(),
+    agentStats: null,
   };
 }

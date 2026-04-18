@@ -12,7 +12,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { TreeEntry } from '../../types.js';
 import { createLogger } from '../../logger.js';
-import { TREE_COLLAPSED, TREE_HIDDEN } from '../../fileWatcher/index.js';
+import {
+  TREE_COLLAPSED,
+  TREE_HIDDEN,
+  TREE_HIDDEN_WATCHED,
+} from '../../fileWatcher/index.js';
 
 const log = createLogger('code-tree');
 
@@ -106,7 +110,7 @@ export class FileTreeManager {
     const results: TreeEntry[] = [];
 
     for (const entry of entries) {
-      if (TREE_HIDDEN.has(entry.name)) {
+      if (TREE_HIDDEN.has(entry.name) || TREE_HIDDEN_WATCHED.has(entry.name)) {
         continue;
       }
 
