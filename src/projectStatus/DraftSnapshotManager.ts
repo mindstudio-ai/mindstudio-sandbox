@@ -129,8 +129,8 @@ export class DraftSnapshotManager {
       log.info(`Found draft snapshot: ${draftSha.slice(0, 8)} ("${draftMsg}")`);
 
       // Always restore — the draft is a filesystem backup of the last running
-      // container state, including gitignored state files (.sandbox-state.json,
-      // .remy-session.json, .project-status.json) that HEAD never contains.
+      // container state, including gitignored state files (see the force-add
+      // list in doSnapshot) that HEAD never contains.
       log.info('Restoring files from draft snapshot...');
       if (
         (await this.exec(
@@ -190,8 +190,18 @@ export class DraftSnapshotManager {
       return false;
     }
 
-    // Force-add ignored state files (only if they exist)
-    for (const f of ['.sandbox-state.json', '.remy-session.json']) {
+    // Force-add ignored state files (only if they exist). These are all in
+    // .gitignore so the agent's regular commits don't pollute main branch
+    // history, but the draft branch needs them for full restore fidelity.
+    for (const f of [
+      '.sandbox-state.json',
+      '.remy-session.json',
+      '.project-status.json',
+      '.remy-stats.json',
+      '.remy-design-sample.json',
+      '.remy-plan.md',
+      '.logs',
+    ]) {
       if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
         await this.exec(`git add --force ${f}`, { env });
       }
