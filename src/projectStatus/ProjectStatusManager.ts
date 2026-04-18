@@ -18,16 +18,24 @@ const log = createLogger('project');
 
 export type ProjectOnboardingState =
   | 'intake'
-  | 'initialSpecReview'
-  | 'initialCodegen'
+  | 'building'
+  | 'buildComplete'
   | 'onboardingFinished';
 
 const ONBOARDING_ORDER: ProjectOnboardingState[] = [
   'intake',
-  'initialSpecReview',
-  'initialCodegen',
+  'building',
+  'buildComplete',
   'onboardingFinished',
 ];
+
+// Removed states that still appear in persisted .project-status.json files
+// from before the onboarding-flow overhaul. On read, these normalize to
+// 'onboardingFinished' so users past intake aren't dumped back to the start.
+const LEGACY_STATES_TO_FINISHED = new Set([
+  'initialSpecReview',
+  'initialCodegen',
+]);
 
 export interface ProjectStatus {
   onboardingState: ProjectOnboardingState;
@@ -77,11 +85,29 @@ function tryReadStatus(filePath: string): boolean {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    status = {
-      onboardingState: ONBOARDING_ORDER.includes(parsed.onboardingState)
-        ? parsed.onboardingState
-        : 'intake',
-    };
+    const parsedState = parsed.onboardingState;
+    let resolved: ProjectOnboardingState;
+    let migrated = false;
+    if (ONBOARDING_ORDER.includes(parsedState)) {
+      resolved = parsedState;
+    } else if (LEGACY_STATES_TO_FINISHED.has(parsedState)) {
+      resolved = 'onboardingFinished';
+      migrated = true;
+      log.info(
+        `Migrating legacy onboardingState "${parsedState}" → "onboardingFinished"`,
+      );
+    } else {
+      resolved = 'intake';
+    }
+    status = { onboardingState: resolved };
+    if (migrated) {
+      // Persist normalization so we don't re-migrate on every boot.
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(status), 'utf-8');
+      } catch {
+        // non-fatal — the in-memory state is correct, next flush() writes it
+      }
+    }
     return true;
   } catch {
     return false;

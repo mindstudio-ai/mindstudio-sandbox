@@ -57,9 +57,11 @@ export function createAgentActions(
         await cancelResponse;
       }
 
-      // Advance onboarding to initialCodegen when build is triggered
-      if (text.startsWith('@@automated::buildFromInitialSpec@@')) {
-        if (setOnboardingState('initialCodegen')) {
+      // Advance onboarding to 'building' when the user approves the initial
+      // plan. Remy also calls setProjectOnboardingState('building') at the
+      // start of its pipeline — the forward-only gate makes that a no-op.
+      if (text.startsWith('@@automated::approveInitialPlan@@')) {
+        if (setOnboardingState('building')) {
           onProjectStatusChanged?.();
         }
       }
