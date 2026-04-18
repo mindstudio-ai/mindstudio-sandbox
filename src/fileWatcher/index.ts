@@ -16,9 +16,11 @@ export {
   stopWatcher,
   suppressPath,
   TREE_HIDDEN,
+  TREE_HIDDEN_WATCHED,
   TREE_COLLAPSED,
 } from './watcher.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
+import { readAgentStats } from '../processes/agent/agentStats.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fileWatcher');
@@ -86,6 +88,18 @@ export function setupFileWatcher(
       } else {
         fs.readFile(path.join(config.workspaceDir, filePath), 'utf-8')
           .then((content) => broadcast('planChanged', { plan: content }))
+          .catch(() => {});
+      }
+    }
+
+    // Agent stats — remy rewrites .remy-stats.json once per turn, so
+    // just read and broadcast on every change.
+    if (filePath === '.remy-stats.json') {
+      if (changeType === 'deleted') {
+        broadcast('agentStatsChanged', { stats: null });
+      } else {
+        readAgentStats(config.workspaceDir)
+          .then((stats) => broadcast('agentStatsChanged', { stats }))
           .catch(() => {});
       }
     }
