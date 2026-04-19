@@ -262,33 +262,31 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   // --- Turn started — track remy-initiated turns ---
 
   if (event.event === 'turn_started') {
-    if (!event.requestId) {
-      // Remy-initiated turn (session restore, background tool results, etc.).
-      // Set busy — remy can't accept new messages while processing, so the
-      // frontend should disable input regardless of how the turn started.
+    const turnId = event.requestId;
+    if (!turnId) {
+      // Legacy path (pre-uniform-user_message contract): remy didn't emit a
+      // requestId for internally-triggered turns. Synthesize one so busy
+      // state still flips.
       const syntheticId = `bg-${++backgroundTurnCounter}`;
       startTurn(syntheticId);
+      broadcastActivity(cb.broadcast);
+    } else if (!turnId.startsWith('ac-')) {
+      // Remy-initiated turn (chain-*, bg-*). ac-* turns are already tracked
+      // via startTurn() at the sendAgentCommand site in actions.ts, so we
+      // only handle the non-ac prefixes here.
+      startTurn(turnId);
       broadcastActivity(cb.broadcast);
     }
     return;
   }
 
-  // --- User messages (background work results from remy) ---
+  // --- User messages — turn-starting message echoed by remy for every
+  // turn (ac-*, chain-*, bg-*). Activity tracking lives in turn_started.
+  // Rendering is driven by the @@automated::X@@ prefix in `text`. ---
 
   if (event.event === 'user_message') {
-    if (!event.requestId) {
-      // Remy-initiated user message (e.g., background tool results being
-      // fed back). Set busy so the frontend knows the agent is processing
-      // and disables input — prevents "already processing" errors.
-      const syntheticId = `bg-${++backgroundTurnCounter}`;
-      startTurn(syntheticId);
-      broadcastActivity(cb.broadcast);
-    }
-    // Broadcast non-hidden messages so frontend can show a marker in chat
-    if (!event.hidden) {
-      const { event: _evt, ...data } = event;
-      cb.broadcast('agentUserMessage', data);
-    }
+    const { event: _evt, ...data } = event;
+    cb.broadcast('agentUserMessage', data);
     return;
   }
 
@@ -307,8 +305,15 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       }
     }
 
-    // End the active turn (whether user-initiated or background)
-    if (endTurn(event.requestId)) {
+    // Chained successful turn: remy is firing turn_started for the next
+    // step immediately. Don't flip busy to idle in the gap — the frontend
+    // shouldn't flicker between pipeline steps. Still fire onTurnDone so
+    // a snapshot checkpoint runs between chain steps.
+    const isChainedSuccess = event.success && !!event.pendingNextMessage;
+
+    if (isChainedSuccess) {
+      cb.onTurnDone?.();
+    } else if (endTurn(event.requestId)) {
       cb.onTurnDone?.();
       broadcastActivity(cb.broadcast);
     }
@@ -317,10 +322,9 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
 
-    // Capture pending chain-resume sentinel. Frontend uses this to show a
-    // Continue button if the user cancels mid-chain; persists in-memory so
-    // it survives WS reconnects within the sandbox lifetime.
-    if (event.pendingNextMessage) {
+    // Resume button — only populate on cancelled chains. Successful chain
+    // hand-offs continue automatically and don't need a resume affordance.
+    if (!event.success && event.pendingNextMessage) {
       setLastPendingResume(event.pendingNextMessage, cb.broadcast);
     }
     return;

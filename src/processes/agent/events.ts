@@ -12,11 +12,15 @@ export type AgentSystemEvent =
   | { event: 'stopping' }
   | { event: 'stopped' };
 
-/** User message injected by remy (e.g., background work results). */
+/**
+ * Turn-starting user message echoed by remy for every turn — sandbox-
+ * originated (`ac-*`), chained (`chain-*`), and background (`bg-*`).
+ * Rendering is driven purely by the `@@automated::X@@` prefix in `text`;
+ * the `requestId` prefix indicates origin but does not affect rendering.
+ */
 export interface AgentUserMessageEvent {
   event: 'user_message';
   text: string;
-  hidden?: boolean;
   requestId?: string;
 }
 
