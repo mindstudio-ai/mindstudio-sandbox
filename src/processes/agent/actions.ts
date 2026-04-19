@@ -3,11 +3,12 @@
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { sendAgentCommand, setLastPendingResume } from './index.js';
+import { sendAgentCommand, setLastAbortedTrigger } from './index.js';
 import {
   hasPendingExternalTools,
   clearPendingExternalTools,
   startTurn,
+  getAgentActivity,
 } from './activity.js';
 import {
   getOnboardingState,
@@ -61,9 +62,22 @@ export function createAgentActions(
         await cancelResponse;
       }
 
-      // Any new user message ends the chained-resume window, whether it IS
-      // the pending sentinel (Continue click) or a different message.
-      setLastPendingResume(null, broadcast);
+      const isAutomated = text.startsWith('@@automated::');
+
+      // User-typed messages are rejected while the agent is busy. Automated
+      // messages (button clicks, remy chain steps) are allowed to queue —
+      // we don't expose user queueing as a product feature yet.
+      if (!isAutomated && getAgentActivity().busy) {
+        return {
+          success: false,
+          error: 'Agent is busy — please wait for the current turn to finish',
+        };
+      }
+
+      // Any new user message ends the Continue-button window — clear the
+      // stored aborted trigger. If the user clicked Continue (re-sending
+      // the stored trigger), the re-run will re-populate on its next cancel.
+      setLastAbortedTrigger(null, broadcast);
 
       // Advance onboarding to 'building' when the user approves the initial
       // plan. Remy also calls setProjectOnboardingState('building') at the
@@ -73,8 +87,6 @@ export function createAgentActions(
           onProjectStatusChanged?.();
         }
       }
-
-      const isAutomated = text.startsWith('@@automated::');
 
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,

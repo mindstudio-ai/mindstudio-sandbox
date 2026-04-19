@@ -27,7 +27,7 @@ import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager
 import {
   getAgentHistory,
   getAgentActivity,
-  getLastPendingResume,
+  getLastAbortedTrigger,
 } from '../processes/agent/index.js';
 import {
   readAgentStats,
@@ -136,7 +136,7 @@ export async function buildInitFrame(
     projectStatus: getProjectStatus(),
     plan,
     agentStats,
-    pendingResumeMessage: getLastPendingResume(),
+    lastAbortedTrigger: getLastAbortedTrigger(),
   };
 }
 
@@ -159,6 +159,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specEditorState: { tabs: [], activeTab: null },
     projectStatus: getProjectStatus(),
     agentStats: null,
-    pendingResumeMessage: getLastPendingResume(),
+    lastAbortedTrigger: getLastAbortedTrigger(),
   };
 }

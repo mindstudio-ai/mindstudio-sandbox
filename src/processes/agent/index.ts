@@ -141,28 +141,31 @@ interface PendingCommand {
 const pending = new Map<string, PendingCommand>();
 
 // ---------------------------------------------------------------------------
-// Pending resume (chained-turn cancel recovery)
+// Aborted-trigger tracking (Continue button after cancel mid-chain)
 // ---------------------------------------------------------------------------
 
-let lastPendingResume: string | null = null;
+/** Text of the currently-running automated turn, captured from user_message. */
+let currentAutomatedTurnText: string | null = null;
+/** Last automated trigger that was cancelled — drives the Continue button. */
+let lastAbortedTrigger: string | null = null;
 
-export function getLastPendingResume(): string | null {
-  return lastPendingResume;
+export function getLastAbortedTrigger(): string | null {
+  return lastAbortedTrigger;
 }
 
 /**
- * Set the pending resume sentinel. Broadcasts `pendingResumeChanged` only
- * when the value actually changes (so repeated clears don't spam clients).
+ * Set the last aborted trigger. Broadcasts `lastAbortedTriggerChanged` only
+ * when the value actually changes so repeated clears don't spam clients.
  */
-export function setLastPendingResume(
+export function setLastAbortedTrigger(
   value: string | null,
   broadcast: AgentCallbacks['broadcast'],
 ): void {
-  if (lastPendingResume === value) {
+  if (lastAbortedTrigger === value) {
     return;
   }
-  lastPendingResume = value;
-  broadcast('pendingResumeChanged', { pendingResumeMessage: value });
+  lastAbortedTrigger = value;
+  broadcast('lastAbortedTriggerChanged', { lastAbortedTrigger: value });
 }
 
 /**
@@ -228,7 +231,7 @@ export function startAgent(
     maxRestarts: 0,
     critical: true,
     logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
-    onStdout: (line) => handleStdout(line, callbacks),
+    onStdout: (line) => handleStdout(line, pm, callbacks),
   });
 }
 
@@ -253,9 +256,37 @@ export function sendToolResult(
 // Stdout event handling
 // ---------------------------------------------------------------------------
 
-function handleStdout(line: string, cb: AgentCallbacks): void {
+function handleStdout(
+  line: string,
+  pm: ProcessManager,
+  cb: AgentCallbacks,
+): void {
   const event = parseAgentMessage(line);
   if (!event) {
+    return;
+  }
+
+  // --- Ready / session_restored — auto-resume the queue if non-empty.
+  // Remy persists the queue to .remy-stats.json across restarts but does
+  // NOT auto-drain. Send the dedicated `resume` action to kick it off.
+  if (event.event === 'ready' || event.event === 'session_restored') {
+    if ((event.queuedMessages?.length ?? 0) > 0) {
+      log.info(
+        `Queue non-empty on ${event.event} (${event.queuedMessages?.length} items) — sending resume`,
+      );
+      // Fire-and-forget. Remy's contract: resume completes immediately,
+      // per-turn events follow as the queue drains.
+      sendAgentCommand(pm, 'resume', {}, 30_000);
+    }
+    return;
+  }
+
+  // --- Queued event — a message was enqueued instead of rejected. Under
+  // our policy only automated messages reach remy while busy, so this
+  // should be rare. Pass through so frontend can surface if desired.
+  if (event.event === 'queued') {
+    const { event: _evt, ...data } = event;
+    cb.broadcast('agentQueued', data);
     return;
   }
 
@@ -285,6 +316,12 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
   // Rendering is driven by the @@automated::X@@ prefix in `text`. ---
 
   if (event.event === 'user_message') {
+    // Snapshot the trigger text for potential cancel → Continue-button
+    // re-trigger. Only automated turns (sandbox- or chain-initiated) get
+    // tracked; user-typed messages don't surface a resume affordance.
+    currentAutomatedTurnText = event.text.startsWith('@@automated::')
+      ? event.text
+      : null;
     const { event: _evt, ...data } = event;
     cb.broadcast('agentUserMessage', data);
     return;
@@ -305,28 +342,31 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       }
     }
 
-    // Chained successful turn: remy is firing turn_started for the next
-    // step immediately. Don't flip busy to idle in the gap — the frontend
+    // More queued work means remy is firing turn_started for the next
+    // item immediately. Don't flip busy to idle in the gap — the frontend
     // shouldn't flicker between pipeline steps. Still fire onTurnDone so
-    // a snapshot checkpoint runs between chain steps.
-    const isChainedSuccess = event.success && !!event.pendingNextMessage;
+    // a snapshot checkpoint runs between items.
+    const hasMoreQueuedWork = (event.queuedMessages?.length ?? 0) > 0;
 
-    if (isChainedSuccess) {
+    if (hasMoreQueuedWork) {
       cb.onTurnDone?.();
     } else if (endTurn(event.requestId)) {
       cb.onTurnDone?.();
       broadcastActivity(cb.broadcast);
     }
 
-    // Always broadcast to frontend as the turn-done signal
+    // Always broadcast to frontend as the turn-done signal. Spread carries
+    // queuedMessages / cancelledMessages through to the frontend opaquely.
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
 
-    // Resume button — only populate on cancelled chains. Successful chain
-    // hand-offs continue automatically and don't need a resume affordance.
-    if (!event.success && event.pendingNextMessage) {
-      setLastPendingResume(event.pendingNextMessage, cb.broadcast);
+    // If an automated turn was cancelled (success: false), snapshot its
+    // trigger text so the frontend can offer a Continue button. Clear the
+    // per-turn captured text regardless so the next turn starts fresh.
+    if (!event.success && currentAutomatedTurnText) {
+      setLastAbortedTrigger(currentAutomatedTurnText, cb.broadcast);
     }
+    currentAutomatedTurnText = null;
     return;
   }
 
