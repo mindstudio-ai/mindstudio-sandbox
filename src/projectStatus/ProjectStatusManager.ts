@@ -126,6 +126,18 @@ export function getOnboardingState(): ProjectOnboardingState {
   return status.onboardingState;
 }
 
+/**
+ * Re-read `.project-status.json` from disk. Used by the file watcher when
+ * the file is written externally (e.g. remy writes it directly, or a draft
+ * snapshot restore overwrote it). Returns true if the onboarding state
+ * actually changed — callers use this to decide whether to broadcast.
+ */
+export function reloadProjectStatus(): boolean {
+  const before = status.onboardingState;
+  tryReadStatus(statusFilePath);
+  return status.onboardingState !== before;
+}
+
 // ---------------------------------------------------------------------------
 // Onboarding state mutations
 // ---------------------------------------------------------------------------

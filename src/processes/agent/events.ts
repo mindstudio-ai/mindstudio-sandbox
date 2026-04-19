@@ -105,6 +105,12 @@ export interface AgentCompletedEvent {
   requestId?: string;
   success: boolean;
   error?: string;
+  /**
+   * Set by remy when a chained automated turn was cancelled. Carries the
+   * sentinel (e.g. `@@automated::buildFromInitialSpec@@`) the user can resend
+   * to resume the pipeline.
+   */
+  pendingNextMessage?: string;
 }
 
 export type AgentEvent =

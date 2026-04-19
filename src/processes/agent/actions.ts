@@ -3,7 +3,7 @@
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { sendAgentCommand } from './index.js';
+import { sendAgentCommand, setLastPendingResume } from './index.js';
 import {
   hasPendingExternalTools,
   clearPendingExternalTools,
@@ -22,9 +22,13 @@ type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 /** Create WS action handlers for agent commands. */
 export function createAgentActions(
   pm: ProcessManager,
-  callbacks?: { onProjectStatusChanged?: () => void },
+  callbacks: {
+    onProjectStatusChanged?: () => void;
+    broadcast: (event: string, data: Record<string, unknown>) => void;
+  },
 ): Record<string, ActionHandler> {
-  const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
+  const onProjectStatusChanged = callbacks.onProjectStatusChanged;
+  const broadcast = callbacks.broadcast;
 
   return {
     // User sends a message to the agent
@@ -56,6 +60,10 @@ export function createAgentActions(
         );
         await cancelResponse;
       }
+
+      // Any new user message ends the chained-resume window, whether it IS
+      // the pending sentinel (Continue click) or a different message.
+      setLastPendingResume(null, broadcast);
 
       // Advance onboarding to 'building' when the user approves the initial
       // plan. Remy also calls setProjectOnboardingState('building') at the

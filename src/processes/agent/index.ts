@@ -140,6 +140,31 @@ interface PendingCommand {
 
 const pending = new Map<string, PendingCommand>();
 
+// ---------------------------------------------------------------------------
+// Pending resume (chained-turn cancel recovery)
+// ---------------------------------------------------------------------------
+
+let lastPendingResume: string | null = null;
+
+export function getLastPendingResume(): string | null {
+  return lastPendingResume;
+}
+
+/**
+ * Set the pending resume sentinel. Broadcasts `pendingResumeChanged` only
+ * when the value actually changes (so repeated clears don't spam clients).
+ */
+export function setLastPendingResume(
+  value: string | null,
+  broadcast: AgentCallbacks['broadcast'],
+): void {
+  if (lastPendingResume === value) {
+    return;
+  }
+  lastPendingResume = value;
+  broadcast('pendingResumeChanged', { pendingResumeMessage: value });
+}
+
 /**
  * Send a command to the agent and wait for the correlated `completed` event.
  * Returns `{ requestId, response }` so callers can track the requestId
@@ -291,6 +316,13 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
     // Always broadcast to frontend as the turn-done signal
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
+
+    // Capture pending chain-resume sentinel. Frontend uses this to show a
+    // Continue button if the user cancels mid-chain; persists in-memory so
+    // it survives WS reconnects within the sandbox lifetime.
+    if (event.pendingNextMessage) {
+      setLastPendingResume(event.pendingNextMessage, cb.broadcast);
+    }
     return;
   }
 
