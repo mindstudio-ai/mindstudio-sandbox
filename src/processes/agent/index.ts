@@ -140,6 +140,34 @@ interface PendingCommand {
 
 const pending = new Map<string, PendingCommand>();
 
+// ---------------------------------------------------------------------------
+// Aborted-trigger tracking (Continue button after cancel mid-chain)
+// ---------------------------------------------------------------------------
+
+/** Text of the currently-running automated turn, captured from user_message. */
+let currentAutomatedTurnText: string | null = null;
+/** Last automated trigger that was cancelled — drives the Continue button. */
+let lastAbortedTrigger: string | null = null;
+
+export function getLastAbortedTrigger(): string | null {
+  return lastAbortedTrigger;
+}
+
+/**
+ * Set the last aborted trigger. Broadcasts `lastAbortedTriggerChanged` only
+ * when the value actually changes so repeated clears don't spam clients.
+ */
+export function setLastAbortedTrigger(
+  value: string | null,
+  broadcast: AgentCallbacks['broadcast'],
+): void {
+  if (lastAbortedTrigger === value) {
+    return;
+  }
+  lastAbortedTrigger = value;
+  broadcast('lastAbortedTriggerChanged', { lastAbortedTrigger: value });
+}
+
 /**
  * Send a command to the agent and wait for the correlated `completed` event.
  * Returns `{ requestId, response }` so callers can track the requestId
@@ -203,7 +231,7 @@ export function startAgent(
     maxRestarts: 0,
     critical: true,
     logStdout: false, // stdout is NDJSON protocol traffic, not useful in log file
-    onStdout: (line) => handleStdout(line, callbacks),
+    onStdout: (line) => handleStdout(line, pm, callbacks),
   });
 }
 
@@ -228,42 +256,74 @@ export function sendToolResult(
 // Stdout event handling
 // ---------------------------------------------------------------------------
 
-function handleStdout(line: string, cb: AgentCallbacks): void {
+function handleStdout(
+  line: string,
+  pm: ProcessManager,
+  cb: AgentCallbacks,
+): void {
   const event = parseAgentMessage(line);
   if (!event) {
+    return;
+  }
+
+  // --- Ready / session_restored — auto-resume the queue if non-empty.
+  // Remy persists the queue to .remy-stats.json across restarts but does
+  // NOT auto-drain. Send the dedicated `resume` action to kick it off.
+  if (event.event === 'ready' || event.event === 'session_restored') {
+    if ((event.queuedMessages?.length ?? 0) > 0) {
+      log.info(
+        `Queue non-empty on ${event.event} (${event.queuedMessages?.length} items) — sending resume`,
+      );
+      // Fire-and-forget. Remy's contract: resume completes immediately,
+      // per-turn events follow as the queue drains.
+      sendAgentCommand(pm, 'resume', {}, 30_000);
+    }
+    return;
+  }
+
+  // --- Queued event — a message was enqueued instead of rejected. Under
+  // our policy only automated messages reach remy while busy, so this
+  // should be rare. Pass through so frontend can surface if desired.
+  if (event.event === 'queued') {
+    const { event: _evt, ...data } = event;
+    cb.broadcast('agentQueued', data);
     return;
   }
 
   // --- Turn started — track remy-initiated turns ---
 
   if (event.event === 'turn_started') {
-    if (!event.requestId) {
-      // Remy-initiated turn (session restore, background tool results, etc.).
-      // Set busy — remy can't accept new messages while processing, so the
-      // frontend should disable input regardless of how the turn started.
+    const turnId = event.requestId;
+    if (!turnId) {
+      // Legacy path (pre-uniform-user_message contract): remy didn't emit a
+      // requestId for internally-triggered turns. Synthesize one so busy
+      // state still flips.
       const syntheticId = `bg-${++backgroundTurnCounter}`;
       startTurn(syntheticId);
+      broadcastActivity(cb.broadcast);
+    } else if (!turnId.startsWith('ac-')) {
+      // Remy-initiated turn (chain-*, bg-*). ac-* turns are already tracked
+      // via startTurn() at the sendAgentCommand site in actions.ts, so we
+      // only handle the non-ac prefixes here.
+      startTurn(turnId);
       broadcastActivity(cb.broadcast);
     }
     return;
   }
 
-  // --- User messages (background work results from remy) ---
+  // --- User messages — turn-starting message echoed by remy for every
+  // turn (ac-*, chain-*, bg-*). Activity tracking lives in turn_started.
+  // Rendering is driven by the @@automated::X@@ prefix in `text`. ---
 
   if (event.event === 'user_message') {
-    if (!event.requestId) {
-      // Remy-initiated user message (e.g., background tool results being
-      // fed back). Set busy so the frontend knows the agent is processing
-      // and disables input — prevents "already processing" errors.
-      const syntheticId = `bg-${++backgroundTurnCounter}`;
-      startTurn(syntheticId);
-      broadcastActivity(cb.broadcast);
-    }
-    // Broadcast non-hidden messages so frontend can show a marker in chat
-    if (!event.hidden) {
-      const { event: _evt, ...data } = event;
-      cb.broadcast('agentUserMessage', data);
-    }
+    // Snapshot the trigger text for potential cancel → Continue-button
+    // re-trigger. Only automated turns (sandbox- or chain-initiated) get
+    // tracked; user-typed messages don't surface a resume affordance.
+    currentAutomatedTurnText = event.text.startsWith('@@automated::')
+      ? event.text
+      : null;
+    const { event: _evt, ...data } = event;
+    cb.broadcast('agentUserMessage', data);
     return;
   }
 
@@ -282,15 +342,31 @@ function handleStdout(line: string, cb: AgentCallbacks): void {
       }
     }
 
-    // End the active turn (whether user-initiated or background)
-    if (endTurn(event.requestId)) {
+    // More queued work means remy is firing turn_started for the next
+    // item immediately. Don't flip busy to idle in the gap — the frontend
+    // shouldn't flicker between pipeline steps. Still fire onTurnDone so
+    // a snapshot checkpoint runs between items.
+    const hasMoreQueuedWork = (event.queuedMessages?.length ?? 0) > 0;
+
+    if (hasMoreQueuedWork) {
+      cb.onTurnDone?.();
+    } else if (endTurn(event.requestId)) {
       cb.onTurnDone?.();
       broadcastActivity(cb.broadcast);
     }
 
-    // Always broadcast to frontend as the turn-done signal
+    // Always broadcast to frontend as the turn-done signal. Spread carries
+    // queuedMessages / cancelledMessages through to the frontend opaquely.
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
+
+    // If an automated turn was cancelled (success: false), snapshot its
+    // trigger text so the frontend can offer a Continue button. Clear the
+    // per-turn captured text regardless so the next turn starts fresh.
+    if (!event.success && currentAutomatedTurnText) {
+      setLastAbortedTrigger(currentAutomatedTurnText, cb.broadcast);
+    }
+    currentAutomatedTurnText = null;
     return;
   }
 

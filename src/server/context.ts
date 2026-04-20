@@ -24,7 +24,11 @@ import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
 import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager.js';
-import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
+import {
+  getAgentHistory,
+  getAgentActivity,
+  getLastAbortedTrigger,
+} from '../processes/agent/index.js';
 import {
   readAgentStats,
   type AgentStats,
@@ -132,6 +136,7 @@ export async function buildInitFrame(
     projectStatus: getProjectStatus(),
     plan,
     agentStats,
+    lastAbortedTrigger: getLastAbortedTrigger(),
   };
 }
 
@@ -154,5 +159,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specEditorState: { tabs: [], activeTab: null },
     projectStatus: getProjectStatus(),
     agentStats: null,
+    lastAbortedTrigger: getLastAbortedTrigger(),
   };
 }

@@ -4,19 +4,50 @@ import { parseJsonEvent } from '../parseJsonEvent.js';
 // Agent stdout event types
 // ---------------------------------------------------------------------------
 
-/** System events — no requestId, lifecycle only. */
+/**
+ * A message sitting in remy's FIFO queue. Automated chain steps and
+ * background flushes queue internally; a user message queues if the
+ * sandbox forwards it while remy is busy (we gate this — see actions.ts).
+ */
+export interface QueuedMessage {
+  command: {
+    action: 'message';
+    text: string;
+    onboardingState?: string;
+    requestId?: string;
+    [key: string]: unknown;
+  };
+  source: 'user' | 'chain' | 'background';
+  enqueuedAt: number;
+}
+
+/** System events — lifecycle; some may carry queue state on restart/resume. */
 export type AgentSystemEvent =
-  | { event: 'ready' }
+  | { event: 'ready'; queuedMessages?: QueuedMessage[] }
   | { event: 'turn_started'; requestId?: string }
-  | { event: 'session_restored'; messageCount?: number }
+  | {
+      event: 'session_restored';
+      messageCount?: number;
+      queuedMessages?: QueuedMessage[];
+    }
+  | {
+      event: 'queued';
+      requestId: string;
+      position: number;
+      queuedMessages: QueuedMessage[];
+    }
   | { event: 'stopping' }
   | { event: 'stopped' };
 
-/** User message injected by remy (e.g., background work results). */
+/**
+ * Turn-starting user message echoed by remy for every turn — sandbox-
+ * originated (`ac-*`), chained (`chain-*`), and background (`bg-*`).
+ * Rendering is driven purely by the `@@automated::X@@` prefix in `text`;
+ * the `requestId` prefix indicates origin but does not affect rendering.
+ */
 export interface AgentUserMessageEvent {
   event: 'user_message';
   text: string;
-  hidden?: boolean;
   requestId?: string;
 }
 
@@ -95,6 +126,7 @@ export type AgentDataEvent =
       requestId?: string;
       running?: boolean;
       currentRequestId?: string;
+      queuedMessages?: QueuedMessage[];
     }
   | { event: 'session_cleared'; requestId?: string }
   | { event: 'compaction_complete'; requestId?: string; error?: string };
@@ -105,6 +137,16 @@ export interface AgentCompletedEvent {
   requestId?: string;
   success: boolean;
   error?: string;
+  /**
+   * Items still queued when this turn ended. Non-empty → another turn is
+   * starting immediately; busy state should carry across the hand-off.
+   */
+  queuedMessages?: QueuedMessage[];
+  /**
+   * On a cancel command's completed, the items drained from the queue by
+   * the cancel. Typed for completeness; currently not surfaced in any UI.
+   */
+  cancelledMessages?: QueuedMessage[];
 }
 
 export type AgentEvent =

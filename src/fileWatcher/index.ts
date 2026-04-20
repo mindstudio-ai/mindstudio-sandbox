@@ -19,7 +19,10 @@ export {
   TREE_HIDDEN_WATCHED,
   TREE_COLLAPSED,
 } from './watcher.js';
-import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
+import {
+  getProjectStatus,
+  reloadProjectStatus,
+} from '../projectStatus/ProjectStatusManager.js';
 import { readAgentStats } from '../processes/agent/agentStats.js';
 import { createLogger } from '../logger.js';
 
@@ -89,6 +92,16 @@ export function setupFileWatcher(
         fs.readFile(path.join(config.workspaceDir, filePath), 'utf-8')
           .then((content) => broadcast('planChanged', { plan: content }))
           .catch(() => {});
+      }
+    }
+
+    // Project status — re-read on external writes (e.g. remy writing the
+    // file directly, or a draft snapshot restore overwriting it). In-process
+    // mutations via setOnboardingState already broadcast and flush, so the
+    // subsequent watcher event is a no-op (reloadProjectStatus returns false).
+    if (filePath === '.project-status.json' && changeType !== 'deleted') {
+      if (reloadProjectStatus()) {
+        broadcast('projectStatusChanged', getProjectStatus());
       }
     }
 

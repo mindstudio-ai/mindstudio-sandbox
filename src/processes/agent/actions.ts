@@ -3,11 +3,12 @@
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { sendAgentCommand } from './index.js';
+import { sendAgentCommand, setLastAbortedTrigger } from './index.js';
 import {
   hasPendingExternalTools,
   clearPendingExternalTools,
   startTurn,
+  getAgentActivity,
 } from './activity.js';
 import {
   getOnboardingState,
@@ -22,9 +23,13 @@ type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 /** Create WS action handlers for agent commands. */
 export function createAgentActions(
   pm: ProcessManager,
-  callbacks?: { onProjectStatusChanged?: () => void },
+  callbacks: {
+    onProjectStatusChanged?: () => void;
+    broadcast: (event: string, data: Record<string, unknown>) => void;
+  },
 ): Record<string, ActionHandler> {
-  const onProjectStatusChanged = callbacks?.onProjectStatusChanged;
+  const onProjectStatusChanged = callbacks.onProjectStatusChanged;
+  const broadcast = callbacks.broadcast;
 
   return {
     // User sends a message to the agent
@@ -57,14 +62,31 @@ export function createAgentActions(
         await cancelResponse;
       }
 
-      // Advance onboarding to initialCodegen when build is triggered
-      if (text.startsWith('@@automated::buildFromInitialSpec@@')) {
-        if (setOnboardingState('initialCodegen')) {
+      const isAutomated = text.startsWith('@@automated::');
+
+      // User-typed messages are rejected while the agent is busy. Automated
+      // messages (button clicks, remy chain steps) are allowed to queue —
+      // we don't expose user queueing as a product feature yet.
+      if (!isAutomated && getAgentActivity().busy) {
+        return {
+          success: false,
+          error: 'Agent is busy — please wait for the current turn to finish',
+        };
+      }
+
+      // Any new user message ends the Continue-button window — clear the
+      // stored aborted trigger. If the user clicked Continue (re-sending
+      // the stored trigger), the re-run will re-populate on its next cancel.
+      setLastAbortedTrigger(null, broadcast);
+
+      // Advance onboarding to 'building' when the user approves the initial
+      // plan. Remy also calls setProjectOnboardingState('building') at the
+      // start of its pipeline — the forward-only gate makes that a no-op.
+      if (text.startsWith('@@automated::approveInitialPlan@@')) {
+        if (setOnboardingState('building')) {
           onProjectStatusChanged?.();
         }
       }
-
-      const isAutomated = text.startsWith('@@automated::');
 
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
