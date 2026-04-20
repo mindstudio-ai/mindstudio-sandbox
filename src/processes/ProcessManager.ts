@@ -30,6 +30,17 @@ interface ManagedProcess {
   child: ChildProcess | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   stopped: boolean;
+  /**
+   * Per-stream line queues. The readline 'line' handler only pushes here
+   * and schedules a drain; the actual log append + onStdout/onStderr run
+   * on setImmediate so the readline handler never blocks. This is what
+   * prevents the agent's stdout pipe buffer from filling and wedging
+   * remy's `process.stdout.write`.
+   */
+  stdoutQueue: string[];
+  stdoutDraining: boolean;
+  stderrQueue: string[];
+  stderrDraining: boolean;
 }
 
 export class ProcessManager {
@@ -59,6 +70,10 @@ export class ProcessManager {
       child: null,
       restartTimer: null,
       stopped: false,
+      stdoutQueue: [],
+      stdoutDraining: false,
+      stderrQueue: [],
+      stderrDraining: false,
     };
 
     this.processes.set(config.name, proc);
@@ -102,20 +117,12 @@ export class ProcessManager {
     const rls: Array<ReturnType<typeof createInterface>> = [];
 
     if (child.stdout) {
-      const shouldLogStdout = config.logStdout !== false;
       const rl = createInterface({ input: child.stdout });
       rl.on('line', (line) => {
-        try {
-          if (shouldLogStdout) {
-            const logLine =
-              line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
-            this.registry.appendLog(config.name, logLine);
-          }
-          config.onStdout?.(line);
-        } catch (err) {
-          log.error(
-            `"${config.name}" stdout handler error: ${err instanceof Error ? err.message : err}`,
-          );
+        proc.stdoutQueue.push(line);
+        if (!proc.stdoutDraining) {
+          proc.stdoutDraining = true;
+          setImmediate(() => this.drainStdout(proc));
         }
       });
       rl.on('error', (err) => {
@@ -127,13 +134,10 @@ export class ProcessManager {
     if (child.stderr) {
       const rl = createInterface({ input: child.stderr });
       rl.on('line', (line) => {
-        try {
-          this.registry.appendLog(config.name, line);
-          config.onStderr?.(line);
-        } catch (err) {
-          log.error(
-            `"${config.name}" stderr handler error: ${err instanceof Error ? err.message : err}`,
-          );
+        proc.stderrQueue.push(line);
+        if (!proc.stderrDraining) {
+          proc.stderrDraining = true;
+          setImmediate(() => this.drainStderr(proc));
         }
       });
       rl.on('error', (err) => {
@@ -146,6 +150,11 @@ export class ProcessManager {
       for (const rl of rls) {
         rl.close();
       }
+      // Drop any unprocessed lines from the previous child. On restart the
+      // new readline starts from a clean slate; draining old data would
+      // spend CPU + broadcast stale events.
+      proc.stdoutQueue.length = 0;
+      proc.stderrQueue.length = 0;
       log.info(
         `"${config.name}" (PID ${child.pid}) exited — code=${code}, signal=${signal}`,
       );
@@ -192,6 +201,60 @@ export class ProcessManager {
       log.error(`  code: ${errno.code ?? 'unknown'}`);
       log.error(`  path: ${errno.path ?? 'unknown'}`);
     });
+  }
+
+  /**
+   * Consume one queued stdout line per event-loop tick, yielding via
+   * setImmediate between lines so readline / WS / timers stay responsive
+   * during bursts. Critically, this keeps the readline 'line' handler
+   * off the critical path — it only appends to the queue, never blocks.
+   */
+  private drainStdout(proc: ManagedProcess): void {
+    const line = proc.stdoutQueue.shift();
+    if (line === undefined) {
+      proc.stdoutDraining = false;
+      return;
+    }
+    const { config } = proc;
+    try {
+      if (config.logStdout !== false) {
+        const logLine =
+          line.length > 2000 ? line.slice(0, 2000) + '… (truncated)' : line;
+        this.registry.appendLog(config.name, logLine);
+      }
+      config.onStdout?.(line);
+    } catch (err) {
+      log.error(
+        `"${config.name}" stdout handler error: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    if (proc.stdoutQueue.length > 0) {
+      setImmediate(() => this.drainStdout(proc));
+    } else {
+      proc.stdoutDraining = false;
+    }
+  }
+
+  private drainStderr(proc: ManagedProcess): void {
+    const line = proc.stderrQueue.shift();
+    if (line === undefined) {
+      proc.stderrDraining = false;
+      return;
+    }
+    const { config } = proc;
+    try {
+      this.registry.appendLog(config.name, line);
+      config.onStderr?.(line);
+    } catch (err) {
+      log.error(
+        `"${config.name}" stderr handler error: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    if (proc.stderrQueue.length > 0) {
+      setImmediate(() => this.drainStderr(proc));
+    } else {
+      proc.stderrDraining = false;
+    }
   }
 
   getState(name: string): ProcessState | undefined {

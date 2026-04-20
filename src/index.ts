@@ -327,6 +327,7 @@ async function main(): Promise<void> {
     stopWatcher();
     lspClientRef?.stop();
     await managers.processManager.stopAll();
+    managers.registry.closeAllLogStreams();
     await stopServer();
     log.info('Shutdown complete');
     process.exit(0);

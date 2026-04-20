@@ -71,10 +71,33 @@ export class ProcessRegistry {
   private entries = new Map<string, RegistryEntry>();
   private onStateChange: (event: ProcessStateChangeEvent) => void;
   private logsDir: string;
+  /**
+   * Per-log-file append streams. Lazily opened on first write, closed and
+   * dropped on rotation so the next write reopens. `write()` returns
+   * immediately (Node buffers internally) so appendLog never blocks the
+   * readline handler that feeds it.
+   */
+  private logStreams = new Map<string, fs.WriteStream>();
 
   constructor(opts: ProcessRegistryOpts) {
     this.onStateChange = opts.onStateChange;
     this.logsDir = opts.logsDir;
+  }
+
+  private getStream(fullPath: string): fs.WriteStream {
+    let stream = this.logStreams.get(fullPath);
+    if (stream) {
+      return stream;
+    }
+    stream = fs.createWriteStream(fullPath, { flags: 'a' });
+    stream.on('error', () => {
+      // Drop the cached stream so the next append reopens. A persistent
+      // error (e.g. disk full) will just keep retrying — acceptable since
+      // logs are best-effort observability data.
+      this.logStreams.delete(fullPath);
+    });
+    this.logStreams.set(fullPath, stream);
+    return stream;
   }
 
   register(name: string, type: ProcessType, command: string): void {
@@ -185,20 +208,25 @@ export class ProcessRegistry {
       record = JSON.stringify({ ts: Date.now(), msg: line, ...ctx });
     }
     const fullPath = path.join(this.logsDir, path.basename(entry.info.logFile));
-    try {
-      fs.appendFileSync(fullPath, record + '\n');
-      entry.appendCount++;
-      if (entry.appendCount % ROTATION_CHECK_INTERVAL === 0) {
-        this.maybeRotate(fullPath);
-      }
-    } catch {
-      // Ignore write failures (dir might not exist yet during early bootstrap)
+    // Non-blocking: Node buffers internally and drains asynchronously.
+    // Errors surface via the stream's 'error' event, handled in getStream.
+    this.getStream(fullPath).write(record + '\n');
+    entry.appendCount++;
+    if (entry.appendCount % ROTATION_CHECK_INTERVAL === 0) {
+      this.maybeRotate(fullPath);
     }
   }
 
   /** Keep the tail of the log file when it exceeds the size cap. */
   private maybeRotate(fullPath: string): void {
     try {
+      // Close the active stream before rewriting the file so our truncate
+      // isn't racing with buffered writes. The next appendLog reopens lazily.
+      const stream = this.logStreams.get(fullPath);
+      if (stream) {
+        stream.end();
+        this.logStreams.delete(fullPath);
+      }
       const stat = fs.statSync(fullPath);
       if (stat.size <= MAX_LOG_SIZE) {
         return;
@@ -220,6 +248,14 @@ export class ProcessRegistry {
     } catch {
       // ignore
     }
+  }
+
+  /** Flush and close all open log streams (called on shutdown). */
+  closeAllLogStreams(): void {
+    for (const stream of this.logStreams.values()) {
+      stream.end();
+    }
+    this.logStreams.clear();
   }
 
   getInfo(name: string): ProcessInfo | undefined {
