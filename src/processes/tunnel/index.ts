@@ -310,12 +310,6 @@ export function createTunnelActions(
         120_000,
       );
     },
-    tunnelBrowserStatus: async () => {
-      return await sendCommand(pm, 'browser-status', {}, 5_000);
-    },
-    tunnelResetBrowser: async () => {
-      return await sendCommand(pm, 'reset-browser', {}, 5_000);
-    },
     tunnelImpersonate: async (p) => {
       const { roles } = p as { roles: string[] };
       if (!Array.isArray(roles)) {
