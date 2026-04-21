@@ -44,6 +44,11 @@ export function startTunnel(
       String(config.devPort),
       '--bind',
       '0.0.0.0',
+      // Opt in to sandbox-hosted headless Chrome. Tunnel supervises it,
+      // prefers it over user-connected browsers for automation commands,
+      // and falls through to the user-browser path if Chrome isn't
+      // available in the container.
+      '--sandbox-browser',
       '--log-level',
       'info',
     ],
