@@ -50,6 +50,12 @@ export class ResourceMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private cpuSamples = new Map<string, CpuSample>();
   private containerMemoryLimit: number | null = null;
+  /**
+   * PIDs tracked outside the ProcessRegistry (e.g. sandbox-hosted Chrome,
+   * owned by the tunnel). Chrome is Memory-hungry (~150-300 MB baseline)
+   * so surfacing it in resource metrics is valuable for debugging OOMs.
+   */
+  private externalPids = new Map<string, number>();
 
   constructor(opts: ResourceMonitorOpts) {
     this.registry = opts.registry;
@@ -78,6 +84,17 @@ export class ResourceMonitor {
     return this.collect();
   }
 
+  /** Track an externally-owned PID (e.g. sandbox Chrome). */
+  trackExternalPid(name: string, pid: number): void {
+    this.externalPids.set(name, pid);
+  }
+
+  /** Stop tracking an externally-owned PID. */
+  untrackExternalPid(name: string): void {
+    this.externalPids.delete(name);
+    this.cpuSamples.delete(name);
+  }
+
   private collect(): SystemResourceMetrics {
     const processes: Record<string, ProcessResourceMetrics> = {};
 
@@ -91,6 +108,11 @@ export class ResourceMonitor {
       ) {
         processes[info.name] = this.collectChildProcess(info.name, info.pid);
       }
+    }
+
+    // External PIDs (e.g. sandbox-hosted Chrome owned by the tunnel).
+    for (const [name, pid] of this.externalPids) {
+      processes[name] = this.collectChildProcess(name, pid);
     }
 
     // Clean up CPU samples for processes no longer running

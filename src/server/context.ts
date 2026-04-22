@@ -13,6 +13,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
+import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
@@ -137,6 +138,7 @@ export async function buildInitFrame(
     plan,
     agentStats,
     lastAbortedTrigger: getLastAbortedTrigger(),
+    sandboxBrowser: getSandboxBrowserState(),
   };
 }
 
@@ -160,5 +162,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     projectStatus: getProjectStatus(),
     agentStats: null,
     lastAbortedTrigger: getLastAbortedTrigger(),
+    sandboxBrowser: getSandboxBrowserState(),
   };
 }

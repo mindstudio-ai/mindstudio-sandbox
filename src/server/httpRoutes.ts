@@ -6,6 +6,7 @@ import { ctx } from './context.js';
 import { createLogger } from '../logger.js';
 import { getVersions } from './versionCache.js';
 import { getAgentActivity } from '../processes/agent/activity.js';
+import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 
 const log = createLogger('http');
@@ -162,6 +163,7 @@ function buildStatusResponse() {
     versions: getVersions(),
     app,
     tunnel: ctx.tunnelSession,
+    sandboxBrowser: getSandboxBrowserState(),
     processes,
     resources: ctx.resourceMonitor?.collectNow() ?? null,
     agent: getAgentActivity(),
