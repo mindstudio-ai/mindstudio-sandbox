@@ -170,16 +170,6 @@ export class LspSidecar {
             case '/restart-process':
               result = await this.handleRestartProcess(params);
               break;
-            case '/browser-status':
-              result = this.pm
-                ? await sendTunnelCommand(this.pm, 'browser-status', {}, 5_000)
-                : { connected: false };
-              break;
-            case '/reset-browser':
-              result = this.pm
-                ? await sendTunnelCommand(this.pm, 'reset-browser', {}, 5_000)
-                : { ok: false };
-              break;
             case '/setup-browser':
               result = this.pm
                 ? await sendTunnelCommand(

@@ -227,6 +227,13 @@ async function startServices(
       onImpersonationChanged: (roles) => {
         ctx.activeImpersonation = roles;
       },
+      onSandboxBrowserPid: (pid) => {
+        if (pid === null) {
+          ctx.resourceMonitor?.untrackExternalPid('sandboxBrowser');
+        } else {
+          ctx.resourceMonitor?.trackExternalPid('sandboxBrowser', pid);
+        }
+      },
       broadcast,
     },
   );

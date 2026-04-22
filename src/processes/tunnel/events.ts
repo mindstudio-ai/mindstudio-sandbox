@@ -63,6 +63,42 @@ export type TunnelEvent =
   | { event: 'connection-restored' }
   | { event: 'config-changed' }
   | { event: 'config-error'; message: string }
+  | {
+      event: 'sandbox-browser-state';
+      state: 'starting';
+      attempt: number;
+      previewMode?: 'desktop' | 'mobile' | null;
+    }
+  | {
+      event: 'sandbox-browser-state';
+      state: 'running';
+      pid: number;
+      previewMode?: 'desktop' | 'mobile' | null;
+      viewport: string;
+      executablePath: string;
+    }
+  | {
+      event: 'sandbox-browser-state';
+      state: 'crashed';
+      exitCode: number | null;
+      signal: string | null;
+      durationMs: number;
+      consecutiveFailures: number;
+      error?: string;
+    }
+  | {
+      event: 'sandbox-browser-state';
+      state: 'restarting';
+      delayMs: number;
+      nextAttempt: number;
+    }
+  | {
+      event: 'sandbox-browser-state';
+      state: 'degraded';
+      reason: 'repeated-crashes' | 'no-executable';
+      consecutiveFailures?: number;
+    }
+  | { event: 'sandbox-browser-state'; state: 'stopped' }
   | { event: 'error'; message: string };
 
 // ---------------------------------------------------------------------------

@@ -23,10 +23,61 @@ export interface TunnelSessionState {
   webInterfaceUrl: string;
 }
 
+export interface SandboxBrowserState {
+  state:
+    | 'starting'
+    | 'running'
+    | 'crashed'
+    | 'restarting'
+    | 'degraded'
+    | 'stopped'
+    | 'unknown';
+  pid: number | null;
+  previewMode: 'desktop' | 'mobile' | null;
+  viewport: string | null;
+  executablePath: string | null;
+  /** Timestamp of most recent `running` transition. */
+  startedAt: number | null;
+  /** Timestamp of most recent `crashed` transition. */
+  lastCrashAt: number | null;
+  lastCrashExitCode: number | null;
+  lastCrashSignal: string | null;
+  /** Cumulative within session; reset to 0 on every `running`. */
+  consecutiveFailures: number;
+  /** Total `running` transitions after the first. */
+  restartCount: number;
+  degradedReason: 'repeated-crashes' | 'no-executable' | null;
+}
+
+function initialSandboxBrowserState(): SandboxBrowserState {
+  return {
+    state: 'unknown',
+    pid: null,
+    previewMode: null,
+    viewport: null,
+    executablePath: null,
+    startedAt: null,
+    lastCrashAt: null,
+    lastCrashExitCode: null,
+    lastCrashSignal: null,
+    consecutiveFailures: 0,
+    restartCount: 0,
+    degradedReason: null,
+  };
+}
+
+let sandboxBrowserState: SandboxBrowserState = initialSandboxBrowserState();
+
+export function getSandboxBrowserState(): SandboxBrowserState {
+  return { ...sandboxBrowserState };
+}
+
 export interface TunnelCallbacks {
   onSessionStarted: (session: TunnelSessionState) => void;
   onSessionEnded: () => void;
   onImpersonationChanged: (roles: string[] | null) => void;
+  /** Called whenever the sandbox-browser PID should be added/removed from resource monitoring. */
+  onSandboxBrowserPid: (pid: number | null) => void;
   broadcast: (event: string, data: Record<string, any>) => void;
 }
 
@@ -44,6 +95,11 @@ export function startTunnel(
       String(config.devPort),
       '--bind',
       '0.0.0.0',
+      // Opt in to sandbox-hosted headless Chrome. Tunnel supervises it,
+      // prefers it over user-connected browsers for automation commands,
+      // and falls through to the user-browser path if Chrome isn't
+      // available in the container.
+      '--sandbox-browser',
       '--log-level',
       'info',
     ],
@@ -235,10 +291,90 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
     case 'config-error':
       log.warn('Config error', { message: tunnelEvent.message });
       break;
+    case 'sandbox-browser-state':
+      handleSandboxBrowserState(tunnelEvent, cb);
+      break;
     case 'error':
       log.error('Tunnel error', { message: tunnelEvent.message });
       break;
   }
+}
+
+/**
+ * Apply a sandbox-browser-state transition to module state, notify the
+ * ResourceMonitor about PID add/remove, and broadcast the new state so
+ * the frontend can render Chrome's lifecycle without polling.
+ */
+function handleSandboxBrowserState(
+  event: Extract<TunnelEvent, { event: 'sandbox-browser-state' }>,
+  cb: TunnelCallbacks,
+): void {
+  const prev = sandboxBrowserState;
+  const next: SandboxBrowserState = { ...prev };
+
+  switch (event.state) {
+    case 'starting':
+      next.state = 'starting';
+      if (event.previewMode !== undefined) {
+        next.previewMode = event.previewMode ?? null;
+      }
+      break;
+    case 'running':
+      next.state = 'running';
+      next.pid = event.pid;
+      next.previewMode = event.previewMode ?? null;
+      next.viewport = event.viewport;
+      next.executablePath = event.executablePath;
+      next.startedAt = Date.now();
+      next.consecutiveFailures = 0;
+      next.degradedReason = null;
+      // Count subsequent `running` transitions as restarts (the very first
+      // one is the initial launch).
+      if (prev.state !== 'unknown' && prev.state !== 'starting') {
+        next.restartCount = prev.restartCount + 1;
+      } else if (prev.startedAt !== null) {
+        next.restartCount = prev.restartCount + 1;
+      }
+      cb.onSandboxBrowserPid(event.pid);
+      break;
+    case 'crashed':
+      next.state = 'crashed';
+      next.pid = null;
+      next.lastCrashAt = Date.now();
+      next.lastCrashExitCode = event.exitCode;
+      next.lastCrashSignal = event.signal;
+      next.consecutiveFailures = event.consecutiveFailures;
+      cb.onSandboxBrowserPid(null);
+      log.warn('Sandbox Chrome crashed', {
+        exitCode: event.exitCode,
+        signal: event.signal,
+        consecutiveFailures: event.consecutiveFailures,
+      });
+      break;
+    case 'restarting':
+      next.state = 'restarting';
+      break;
+    case 'degraded':
+      next.state = 'degraded';
+      next.pid = null;
+      next.degradedReason = event.reason;
+      if (typeof event.consecutiveFailures === 'number') {
+        next.consecutiveFailures = event.consecutiveFailures;
+      }
+      cb.onSandboxBrowserPid(null);
+      log.error('Sandbox Chrome degraded — automation disabled for session', {
+        reason: event.reason,
+      });
+      break;
+    case 'stopped':
+      // Full reset — counters are per-session, not per-sandbox-lifetime.
+      Object.assign(next, initialSandboxBrowserState(), { state: 'stopped' });
+      cb.onSandboxBrowserPid(null);
+      break;
+  }
+
+  sandboxBrowserState = next;
+  cb.broadcast('sandboxBrowserStateChanged', { sandboxBrowser: next });
 }
 
 // ---------------------------------------------------------------------------
@@ -304,12 +440,6 @@ export function createTunnelActions(
         path ? { path } : {},
         120_000,
       );
-    },
-    tunnelBrowserStatus: async () => {
-      return await sendCommand(pm, 'browser-status', {}, 5_000);
-    },
-    tunnelResetBrowser: async () => {
-      return await sendCommand(pm, 'reset-browser', {}, 5_000);
     },
     tunnelImpersonate: async (p) => {
       const { roles } = p as { roles: string[] };
