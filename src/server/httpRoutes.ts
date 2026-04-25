@@ -169,6 +169,7 @@ function buildStatusResponse() {
     agent: getAgentActivity(),
     projectStatus: getProjectStatus(),
     snapshot: ctx.snapshotManager?.getSnapshotStatus() ?? null,
+    installFailures: ctx.installFailures ?? null,
   };
 }
 
