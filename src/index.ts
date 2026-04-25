@@ -201,9 +201,13 @@ async function startServices(
     ? path.resolve(config.workspaceDir, path.dirname(webInterface.path))
     : null;
 
-  if (webDir) {
+  if (webDir && !ctx.installFailures?.length) {
     progress('devServer', `Starting dev server: ${devCommand}`);
     startDevServer(processManager, { command: devCommand, cwd: webDir });
+  } else if (webDir) {
+    log.warn(
+      'Skipping dev server start because npm install failed — user can fix deps from the terminal and restart manually',
+    );
   } else {
     log.info('No web interface, skipping dev server');
   }
@@ -407,8 +411,20 @@ async function main(): Promise<void> {
       );
     }
 
-    // 9. Install dependencies
-    await installDependencies(config.workspaceDir, progress);
+    // 9. Install dependencies — non-fatal. installDependencies retries
+    // with --legacy-peer-deps internally; if everything still fails we
+    // record the failures and boot in degraded mode (no dev server, but
+    // terminal/editor/agent all functional so the user can recover).
+    const installResult = await installDependencies(
+      config.workspaceDir,
+      progress,
+    );
+    if (installResult.failures.length > 0) {
+      log.warn(
+        `npm install failed in ${installResult.failures.length} directory(ies); booting without dev server`,
+      );
+      ctx.installFailures = installResult.failures;
+    }
 
     // 10. Init handlers
     initFilesystem(config.workspaceDir);

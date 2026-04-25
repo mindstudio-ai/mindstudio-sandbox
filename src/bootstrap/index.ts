@@ -408,10 +408,54 @@ export async function readAppConfig(
 // Dependencies
 // ---------------------------------------------------------------------------
 
+export interface InstallFailure {
+  dir: string;
+  error: string;
+}
+
+export interface InstallResult {
+  failures: InstallFailure[];
+}
+
+/**
+ * Run `npm install` in one directory. On ERESOLVE-style failures, retry
+ * once with `--legacy-peer-deps`. App package.jsons in the wild often have
+ * peer-dep skew (e.g. vite vs. vite-plugin-pwa) — the retry recovers most
+ * of those without user intervention. If both attempts fail, return the
+ * error rather than throwing so the caller can keep bootstrapping.
+ */
+async function npmInstallWithFallback(
+  dir: string,
+): Promise<InstallFailure | null> {
+  try {
+    await runAsync('npm install', { cwd: dir, label: `npm install in ${dir}` });
+    return null;
+  } catch (err) {
+    const firstError = err instanceof Error ? err.message : String(err);
+    log.warn(
+      `Strict npm install failed in ${dir}, retrying with --legacy-peer-deps`,
+    );
+    try {
+      await runAsync('npm install --legacy-peer-deps', {
+        cwd: dir,
+        label: `npm install --legacy-peer-deps in ${dir}`,
+      });
+      return null;
+    } catch (retryErr) {
+      const retryError =
+        retryErr instanceof Error ? retryErr.message : String(retryErr);
+      // Surface the retry error since it's the more relevant signal —
+      // the strict failure is implied.
+      log.error(`npm install failed even with --legacy-peer-deps in ${dir}`);
+      return { dir, error: retryError || firstError };
+    }
+  }
+}
+
 export async function installDependencies(
   workspaceDir: string,
   progress: ProgressFn,
-): Promise<void> {
+): Promise<InstallResult> {
   const packageDirs = [
     path.join(workspaceDir, 'dist', 'methods'),
     path.join(workspaceDir, 'dist', 'interfaces', 'web'),
@@ -433,7 +477,7 @@ export async function installDependencies(
 
   if (installDirs.length === 0) {
     log.info('No package.json files found, skipping install');
-    return;
+    return { failures: [] };
   }
 
   progress(
@@ -442,11 +486,15 @@ export async function installDependencies(
   );
 
   const startTime = Date.now();
-  await Promise.all(
-    installDirs.map((dir) =>
-      runAsync('npm install', { cwd: dir, label: `npm install in ${dir}` }),
-    ),
-  );
+  const results = await Promise.all(installDirs.map(npmInstallWithFallback));
   const elapsed = Date.now() - startTime;
-  log.info(`All npm installs completed in ${elapsed}ms`);
+  const failures = results.filter((r): r is InstallFailure => r !== null);
+  if (failures.length === 0) {
+    log.info(`All npm installs completed in ${elapsed}ms`);
+  } else {
+    log.warn(
+      `npm install completed in ${elapsed}ms with ${failures.length} failure(s)`,
+    );
+  }
+  return { failures };
 }

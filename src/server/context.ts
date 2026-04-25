@@ -14,6 +14,7 @@ import path from 'node:path';
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
+import type { InstallFailure } from '../bootstrap/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
@@ -56,6 +57,12 @@ export interface ServerContext {
     | null;
   activeImpersonation: string[] | null;
   onProjectStatusChanged: (() => void) | null;
+  /**
+   * Set if `npm install` failed for one or more app package directories
+   * during bootstrap. Sandbox boots in degraded mode (no dev server) so
+   * the user can recover from the terminal. Null on a clean install.
+   */
+  installFailures: InstallFailure[] | null;
 }
 
 export const ctx: ServerContext = {
@@ -76,6 +83,7 @@ export const ctx: ServerContext = {
   activeImpersonation: null,
   onFileChanged: null,
   onProjectStatusChanged: null,
+  installFailures: null,
 };
 
 // --- Init frame ---
@@ -139,6 +147,7 @@ export async function buildInitFrame(
     agentStats,
     lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
+    installFailures: ctx.installFailures,
   };
 }
 
@@ -163,5 +172,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     agentStats: null,
     lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
+    installFailures: ctx.installFailures,
   };
 }
