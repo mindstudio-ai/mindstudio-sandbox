@@ -395,7 +395,19 @@ async function main(): Promise<void> {
     configureGit(config.workspaceDir);
     linkProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
-    await snapshotManager.restore();
+    const restoreOutcome = await snapshotManager.restore();
+    if (restoreOutcome === 'unresolvable') {
+      // Refuse to boot in scaffold state. The user's draft either exists
+      // and we couldn't fetch/apply it, or the remote is in a state where
+      // we can't tell. Either way, proceeding past here would let the user
+      // edit on top of the scaffold and silently lose their real work.
+      const reason = snapshotManager.getSnapshotStatus().lastError ?? 'unknown';
+      const message = `Could not restore your last session: ${reason}`;
+      log.error(`${message}. Refusing to boot in scaffold state.`);
+      setStatus('error');
+      broadcast('bootstrapProgress', { step: 'error', message });
+      return; // skip steps 7+: no project status init, no dev server, no agent edits. WS stays up.
+    }
 
     // 7. Init project status (after snapshot restore so file is available)
     initProjectStatus(config.workspaceDir);
