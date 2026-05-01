@@ -35,6 +35,7 @@ import {
   readAgentStats,
   type AgentStats,
 } from '../processes/agent/agentStats.js';
+import { readAppBrand, type AppBrand } from '../projectStatus/appBrand.js';
 import { getActiveSessionIds } from './wsHandlers/pty.js';
 
 export interface ServerContext {
@@ -116,6 +117,11 @@ export async function buildInitFrame(
     agentStats = await readAgentStats(ctx.workspaceDir);
   }
 
+  let appBrand: AppBrand | null = null;
+  if (ctx.workspaceDir) {
+    appBrand = await readAppBrand(ctx.workspaceDir);
+  }
+
   return {
     event: 'init',
     status: ctx.status,
@@ -145,6 +151,7 @@ export async function buildInitFrame(
     projectStatus: getProjectStatus(),
     plan,
     agentStats,
+    appBrand,
     lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,
@@ -170,6 +177,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     specEditorState: { tabs: [], activeTab: null },
     projectStatus: getProjectStatus(),
     agentStats: null,
+    appBrand: null,
     lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,

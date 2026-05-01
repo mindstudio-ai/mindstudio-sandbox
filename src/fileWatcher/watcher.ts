@@ -17,8 +17,12 @@ export const TREE_HIDDEN = new Set([
 ]);
 
 // Entries hidden from the file tree but still watched, so we can react to
-// changes (e.g. broadcast agent stats derived from .remy-stats.json).
-export const TREE_HIDDEN_WATCHED = new Set(['.remy-stats.json']);
+// changes (e.g. broadcast agent stats derived from .remy-stats.json,
+// brand info from .remy-brand.json).
+export const TREE_HIDDEN_WATCHED = new Set([
+  '.remy-stats.json',
+  '.remy-brand.json',
+]);
 
 // Directories shown in the file tree but not expanded (collapsed).
 export const TREE_COLLAPSED = new Set(['node_modules']);

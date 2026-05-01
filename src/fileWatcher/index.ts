@@ -24,6 +24,7 @@ import {
   reloadProjectStatus,
 } from '../projectStatus/ProjectStatusManager.js';
 import { readAgentStats } from '../processes/agent/agentStats.js';
+import { readAppBrand } from '../projectStatus/appBrand.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fileWatcher');
@@ -113,6 +114,18 @@ export function setupFileWatcher(
       } else {
         readAgentStats(config.workspaceDir)
           .then((stats) => broadcast('agentStatsChanged', { stats }))
+          .catch(() => {});
+      }
+    }
+
+    // App brand — extractor writes .remy-brand.json atomically on each
+    // change. Whole-object pass-through; frontend owns the schema.
+    if (filePath === '.remy-brand.json') {
+      if (changeType === 'deleted') {
+        broadcast('appBrandChanged', { brand: null });
+      } else {
+        readAppBrand(config.workspaceDir)
+          .then((brand) => broadcast('appBrandChanged', { brand }))
           .catch(() => {});
       }
     }
