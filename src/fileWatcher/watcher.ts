@@ -14,14 +14,18 @@ export const TREE_HIDDEN = new Set([
   '.logs',
   '.sandbox-state.json',
   '.remy-session.json',
+  '.remy-brand.cache.json',
+  '.remy-design-sample.json',
 ]);
 
 // Entries hidden from the file tree but still watched, so we can react to
 // changes (e.g. broadcast agent stats derived from .remy-stats.json,
-// brand info from .remy-brand.json).
+// brand info from .remy-brand.json, project status from
+// .project-status.json).
 export const TREE_HIDDEN_WATCHED = new Set([
   '.remy-stats.json',
   '.remy-brand.json',
+  '.project-status.json',
 ]);
 
 // Directories shown in the file tree but not expanded (collapsed).
