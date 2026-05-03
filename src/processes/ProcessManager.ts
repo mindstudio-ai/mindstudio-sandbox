@@ -275,7 +275,18 @@ export class ProcessManager {
       log.error(`writeStdin("${name}"): process already exited`);
       return;
     }
-    proc.child.stdin.write(data + '\n');
+    // Escape Unicode line separators (U+2028 / U+2029). These are valid
+    // inside JSON string contents and JSON.stringify leaves them as-is,
+    // but lax line splitters on the receiving end (we've seen this with
+    // remy's headless stdin reader) treat them as line terminators and
+    // split a single command across multiple "lines", causing every
+    // fragment to fail JSON.parse silently. JSON.parse on the receiver
+    // decodes \\u2028 / \\u2029 back to the original characters, so this
+    // is lossless.
+    const safe = data
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    proc.child.stdin.write(safe + '\n');
   }
 
   async restart(
