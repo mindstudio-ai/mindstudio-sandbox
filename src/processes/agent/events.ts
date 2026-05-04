@@ -127,6 +127,12 @@ export type AgentDataEvent =
       running?: boolean;
       currentRequestId?: string;
       queuedMessages?: QueuedMessage[];
+      /** Index of messages[0] in remy's full state.messages array. */
+      startIndex?: number;
+      /** Exclusive upper bound — index after the last returned message. */
+      endIndex?: number;
+      /** Total size of remy's state.messages (full conversation length). */
+      totalMessageCount?: number;
     }
   | { event: 'session_cleared'; requestId?: string }
   | {

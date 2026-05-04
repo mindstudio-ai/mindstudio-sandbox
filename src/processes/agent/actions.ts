@@ -3,7 +3,11 @@
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import { sendAgentCommand, setLastAbortedTrigger } from './index.js';
+import {
+  sendAgentCommand,
+  setLastAbortedTrigger,
+  getAgentHistory,
+} from './index.js';
 import {
   hasPendingExternalTools,
   clearPendingExternalTools,
@@ -111,6 +115,17 @@ export function createAgentActions(
         }
       }
       return result;
+    },
+    // Paginated history fetch — frontend uses this for scroll-up to load
+    // older messages without reconnecting. `before` and `limit` map to
+    // remy's `get_history` pagination contract. The initial page is
+    // included in the init frame; this action loads additional pages.
+    agentGetHistory: async (p) => {
+      const { before, limit } = p as { before?: number; limit?: number };
+      return await getAgentHistory(pm, {
+        ...(typeof before === 'number' ? { before } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
     },
     // Clear conversation
     agentClear: async () => {

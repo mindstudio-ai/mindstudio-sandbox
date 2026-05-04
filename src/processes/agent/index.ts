@@ -383,6 +383,15 @@ function handleStdout(
         ...(event.currentRequestId
           ? { currentRequestId: event.currentRequestId }
           : {}),
+        ...(typeof event.startIndex === 'number'
+          ? { startIndex: event.startIndex }
+          : {}),
+        ...(typeof event.endIndex === 'number'
+          ? { endIndex: event.endIndex }
+          : {}),
+        ...(typeof event.totalMessageCount === 'number'
+          ? { totalMessageCount: event.totalMessageCount }
+          : {}),
       };
     }
     return; // internal, don't broadcast
@@ -505,19 +514,53 @@ export interface AgentHistoryResult {
   messages: unknown[];
   running?: boolean;
   currentRequestId?: string;
+  /**
+   * Pagination metadata from remy's paginated `get_history`. Indices
+   * refer to remy's full state.messages array — opaque cursors. Note:
+   * `transformHistory` filters drop some messages, so
+   * `messages.length <= endIndex - startIndex`. `startIndex === 0`
+   * indicates no older messages remain to load.
+   */
+  startIndex?: number;
+  endIndex?: number;
+  totalMessageCount?: number;
+}
+
+export interface GetAgentHistoryOpts {
+  /** Exclusive upper bound on message index. Omit for "from the end". */
+  before?: number;
+  /** Page size. Defaults to remy's default (500). Hard cap is 2000. */
+  limit?: number;
 }
 
 /** Request chat history from the agent. Returns empty if agent isn't running or times out. */
 export async function getAgentHistory(
   pm: ProcessManager,
+  opts?: GetAgentHistoryOpts,
 ): Promise<AgentHistoryResult> {
-  const { response } = sendAgentCommand(pm, 'get_history', {}, 5_000);
+  const params: Record<string, unknown> = {};
+  if (opts?.before !== undefined) {
+    params.before = opts.before;
+  }
+  if (opts?.limit !== undefined) {
+    params.limit = opts.limit;
+  }
+  const { response } = sendAgentCommand(pm, 'get_history', params, 5_000);
   const result = await response;
   return {
     messages: (result.messages as unknown[]) ?? [],
     ...(result.running ? { running: true } : {}),
     ...(result.currentRequestId
       ? { currentRequestId: result.currentRequestId as string }
+      : {}),
+    ...(typeof result.startIndex === 'number'
+      ? { startIndex: result.startIndex }
+      : {}),
+    ...(typeof result.endIndex === 'number'
+      ? { endIndex: result.endIndex }
+      : {}),
+    ...(typeof result.totalMessageCount === 'number'
+      ? { totalMessageCount: result.totalMessageCount }
       : {}),
   };
 }

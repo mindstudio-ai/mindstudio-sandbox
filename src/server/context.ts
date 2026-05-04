@@ -131,6 +131,18 @@ export async function buildInitFrame(
     activeImpersonation: ctx.activeImpersonation,
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
     chatHistory: historyResult.messages,
+    chatHistoryStartIndex:
+      typeof historyResult.startIndex === 'number'
+        ? historyResult.startIndex
+        : null,
+    chatHistoryEndIndex:
+      typeof historyResult.endIndex === 'number'
+        ? historyResult.endIndex
+        : null,
+    chatHistoryTotalCount:
+      typeof historyResult.totalMessageCount === 'number'
+        ? historyResult.totalMessageCount
+        : null,
     ...(historyResult.running ? { agentRunning: true } : {}),
     ...(historyResult.currentRequestId
       ? { agentCurrentRequestId: historyResult.currentRequestId }
@@ -169,6 +181,9 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     activeImpersonation: ctx.activeImpersonation,
     fileTree: [],
     chatHistory: [],
+    chatHistoryStartIndex: null,
+    chatHistoryEndIndex: null,
+    chatHistoryTotalCount: null,
     processes: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
