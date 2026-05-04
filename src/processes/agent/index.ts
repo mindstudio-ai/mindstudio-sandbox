@@ -77,6 +77,8 @@ const EVENT_MAP: Record<string, string> = {
   stopped: 'agentStopped',
   session_restored: 'agentSessionRestored',
   user_message: 'agentUserMessage',
+  compaction_started: 'agentCompactionStarted',
+  compaction_complete: 'agentCompactionComplete',
 };
 
 /**
@@ -395,14 +397,10 @@ function handleStdout(
     return; // don't broadcast directly, frontend gets agentSessionCleared via EVENT_MAP below
   }
 
-  if (
-    event.event === 'compaction_complete' &&
-    'requestId' in event &&
-    event.requestId
-  ) {
-    // No data to accumulate — completed will resolve it
-    return;
-  }
+  // compaction_started / compaction_complete fall through to the generic
+  // EVENT_MAP broadcast at the bottom of this function. The gate path
+  // emits these standalone (no wrapping `completed` event), so we forward
+  // each one verbatim to the frontend.
 
   // --- editsFinished tool — internal, not broadcast ---
 

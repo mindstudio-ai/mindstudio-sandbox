@@ -129,6 +129,12 @@ export type AgentDataEvent =
       queuedMessages?: QueuedMessage[];
     }
   | { event: 'session_cleared'; requestId?: string }
+  | {
+      event: 'compaction_started';
+      requestId?: string;
+      /** True if the user's next turn is paused until compaction finishes. */
+      blocking: boolean;
+    }
   | { event: 'compaction_complete'; requestId?: string; error?: string };
 
 /** Terminal event — exactly one per command. */
