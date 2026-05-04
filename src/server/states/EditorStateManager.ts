@@ -225,16 +225,26 @@ export class EditorStateManager {
   expandFromAppConfig(appConfig: AppConfig): void {
     const dirs = new Set<string>();
 
-    // Collect the containing directory for each method/table file
+    // Collect the containing directory for each method/table file. Entries
+    // with a missing/empty `path` are skipped — the manifest type declares
+    // path as required, but real-world `mindstudio.json` files in user
+    // workspaces sometimes have malformed entries, and this pre-expansion
+    // is purely cosmetic so we'd rather degrade than crash the bootstrap.
     for (const m of appConfig.methods ?? []) {
-      dirs.add(path.dirname(m.path));
+      if (typeof m.path === 'string' && m.path) {
+        dirs.add(path.dirname(m.path));
+      }
     }
     for (const t of appConfig.tables ?? []) {
-      dirs.add(path.dirname(t.path));
+      if (typeof t.path === 'string' && t.path) {
+        dirs.add(path.dirname(t.path));
+      }
     }
     // For interfaces, expand the directory containing the config file
     for (const i of appConfig.interfaces ?? []) {
-      dirs.add(path.dirname(i.path));
+      if (typeof i.path === 'string' && i.path) {
+        dirs.add(path.dirname(i.path));
+      }
     }
 
     // Expand each directory and all its ancestors
