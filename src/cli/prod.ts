@@ -499,7 +499,7 @@ async function methodsInvoke(appId: string, args: string[]) {
   const methodId = getPositional(args, 0);
   if (!methodId) {
     fatal(
-      'Usage: mindstudio-prod methods invoke <methodId> [--input \'{"key":"value"}\'] [--stream]',
+      'Usage: mindstudio-prod methods invoke <methodId> [--input \'{"key":"value"}\'] [--stream] [--roles <a,b,c>] [--user-id <userId>]',
     );
   }
 
@@ -513,13 +513,36 @@ async function methodsInvoke(appId: string, args: string[]) {
     }
   }
 
+  // Optional impersonation. If either flag is set we hit /invoke-as instead
+  // of /invoke so the method runs with the supplied roles / user identity
+  // (lets the CLI test role-gated methods without spec edits).
+  const rolesRaw = getFlag(args, 'roles');
+  const userId = getFlag(args, 'user-id');
+  const impersonate: { roles?: string[]; userId?: string } = {};
+  if (rolesRaw) {
+    impersonate.roles = rolesRaw
+      .split(',')
+      .map((r) => r.trim())
+      .filter(Boolean);
+  }
+  if (userId) {
+    impersonate.userId = userId;
+  }
+  const useImpersonate =
+    impersonate.roles !== undefined || impersonate.userId !== undefined;
+
   const stream = hasFlag(args, 'stream');
-  const apiPath = `/_internal/v2/apps/${appId}/methods/${methodId}/invoke`;
+  const apiPath = useImpersonate
+    ? `/_internal/v2/apps/${appId}/methods/${methodId}/invoke-as`
+    : `/_internal/v2/apps/${appId}/methods/${methodId}/invoke`;
+  const body: Record<string, unknown> = useImpersonate
+    ? { input, impersonate }
+    : { input };
 
   if (stream) {
-    await apiStream(apiPath, { input, stream: true });
+    await apiStream(apiPath, { ...body, stream: true });
   } else {
-    out(await api('POST', apiPath, { input }));
+    out(await api('POST', apiPath, body));
   }
 }
 
@@ -670,13 +693,25 @@ Subcommands:
 
 Usage:
   mindstudio-prod methods list
-  mindstudio-prod methods invoke <methodId> [--input '{"key":"value"}'] [--stream]
+  mindstudio-prod methods invoke <methodId> [options]
+
+Options for invoke:
+  --input '<json>'       Method input (JSON object)
+  --stream               Stream the response as SSE events
+  --roles <a,b,c>        Run with these roles (comma-separated). Routes the
+                         call through /invoke-as so role-gated methods can
+                         be tested without spec edits.
+  --user-id <userId>     Run as this user. Combine with --roles to set
+                         identity AND role list explicitly. Either flag
+                         alone also works.
 
 Examples:
   mindstudio-prod methods list
   mindstudio-prod methods invoke mth_abc123
   mindstudio-prod methods invoke mth_abc123 --input '{"query":"hello"}'
-  mindstudio-prod methods invoke mth_abc123 --input '{"query":"hello"}' --stream`;
+  mindstudio-prod methods invoke mth_abc123 --input '{"query":"hello"}' --stream
+  mindstudio-prod methods invoke mth_abc123 --roles admin
+  mindstudio-prod methods invoke mth_abc123 --user-id user_abc --roles analyst,admin`;
 
 // ---------------------------------------------------------------------------
 // Main

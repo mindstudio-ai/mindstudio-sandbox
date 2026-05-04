@@ -100,7 +100,17 @@ export function createAgentActions(
     // User cancel in-progress agent message
     agentCancel: async () => {
       const { response } = sendAgentCommand(pm, 'cancel', {}, 5_000);
-      return await response;
+      const result = await response;
+      // If the user cancels while the build pipeline is mid-flight, drop
+      // them out of onboarding entirely so the IDE reverts to normal dev
+      // mode rather than getting stuck on a "Building..." screen. Skips
+      // the buildComplete reveal — the cancel implies they don't want it.
+      if (getOnboardingState() === 'building') {
+        if (setOnboardingState('onboardingFinished')) {
+          onProjectStatusChanged?.();
+        }
+      }
+      return result;
     },
     // Clear conversation
     agentClear: async () => {
