@@ -396,6 +396,13 @@ async function main(): Promise<void> {
     linkProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
     const restoreOutcome = await snapshotManager.restore();
+    // Drop any cached log WriteStream FDs — `git restore` does atomic
+    // rename which gives restored files (including .logs/*.ndjson) new
+    // inodes. Cached FDs from before restore now point to orphan inodes
+    // and writes vanish from the filesystem. Closing forces the next
+    // appendLog to reopen against the live inode.
+    managers.registry.closeAllLogStreams();
+    log.info('Reopened log streams after snapshot restore');
     if (restoreOutcome === 'unresolvable') {
       // Refuse to boot in scaffold state. The user's draft either exists
       // and we couldn't fetch/apply it, or the remote is in a state where
