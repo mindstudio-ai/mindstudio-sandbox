@@ -31,7 +31,16 @@ export function createCncConnectionHandler(
     // Send initial frame — broadcasts are suppressed until this completes
     try {
       const frame = await buildInitFrame(getProxyActive());
-      ws.send(JSON.stringify(frame));
+      const payload = JSON.stringify(frame);
+      const messages = Array.isArray(frame.chatHistory)
+        ? frame.chatHistory.length
+        : -1;
+      log.info('Sending init frame', {
+        bytes: payload.length,
+        messages,
+        chatHistoryTotalCount: frame.chatHistoryTotalCount,
+      });
+      ws.send(payload);
     } catch (err) {
       // Silent fallbacks here have masked real bugs (e.g. an empty
       // chatHistory because a downstream getAgentHistory crashed). Surface
