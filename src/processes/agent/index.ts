@@ -268,6 +268,9 @@ function handleStdout(
 ): void {
   const event = parseAgentMessage(line);
   if (!event) {
+    log.warn(
+      `Dropped unparseable agent stdout line (${line.length} bytes): ${line.slice(0, 200)}${line.length > 200 ? '…' : ''}`,
+    );
     return;
   }
 
@@ -379,9 +382,21 @@ function handleStdout(
 
   if (event.event === 'history' && 'requestId' in event && event.requestId) {
     const entry = pending.get(event.requestId);
+    const transformed = transformHistory(event.messages);
+    log.info('Received history event', {
+      requestId: event.requestId,
+      hasPendingEntry: !!entry,
+      rawMessagesLength: Array.isArray(event.messages)
+        ? event.messages.length
+        : -1,
+      transformedLength: transformed.length,
+      startIndex: event.startIndex,
+      endIndex: event.endIndex,
+      totalMessageCount: event.totalMessageCount,
+    });
     if (entry) {
       entry.data = {
-        messages: transformHistory(event.messages),
+        messages: transformed,
         ...(event.running ? { running: true } : {}),
         ...(event.currentRequestId
           ? { currentRequestId: event.currentRequestId }
