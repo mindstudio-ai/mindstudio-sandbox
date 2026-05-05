@@ -7,10 +7,10 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
+import { attachLineHandler } from '../processes/lineSplitter.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp/client');
@@ -62,8 +62,7 @@ export class LspClient {
     });
 
     if (this.process.stderr) {
-      const rl = createInterface({ input: this.process.stderr });
-      rl.on('line', (line) => {
+      attachLineHandler(this.process.stderr, (line) => {
         log.debug(`stderr: ${line}`);
         this.registry?.appendLog('lsp', line);
       });
