@@ -11,6 +11,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createLogger } from '../logger.js';
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
@@ -92,6 +93,8 @@ export const ctx: ServerContext = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type InitFrame = Record<string, any>;
 
+const log = createLogger('init-frame');
+
 /** Build the full init frame. Async because it fetches chat history. */
 export async function buildInitFrame(
   proxyAvailable: boolean,
@@ -99,6 +102,17 @@ export async function buildInitFrame(
   const historyResult = ctx.processManager
     ? await getAgentHistory(ctx.processManager)
     : { messages: [] };
+  log.info('History fetched for init frame', {
+    messages: historyResult.messages.length,
+    startIndex:
+      'startIndex' in historyResult ? historyResult.startIndex : undefined,
+    endIndex: 'endIndex' in historyResult ? historyResult.endIndex : undefined,
+    totalMessageCount:
+      'totalMessageCount' in historyResult
+        ? historyResult.totalMessageCount
+        : undefined,
+    running: 'running' in historyResult ? historyResult.running : undefined,
+  });
 
   let plan: string | null = null;
   if (ctx.workspaceDir) {
