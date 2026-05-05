@@ -195,6 +195,9 @@ export function sendAgentCommand(
     if (timeoutMs) {
       timer = setTimeout(() => {
         pending.delete(requestId);
+        log.warn(
+          `Command "${action}" timed out after ${timeoutMs}ms (requestId=${requestId})`,
+        );
         resolve({ success: false, error: `timeout (${timeoutMs / 1000}s)` });
       }, timeoutMs);
     }
@@ -545,7 +548,9 @@ export async function getAgentHistory(
   if (opts?.limit !== undefined) {
     params.limit = opts.limit;
   }
-  const { response } = sendAgentCommand(pm, 'get_history', params, 5_000);
+  // 30s, not 5s — pages can be ~2 MB and the JSON parse + transformHistory
+  // pipeline can compete with broadcast/handler work on the event loop.
+  const { response } = sendAgentCommand(pm, 'get_history', params, 30_000);
   const result = await response;
   return {
     messages: (result.messages as unknown[]) ?? [],
