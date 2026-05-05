@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import type {
   ProcessRegistry,
   ProcessState,
   ProcessInfo,
 } from './ProcessRegistry.js';
+import { attachLineHandler } from './lineSplitter.js';
 
 export interface ManagedProcessConfig {
   name: string;
@@ -114,42 +114,33 @@ export class ProcessManager {
     });
     log.info(`"${config.name}" spawned with PID ${child.pid}`);
 
-    const rls: Array<ReturnType<typeof createInterface>> = [];
-
     if (child.stdout) {
-      const rl = createInterface({ input: child.stdout });
-      rl.on('line', (line) => {
+      child.stdout.on('error', (err) => {
+        log.error(`"${config.name}" stdout stream error: ${err.message}`);
+      });
+      attachLineHandler(child.stdout, (line) => {
         proc.stdoutQueue.push(line);
         if (!proc.stdoutDraining) {
           proc.stdoutDraining = true;
           setImmediate(() => this.drainStdout(proc));
         }
       });
-      rl.on('error', (err) => {
-        log.error(`"${config.name}" stdout readline error: ${err.message}`);
-      });
-      rls.push(rl);
     }
 
     if (child.stderr) {
-      const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => {
+      child.stderr.on('error', (err) => {
+        log.error(`"${config.name}" stderr stream error: ${err.message}`);
+      });
+      attachLineHandler(child.stderr, (line) => {
         proc.stderrQueue.push(line);
         if (!proc.stderrDraining) {
           proc.stderrDraining = true;
           setImmediate(() => this.drainStderr(proc));
         }
       });
-      rl.on('error', (err) => {
-        log.error(`"${config.name}" stderr readline error: ${err.message}`);
-      });
-      rls.push(rl);
     }
 
     child.on('exit', (code, signal) => {
-      for (const rl of rls) {
-        rl.close();
-      }
       // Drop any unprocessed lines from the previous child. On restart the
       // new readline starts from a clean slate; draining old data would
       // spend CPU + broadcast stale events.
