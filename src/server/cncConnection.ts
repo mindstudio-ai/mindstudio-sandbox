@@ -32,7 +32,16 @@ export function createCncConnectionHandler(
     try {
       const frame = await buildInitFrame(getProxyActive());
       ws.send(JSON.stringify(frame));
-    } catch {
+    } catch (err) {
+      // Silent fallbacks here have masked real bugs (e.g. an empty
+      // chatHistory because a downstream getAgentHistory crashed). Surface
+      // anything that throws so future regressions are diagnosable.
+      log.error(
+        `Init frame build failed, sending fallback: ${err instanceof Error ? err.message : err}`,
+      );
+      if (err instanceof Error && err.stack) {
+        log.error(err.stack);
+      }
       ws.send(JSON.stringify(buildFallbackInitFrame(getProxyActive())));
     }
     pendingInit.delete(ws);
