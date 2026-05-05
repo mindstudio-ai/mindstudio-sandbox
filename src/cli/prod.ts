@@ -481,6 +481,27 @@ async function secretsDelete(appId: string, args: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — data
+// ---------------------------------------------------------------------------
+
+async function dataLiftFromDev(appId: string, args: string[]) {
+  if (!hasFlag(args, 'confirm')) {
+    fatal(
+      'Usage: mindstudio-prod data lift-from-dev --confirm\n' +
+        'Refusing to run without --confirm: this destructively replaces the ' +
+        "live release's databases with a snapshot of dev. Wipes any rows " +
+        'live had — including signed-up users. Intended for first-publish / ' +
+        'pre-launch data sync only.',
+    );
+  }
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/manage/lift-dev-to-live`, {
+      confirm: true,
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Commands — methods
 // ---------------------------------------------------------------------------
 
@@ -562,6 +583,7 @@ Commands:
   db          Query the production database
   secrets     Manage app secrets (env vars)
   methods     List and invoke methods
+  data        Live database operations (e.g. lift-from-dev)
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -685,6 +707,32 @@ Examples:
   mindstudio-prod secrets set OLD_KEY --prod-clear
   mindstudio-prod secrets delete OLD_KEY`;
 
+const HELP_DATA = `mindstudio-prod data — Live database operations.
+
+Subcommands:
+  lift-from-dev    Destructively replace live's databases with a snapshot of dev's.
+
+Usage:
+  mindstudio-prod data lift-from-dev --confirm
+
+What lift-from-dev does:
+  Copies every live-release database from its dev-release counterpart by name
+  match. Wipes whatever was on live. Schema metadata for the live release is
+  updated to match dev. Database/table IDs stay stable — clients don't need
+  to reload anything. Writes an audit row tagged 'lift-dev-to-live'.
+
+Critical constraints:
+  - Whole-database overwrite, INCLUDING auth tables. If live has real signed-up
+    users, this lift wipes them. Intended for first-publish / pre-launch data
+    sync only. Do NOT run on a production app with real users.
+  - All-or-nothing per database. No per-table lift. To preserve some tables
+    while replacing others, use a method invoked via 'methods invoke --roles'.
+  - --confirm is mandatory. The CLI refuses to run without it as a guardrail.
+  - Wait ~10s after a final dev write before lifting (flush-loop race window).
+
+Examples:
+  mindstudio-prod data lift-from-dev --confirm`;
+
 const HELP_METHODS = `mindstudio-prod methods — List and invoke methods.
 
 Subcommands:
@@ -738,6 +786,7 @@ async function main() {
     db: HELP_DB,
     secrets: HELP_SECRETS,
     methods: HELP_METHODS,
+    data: HELP_DATA,
   };
   if (!sub || sub === '--help' || sub === '-h') {
     const helpText = HELP_MAP[group];
@@ -857,6 +906,17 @@ async function main() {
         default:
           fatal(
             `Unknown subcommand: methods ${sub}. Run 'mindstudio-prod methods --help'`,
+          );
+      }
+      break;
+
+    case 'data':
+      switch (sub) {
+        case 'lift-from-dev':
+          return dataLiftFromDev(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: data ${sub}. Run 'mindstudio-prod data --help'`,
           );
       }
       break;
