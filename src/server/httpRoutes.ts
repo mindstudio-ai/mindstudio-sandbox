@@ -104,6 +104,30 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
+    if (req.url === '/agent-usage' || req.url?.startsWith('/agent-usage?')) {
+      // Append-only NDJSON ledger of every billable LLM/CLI call across the
+      // session. Survives /clear, restarts, compaction. Served verbatim;
+      // consumers run jq queries over it.
+      const usagePath = path.join(workspaceDir, '.logs', 'usage.ndjson');
+      fs.readFile(usagePath, 'utf-8')
+        .then((content) => {
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson',
+            'Cache-Control': 'no-cache',
+            ...CORS_HEADERS,
+          });
+          res.end(content);
+        })
+        .catch(() => {
+          res.writeHead(404, {
+            'Content-Type': 'application/json',
+            ...CORS_HEADERS,
+          });
+          res.end(JSON.stringify({ error: 'Usage ledger not available yet' }));
+        });
+      return;
+    }
+
     if (req.url?.startsWith('/logs/')) {
       serveLogs(req, res, workspaceDir);
       return;
