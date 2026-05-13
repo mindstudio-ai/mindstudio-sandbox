@@ -453,5 +453,8 @@ export function createTunnelActions(
       log.info('Clearing role impersonation');
       return await sendCommand(pm, 'clear-impersonation', {}, 5_000);
     },
+    listDatabases: async () => {
+      return await sendCommand(pm, 'list-databases', {}, 30_000);
+    },
   };
 }
