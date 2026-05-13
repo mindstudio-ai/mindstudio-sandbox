@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { suppressPath } from '../../fileWatcher/index.js';
 import { resolveSafe } from '../../utils/paths.js';
+import { withFileLock } from '../../utils/fileLock.js';
 
 let workspaceDir: string;
 
@@ -13,7 +14,7 @@ function safe(userPath: string): string {
   return resolveSafe(workspaceDir, userPath);
 }
 
-const BINARY_EXTENSIONS = new Set([
+export const BINARY_EXTENSIONS = new Set([
   '.png',
   '.jpg',
   '.jpeg',
@@ -68,19 +69,23 @@ export async function writeFile(params: {
   content: string;
 }): Promise<Record<string, never>> {
   const filePath = safe(params.path);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  suppressPath(filePath);
-  await fs.writeFile(filePath, params.content, 'utf-8');
-  return {};
+  return withFileLock(filePath, async () => {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    suppressPath(filePath);
+    await fs.writeFile(filePath, params.content, 'utf-8');
+    return {};
+  });
 }
 
 export async function deleteFile(params: {
   path: string;
 }): Promise<Record<string, never>> {
   const filePath = safe(params.path);
-  suppressPath(filePath);
-  await fs.rm(filePath, { recursive: true });
-  return {};
+  return withFileLock(filePath, async () => {
+    suppressPath(filePath);
+    await fs.rm(filePath, { recursive: true });
+    return {};
+  });
 }
 
 export async function renameFile(params: {
@@ -89,9 +94,16 @@ export async function renameFile(params: {
 }): Promise<Record<string, never>> {
   const oldFilePath = safe(params.oldPath);
   const newFilePath = safe(params.newPath);
-  await fs.mkdir(path.dirname(newFilePath), { recursive: true });
-  suppressPath(oldFilePath);
-  suppressPath(newFilePath);
-  await fs.rename(oldFilePath, newFilePath);
-  return {};
+  // Lock both paths in deterministic order to avoid deadlock between
+  // two concurrent renames that swap A↔B.
+  const [first, second] = [oldFilePath, newFilePath].sort();
+  return withFileLock(first, () =>
+    withFileLock(second, async () => {
+      await fs.mkdir(path.dirname(newFilePath), { recursive: true });
+      suppressPath(oldFilePath);
+      suppressPath(newFilePath);
+      await fs.rename(oldFilePath, newFilePath);
+      return {};
+    }),
+  );
 }
