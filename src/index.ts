@@ -49,6 +49,8 @@ import { LspClient } from './lsp/client.js';
 import { LspSidecar } from './lsp/sidecar.js';
 import { initFilesystem } from './server/wsHandlers/filesystem.js';
 import { initShell } from './server/wsHandlers/shell.js';
+import { initSearch, probeRipgrep } from './server/wsHandlers/search.js';
+import { initWorkspaceEdit } from './server/wsHandlers/workspaceEdit.js';
 import { initPty, closeAllPty } from './server/wsHandlers/pty.js';
 import { stopWatcher } from './fileWatcher/index.js';
 import {
@@ -448,6 +450,18 @@ async function main(): Promise<void> {
     // 10. Init handlers
     initFilesystem(config.workspaceDir);
     initShell(config.workspaceDir, managers.registry);
+    initSearch(config.workspaceDir);
+    initWorkspaceEdit(config.workspaceDir);
+    probeRipgrep().then((ok) => {
+      if (!ok) {
+        log.error(
+          'ripgrep (rg) not found on PATH — workspace search will fail. ' +
+            'Install ripgrep in the sandbox runtime.',
+        );
+      } else {
+        log.info('ripgrep available — workspace search ready');
+      }
+    });
     initPty(config.workspaceDir, managers.registry, managers.batcher);
     ctx.processManager = managers.processManager;
     Object.assign(handlers, createTunnelActions(managers.processManager));

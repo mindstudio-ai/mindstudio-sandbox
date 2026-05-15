@@ -20,6 +20,8 @@ import { editorHandlers } from './editor.js';
 import { specEditorHandlers } from './specEditor.js';
 import { processHandlers } from './processes.js';
 import { miscHandlers } from './misc.js';
+import { searchWorkspace, cancelSearch } from './search.js';
+import { applyWorkspaceEdits } from './workspaceEdit.js';
 
 export type ActionHandler = (
   params: Record<string, unknown>,
@@ -79,6 +81,11 @@ export const handlers: Record<string, ActionHandler> = {
 
   // --- Misc ---
   ...miscHandlers,
+
+  // --- Workspace search + replace ---
+  searchWorkspace: async (p) => searchWorkspace(p),
+  cancelSearch: async (p) => cancelSearch(p),
+  applyWorkspaceEdits: (p) => applyWorkspaceEdits(p),
 
   // Agent and tunnel actions are merged in at runtime via Object.assign
 };
