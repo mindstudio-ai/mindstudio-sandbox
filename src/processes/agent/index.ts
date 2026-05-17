@@ -278,6 +278,15 @@ function handleStdout(
   // Remy persists the queue to .remy-stats.json across restarts but does
   // NOT auto-drain. Send the dedicated `resume` action to kick it off.
   if (event.event === 'ready' || event.event === 'session_restored') {
+    // Forward session_restored to the frontend — it carries the active
+    // per-agent model picks (models) and conversation size needed for
+    // "running on X" banners and model-picker hydration. ready stays
+    // sandbox-internal (no FE-visible info beyond what the init frame
+    // already broadcasts).
+    if (event.event === 'session_restored') {
+      const { event: _evt, ...data } = event;
+      cb.broadcast('agentSessionRestored', data);
+    }
     if ((event.queuedMessages?.length ?? 0) > 0) {
       log.info(
         `Queue non-empty on ${event.event} (${event.queuedMessages?.length} items) — sending resume`,
@@ -410,6 +419,7 @@ function handleStdout(
         ...(typeof event.totalMessageCount === 'number'
           ? { totalMessageCount: event.totalMessageCount }
           : {}),
+        ...(event.models ? { models: event.models } : {}),
       };
     }
     return; // internal, don't broadcast
@@ -542,6 +552,13 @@ export interface AgentHistoryResult {
   startIndex?: number;
   endIndex?: number;
   totalMessageCount?: number;
+  /**
+   * Per-agent model picks active on the session (sparse map; absent
+   * means "all server defaults"). Passed through verbatim from remy's
+   * history event — the frontend reads this to hydrate the "running on
+   * X" banner and the model picker.
+   */
+  models?: Record<string, string>;
 }
 
 export interface GetAgentHistoryOpts {
@@ -581,6 +598,9 @@ export async function getAgentHistory(
       : {}),
     ...(typeof result.totalMessageCount === 'number'
       ? { totalMessageCount: result.totalMessageCount }
+      : {}),
+    ...(result.models && typeof result.models === 'object'
+      ? { models: result.models as Record<string, string> }
       : {}),
   };
 }
