@@ -165,6 +165,23 @@ export async function buildInitFrame(
       historyResult.models && typeof historyResult.models === 'object'
         ? historyResult.models
         : null,
+    // Picker registry shipped by remy — the authoritative source for
+    // surface keys, labels, descriptions, defaults, modelType, and
+    // userPickable. Always populated from current remy; null on older
+    // remy that doesn't ship the registry over the wire.
+    agentModelSurfaces:
+      historyResult.modelSurfaces &&
+      typeof historyResult.modelSurfaces === 'object'
+        ? historyResult.modelSurfaces
+        : null,
+    // Per-modelType allow-list (today: only 'text' is constrained).
+    // Frontend uses this to bound dropdowns for text surfaces; absent
+    // types are unconstrained and curated from the FE's catalog.
+    agentAllowedModelsByType:
+      historyResult.allowedModelsByType &&
+      typeof historyResult.allowedModelsByType === 'object'
+        ? historyResult.allowedModelsByType
+        : null,
     ...(historyResult.running ? { agentRunning: true } : {}),
     ...(historyResult.currentRequestId
       ? { agentCurrentRequestId: historyResult.currentRequestId }
@@ -207,6 +224,8 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     chatHistoryEndIndex: null,
     chatHistoryTotalCount: null,
     agentModels: null,
+    agentModelSurfaces: null,
+    agentAllowedModelsByType: null,
     processes: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
