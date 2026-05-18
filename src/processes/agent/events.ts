@@ -21,6 +21,16 @@ export interface QueuedMessage {
   enqueuedAt: number;
 }
 
+/**
+ * Per-agent model picks for a session. Sparse — any omitted key falls
+ * back to remy's server default for that agent. Absence of the whole
+ * `models` field means "defaults everywhere." Keys are agent identifiers
+ * (parent, visualDesignExpert, etc.); values are remy-allow-listed
+ * model IDs. Validation lives in remy — bad IDs surface as an
+ * `invalid_model_override` error event.
+ */
+export type AgentModels = Record<string, string>;
+
 /** System events — lifecycle; some may carry queue state on restart/resume. */
 export type AgentSystemEvent =
   | { event: 'ready'; queuedMessages?: QueuedMessage[] }
@@ -29,6 +39,8 @@ export type AgentSystemEvent =
       event: 'session_restored';
       messageCount?: number;
       queuedMessages?: QueuedMessage[];
+      /** Per-agent model picks active on the restored session. */
+      models?: AgentModels;
     }
   | {
       event: 'queued';
@@ -116,7 +128,20 @@ export type AgentStreamEvent =
       requestId?: string;
       parentToolId?: string;
     }
-  | { event: 'error'; message?: string; error?: string; requestId?: string };
+  | {
+      event: 'error';
+      message?: string;
+      error?: string;
+      requestId?: string;
+      /**
+       * Structured error classifier from remy. Known value today:
+       * 'invalid_model_override' — accompanied by `badModelId` pointing
+       * at the rejected pick. Other codes may appear over time; treat
+       * as opaque and surface to the FE verbatim.
+       */
+      code?: string;
+      badModelId?: string;
+    };
 
 /** Data events that precede a completed (carry requestId). */
 export type AgentDataEvent =
@@ -133,6 +158,8 @@ export type AgentDataEvent =
       endIndex?: number;
       /** Total size of remy's state.messages (full conversation length). */
       totalMessageCount?: number;
+      /** Per-agent model picks active on the session (sparse; absent = all defaults). */
+      models?: AgentModels;
     }
   | { event: 'session_cleared'; requestId?: string }
   | {
@@ -159,6 +186,23 @@ export interface AgentCompletedEvent {
    * the cancel. Typed for completeness; currently not surfaced in any UI.
    */
   cancelledMessages?: QueuedMessage[];
+  /**
+   * The model that actually served the request. Useful for confirming a
+   * newSession pick took effect and for a "running on X" debug banner.
+   */
+  modelId?: string;
+  /**
+   * Per-turn usage stats from the provider. Schema is provider-agnostic
+   * for the fields we surface; cacheReadTokens now available on both
+   * Anthropic and OpenAI. Pass-through — frontend owns rendering.
+   */
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    [key: string]: unknown;
+  };
 }
 
 export type AgentEvent =

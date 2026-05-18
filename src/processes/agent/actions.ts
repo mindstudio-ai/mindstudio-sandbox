@@ -132,6 +132,22 @@ export function createAgentActions(
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
       return await response;
     },
+    // Start a fresh session, optionally with per-agent model picks.
+    // Distinct from clear: clear preserves the existing model config;
+    // newSession replaces it. `models` is a sparse map keyed by agent
+    // identifier (parent, visualDesignExpert, ...) — omit (or send
+    // empty) to reset every agent to server defaults. Pass-through;
+    // remy validates the model IDs and surfaces an `invalid_model_override`
+    // error event (broadcast as agentError) when a pick isn't allow-listed.
+    agentNewSession: async (p) => {
+      const { models } = p as { models?: Record<string, string> };
+      const params: Record<string, unknown> = {};
+      if (models && typeof models === 'object') {
+        params.models = models;
+      }
+      const { response } = sendAgentCommand(pm, 'newSession', params, 5_000);
+      return await response;
+    },
     // Compact conversation
     agentCompact: async () => {
       const { response } = sendAgentCommand(pm, 'compact', {}, 30_000);

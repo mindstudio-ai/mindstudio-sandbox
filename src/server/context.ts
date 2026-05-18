@@ -157,6 +157,14 @@ export async function buildInitFrame(
       typeof historyResult.totalMessageCount === 'number'
         ? historyResult.totalMessageCount
         : null,
+    // Per-agent model picks active on the current session. Sparse — keys
+    // present here override defaults; absent keys mean "server default
+    // for that agent." Null when remy didn't return a models field (older
+    // remy versions, or no per-session overrides set).
+    agentModels:
+      historyResult.models && typeof historyResult.models === 'object'
+        ? historyResult.models
+        : null,
     ...(historyResult.running ? { agentRunning: true } : {}),
     ...(historyResult.currentRequestId
       ? { agentCurrentRequestId: historyResult.currentRequestId }
@@ -198,6 +206,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     chatHistoryStartIndex: null,
     chatHistoryEndIndex: null,
     chatHistoryTotalCount: null,
+    agentModels: null,
     processes: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
