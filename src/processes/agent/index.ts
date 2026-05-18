@@ -76,6 +76,7 @@ const EVENT_MAP: Record<string, string> = {
   stopping: 'agentStopping',
   stopped: 'agentStopped',
   session_restored: 'agentSessionRestored',
+  session_cleared: 'agentSessionCleared',
   user_message: 'agentUserMessage',
   compaction_started: 'agentCompactionStarted',
   compaction_complete: 'agentCompactionComplete',
@@ -423,15 +424,6 @@ function handleStdout(
       };
     }
     return; // internal, don't broadcast
-  }
-
-  if (
-    event.event === 'session_cleared' &&
-    'requestId' in event &&
-    event.requestId
-  ) {
-    // No data to accumulate — completed will resolve it
-    return; // don't broadcast directly, frontend gets agentSessionCleared via EVENT_MAP below
   }
 
   // compaction_started / compaction_complete fall through to the generic
