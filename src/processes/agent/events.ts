@@ -31,6 +31,38 @@ export interface QueuedMessage {
  */
 export type AgentModels = Record<string, string>;
 
+/**
+ * One pickable (or unpickable) surface in remy's model registry. Remy
+ * ships the full registry on every session_restored and history payload
+ * so the frontend can drive the picker from the wire instead of
+ * hardcoded constants. `default` is authoritative — when the user
+ * hasn't picked, remy uses this. `userPickable: false` surfaces should
+ * be hidden from the picker (today: only imagePromptEnhancer).
+ */
+export interface ModelSurface {
+  default: string;
+  label: string;
+  description?: string;
+  /** 'text' | 'vision' | 'image_generation' — kept open for forward-compat. */
+  modelType: string;
+  userPickable: boolean;
+}
+
+/**
+ * The full model registry. Key order is meaningful — JSON preserves it
+ * and remy uses it as the desired picker order, so the frontend should
+ * iterate via Object.keys (not Object.entries with sort) when rendering.
+ */
+export type ModelSurfaces = Record<string, ModelSurface>;
+
+/**
+ * Per-modelType allow-list. Keys present → constrained (frontend can
+ * only show these IDs). Keys absent → unconstrained (frontend curates
+ * from its own catalog). Today only `text` is constrained; `vision`
+ * and `image_generation` are absent.
+ */
+export type AllowedModelsByType = Record<string, string[]>;
+
 /** System events — lifecycle; some may carry queue state on restart/resume. */
 export type AgentSystemEvent =
   | { event: 'ready'; queuedMessages?: QueuedMessage[] }
@@ -41,6 +73,10 @@ export type AgentSystemEvent =
       queuedMessages?: QueuedMessage[];
       /** Per-agent model picks active on the restored session. */
       models?: AgentModels;
+      /** Full picker registry — always present from current remy. */
+      modelSurfaces?: ModelSurfaces;
+      /** Sparse per-type allow-list — always present from current remy. */
+      allowedModelsByType?: AllowedModelsByType;
     }
   | {
       event: 'queued';
@@ -160,6 +196,10 @@ export type AgentDataEvent =
       totalMessageCount?: number;
       /** Per-agent model picks active on the session (sparse; absent = all defaults). */
       models?: AgentModels;
+      /** Full picker registry — always present from current remy. */
+      modelSurfaces?: ModelSurfaces;
+      /** Sparse per-type allow-list — always present from current remy. */
+      allowedModelsByType?: AllowedModelsByType;
     }
   | { event: 'session_cleared'; requestId?: string }
   | {

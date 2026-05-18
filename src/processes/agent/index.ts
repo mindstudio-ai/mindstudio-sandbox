@@ -421,6 +421,10 @@ function handleStdout(
           ? { totalMessageCount: event.totalMessageCount }
           : {}),
         ...(event.models ? { models: event.models } : {}),
+        ...(event.modelSurfaces ? { modelSurfaces: event.modelSurfaces } : {}),
+        ...(event.allowedModelsByType
+          ? { allowedModelsByType: event.allowedModelsByType }
+          : {}),
       };
     }
     return; // internal, don't broadcast
@@ -551,6 +555,22 @@ export interface AgentHistoryResult {
    * X" banner and the model picker.
    */
   models?: Record<string, string>;
+  /**
+   * Picker registry shipped over the wire by remy. The frontend reads
+   * these instead of carrying its own hardcoded constants. Always
+   * present from current remy versions; older versions omit.
+   */
+  modelSurfaces?: Record<
+    string,
+    {
+      default: string;
+      label: string;
+      description?: string;
+      modelType: string;
+      userPickable: boolean;
+    }
+  >;
+  allowedModelsByType?: Record<string, string[]>;
 }
 
 export interface GetAgentHistoryOpts {
@@ -593,6 +613,21 @@ export async function getAgentHistory(
       : {}),
     ...(result.models && typeof result.models === 'object'
       ? { models: result.models as Record<string, string> }
+      : {}),
+    ...(result.modelSurfaces && typeof result.modelSurfaces === 'object'
+      ? {
+          modelSurfaces:
+            result.modelSurfaces as AgentHistoryResult['modelSurfaces'],
+        }
+      : {}),
+    ...(result.allowedModelsByType &&
+    typeof result.allowedModelsByType === 'object'
+      ? {
+          allowedModelsByType: result.allowedModelsByType as Record<
+            string,
+            string[]
+          >,
+        }
       : {}),
   };
 }
