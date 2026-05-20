@@ -345,6 +345,118 @@ async function domainsCheck(appId: string, args: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — custom domains
+// ---------------------------------------------------------------------------
+
+// Resolve an id from a user-supplied hostname by listing and matching
+// against the canonical lowercase hostname. Fatal if not found. Used by
+// the two-call /:id/delete and /:id/retry endpoints, and by the
+// filter-and-render `records`/`status` views.
+async function findHostnameId(
+  appId: string,
+  hostname: string,
+): Promise<{ id: string; entry: any }> {
+  const wanted = hostname.toLowerCase();
+  const res = await api(
+    'GET',
+    `/_internal/v2/apps/${appId}/settings/custom-domains`,
+  );
+  const entry = (res.hostnames ?? []).find(
+    (h: any) => typeof h.hostname === 'string' && h.hostname === wanted,
+  );
+  if (!entry) {
+    fatal(`No custom domain "${hostname}" found on this app`);
+  }
+  return { id: entry.id, entry };
+}
+
+async function customDomainsList(appId: string) {
+  out(await api('GET', `/_internal/v2/apps/${appId}/settings/custom-domains`));
+}
+
+async function customDomainsAdd(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom add <hostname>');
+  }
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/settings/custom-domains`, {
+      hostname,
+    }),
+  );
+}
+
+async function customDomainsCheck(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom check <hostname>');
+  }
+  out(
+    await api(
+      'POST',
+      `/_internal/v2/apps/${appId}/settings/custom-domains/check-domain`,
+      { hostname },
+    ),
+  );
+}
+
+async function customDomainsRecords(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom records <hostname>');
+  }
+  const { entry } = await findHostnameId(appId, hostname);
+  out({
+    hostname: entry.hostname,
+    isApex: entry.isApex,
+    dnsInstructions: entry.dnsInstructions,
+  });
+}
+
+async function customDomainsStatus(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom status <hostname>');
+  }
+  const { entry } = await findHostnameId(appId, hostname);
+  out({
+    hostname: entry.hostname,
+    uiStatus: entry.uiStatus,
+    verificationErrors: entry.verificationErrors ?? null,
+    cfStatus: entry.cfStatus,
+    cfSslStatus: entry.cfSslStatus,
+  });
+}
+
+async function customDomainsRemove(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom remove <hostname>');
+  }
+  const { id } = await findHostnameId(appId, hostname);
+  out(
+    await api(
+      'POST',
+      `/_internal/v2/apps/${appId}/settings/custom-domains/${id}/delete`,
+    ),
+  );
+}
+
+async function customDomainsRetry(appId: string, args: string[]) {
+  const hostname = getPositional(args, 0);
+  if (!hostname) {
+    fatal('Usage: mindstudio-prod domains custom retry <hostname>');
+  }
+  const { id } = await findHostnameId(appId, hostname);
+  out(
+    await api(
+      'POST',
+      `/_internal/v2/apps/${appId}/settings/custom-domains/${id}/retry`,
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Commands — users
 // ---------------------------------------------------------------------------
 
@@ -627,17 +739,42 @@ Examples:
   mindstudio-prod releases current
   mindstudio-prod releases status rel_abc123 --wait`;
 
-const HELP_DOMAINS = `mindstudio-prod domains — Manage custom subdomain.
+const HELP_DOMAINS = `mindstudio-prod domains — Manage your app's domains.
 
-Subcommands:
-  get     Get current custom subdomain
-  set     Set a custom subdomain
-  check   Check if a subdomain is available
+Platform subdomain (e.g. my-app.mindstudio.app):
+  get             Get current custom subdomain
+  set             Set a custom subdomain
+  check           Check if a subdomain is available
+
+Custom domains (customer-owned hostnames, CNAME/A records):
+  custom list                  List all custom hostnames on the app
+  custom add <hostname>        Register a custom hostname (apex auto-pairs www)
+  custom check <hostname>      Preflight a hostname before registering
+  custom records <hostname>    Get the DNS records the customer must add
+  custom status <hostname>     Get lifecycle status + any verification errors
+  custom remove <hostname>     Remove a hostname (apex also removes paired www)
+  custom retry <hostname>      Re-trigger validation (after customer fixes DNS)
 
 Usage:
   mindstudio-prod domains get
   mindstudio-prod domains set my-app
-  mindstudio-prod domains check my-app`;
+  mindstudio-prod domains check my-app
+  mindstudio-prod domains custom list
+  mindstudio-prod domains custom add app.acme.com
+  mindstudio-prod domains custom add acme.com
+  mindstudio-prod domains custom check acme.com
+  mindstudio-prod domains custom records app.acme.com
+  mindstudio-prod domains custom status app.acme.com
+  mindstudio-prod domains custom retry app.acme.com
+  mindstudio-prod domains custom remove app.acme.com
+
+Notes:
+  - 'add' with an apex (e.g. acme.com) auto-creates the www.apex pair and
+    returns both. 'remove' on an apex also removes its paired www.
+  - 'list'/'records'/'status' read a CF-synced cache that can be up to ~5
+    minutes stale. After the customer adds DNS, use 'retry' to force a
+    synchronous re-check.
+  - 'uiStatus' values: waiting_for_dns | issuing_ssl | live | action_needed | reconnecting.`;
 
 const HELP_USERS = `mindstudio-prod users — Manage app users, roles, and API keys.
 
@@ -844,6 +981,31 @@ async function main() {
           return domainsSet(appId, rest);
         case 'check':
           return domainsCheck(appId, rest);
+        case 'custom': {
+          const action = rest[0];
+          const customRest = rest.slice(1);
+          switch (action) {
+            case 'list':
+              return customDomainsList(appId);
+            case 'add':
+              return customDomainsAdd(appId, customRest);
+            case 'check':
+              return customDomainsCheck(appId, customRest);
+            case 'records':
+              return customDomainsRecords(appId, customRest);
+            case 'status':
+              return customDomainsStatus(appId, customRest);
+            case 'remove':
+              return customDomainsRemove(appId, customRest);
+            case 'retry':
+              return customDomainsRetry(appId, customRest);
+            default:
+              fatal(
+                `Unknown subcommand: domains custom ${action ?? ''}. Run 'mindstudio-prod domains --help'`,
+              );
+          }
+          break;
+        }
         default:
           fatal(
             `Unknown subcommand: domains ${sub}. Run 'mindstudio-prod domains --help'`,
