@@ -741,7 +741,7 @@ Examples:
 
 const HELP_DOMAINS = `mindstudio-prod domains — Manage your app's domains.
 
-Platform subdomain (e.g. my-app.mindstudio.app):
+Platform subdomain (e.g. my-app.madewithremy.com):
   get             Get current custom subdomain
   set             Set a custom subdomain
   check           Check if a subdomain is available
