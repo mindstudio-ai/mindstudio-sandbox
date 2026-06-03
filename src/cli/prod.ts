@@ -233,6 +233,276 @@ async function requestsStats(appId: string, args: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — crashes (frontend errors)
+// ---------------------------------------------------------------------------
+
+async function crashesList(appId: string, args: string[]) {
+  const params = new URLSearchParams();
+  const release = getFlag(args, 'release');
+  const sort = getFlag(args, 'sort');
+  const limit = getFlag(args, 'limit');
+  const start = getFlag(args, 'start');
+  const end = getFlag(args, 'end');
+  if (release) {
+    params.set('releaseId', release);
+  }
+  if (sort) {
+    params.set('sort', sort);
+  }
+  if (limit) {
+    params.set('limit', limit);
+  }
+  if (start) {
+    params.set('start', start);
+  }
+  if (end) {
+    params.set('end', end);
+  }
+  const qs = params.toString() ? `?${params}` : '';
+  out(await api('GET', `/_internal/v2/apps/${appId}/frontend-errors${qs}`));
+}
+
+async function crashesOccurrences(appId: string, args: string[]) {
+  const fingerprint = getPositional(args, 0);
+  if (!fingerprint) {
+    fatal('Usage: mindstudio-prod crashes occurrences <fingerprint>');
+  }
+  const params = new URLSearchParams();
+  const release = getFlag(args, 'release');
+  const cursor = getFlag(args, 'cursor');
+  const limit = getFlag(args, 'limit');
+  const start = getFlag(args, 'start');
+  const end = getFlag(args, 'end');
+  if (release) {
+    params.set('releaseId', release);
+  }
+  if (cursor) {
+    params.set('cursor', cursor);
+  }
+  if (limit) {
+    params.set('limit', limit);
+  }
+  if (start) {
+    params.set('start', start);
+  }
+  if (end) {
+    params.set('end', end);
+  }
+  const qs = params.toString() ? `?${params}` : '';
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/frontend-errors/${fingerprint}/events${qs}`,
+    ),
+  );
+}
+
+async function crashesGet(appId: string, args: string[]) {
+  const eventId = getPositional(args, 0);
+  if (!eventId) {
+    fatal('Usage: mindstudio-prod crashes get <eventId>');
+  }
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/frontend-errors/events/${eventId}`,
+    ),
+  );
+}
+
+async function crashesStats(appId: string, args: string[]) {
+  const params = new URLSearchParams();
+  const release = getFlag(args, 'release');
+  const start = getFlag(args, 'start');
+  const end = getFlag(args, 'end');
+  const buckets = getFlag(args, 'buckets');
+  if (release) {
+    params.set('releaseId', release);
+  }
+  if (start) {
+    params.set('start', start);
+  }
+  if (end) {
+    params.set('end', end);
+  }
+  if (buckets) {
+    params.set('buckets', buckets);
+  }
+  const qs = params.toString() ? `?${params}` : '';
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/frontend-errors/metrics/summary${qs}`,
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Commands — analytics (insights)
+// ---------------------------------------------------------------------------
+
+const TOP_DIMENSIONS = [
+  'pages',
+  'referrers',
+  'countries',
+  'devices',
+  'browsers',
+  'os',
+  'languages',
+  'source-categories',
+  'utms',
+  'sources',
+] as const;
+
+const CRAWLERS_SUBS = ['overview', 'timeseries', 'recent'] as const;
+
+// Hyphenated CLI flag -> API query param (camelCase). Hits the per-event
+// table on the API side (30-day retention) instead of the rollup.
+const ANALYTICS_FILTER_FLAGS: Array<[string, string]> = [
+  ['path', 'path'],
+  ['referrer', 'referrerHost'],
+  ['country', 'country'],
+  ['city', 'city'],
+  ['device', 'device'],
+  ['browser', 'browser'],
+  ['os', 'os'],
+  ['language', 'language'],
+  ['utm-source', 'utmSource'],
+  ['utm-medium', 'utmMedium'],
+  ['utm-campaign', 'utmCampaign'],
+];
+
+function buildAnalyticsQuery(args: string[]): URLSearchParams {
+  const params = new URLSearchParams();
+  const release = getFlag(args, 'release');
+  const start = getFlag(args, 'start');
+  const end = getFlag(args, 'end');
+  const limit = getFlag(args, 'limit');
+  if (release) {
+    params.set('releaseId', release);
+  }
+  if (start) {
+    params.set('start', start);
+  }
+  if (end) {
+    params.set('end', end);
+  }
+  if (limit) {
+    params.set('limit', limit);
+  }
+  for (const [flag, param] of ANALYTICS_FILTER_FLAGS) {
+    const value = getFlag(args, flag);
+    if (value) {
+      params.set(param, value);
+    }
+  }
+  return params;
+}
+
+function qs(params: URLSearchParams): string {
+  return params.toString() ? `?${params}` : '';
+}
+
+async function analyticsSummary(appId: string, args: string[]) {
+  const params = buildAnalyticsQuery(args);
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/summary${qs(params)}`,
+    ),
+  );
+}
+
+async function analyticsTimeseries(appId: string, args: string[]) {
+  const params = buildAnalyticsQuery(args);
+  const buckets = getFlag(args, 'buckets');
+  if (buckets) {
+    params.set('buckets', buckets);
+  }
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/timeseries${qs(params)}`,
+    ),
+  );
+}
+
+async function analyticsTop(appId: string, args: string[]) {
+  const dimension = getPositional(args, 0);
+  if (!dimension) {
+    fatal(
+      `Usage: mindstudio-prod analytics top <dimension>. Dimensions: ${TOP_DIMENSIONS.join('|')}`,
+    );
+  }
+  if (!(TOP_DIMENSIONS as readonly string[]).includes(dimension)) {
+    fatal(
+      `Unknown dimension "${dimension}". Valid: ${TOP_DIMENSIONS.join('|')}`,
+    );
+  }
+  const params = buildAnalyticsQuery(args);
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/top/${dimension}${qs(params)}`,
+    ),
+  );
+}
+
+async function analyticsEvents(appId: string, args: string[]) {
+  const name = getPositional(args, 0);
+  const params = buildAnalyticsQuery(args);
+  if (name) {
+    params.set('name', name);
+  }
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/events${qs(params)}`,
+    ),
+  );
+}
+
+async function analyticsMap(appId: string, args: string[]) {
+  const params = buildAnalyticsQuery(args);
+  out(
+    await api('GET', `/_internal/v2/apps/${appId}/insights/map${qs(params)}`),
+  );
+}
+
+async function analyticsLive(appId: string) {
+  out(await api('GET', `/_internal/v2/apps/${appId}/insights/live`));
+}
+
+async function analyticsAiSources(appId: string, args: string[]) {
+  const params = buildAnalyticsQuery(args);
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/ai-sources${qs(params)}`,
+    ),
+  );
+}
+
+async function analyticsCrawlers(appId: string, args: string[]) {
+  const sub = getPositional(args, 0);
+  if (!sub) {
+    fatal(
+      `Usage: mindstudio-prod analytics crawlers <sub>. Subs: ${CRAWLERS_SUBS.join('|')}`,
+    );
+  }
+  if (!(CRAWLERS_SUBS as readonly string[]).includes(sub)) {
+    fatal(`Unknown crawlers sub "${sub}". Valid: ${CRAWLERS_SUBS.join('|')}`);
+  }
+  const params = buildAnalyticsQuery(args);
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/insights/crawlers/${sub}${qs(params)}`,
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Commands — releases
 // ---------------------------------------------------------------------------
 
@@ -689,6 +959,8 @@ Usage: mindstudio-prod <command> <subcommand> [options]
 
 Commands:
   requests    View request logs and metrics
+  crashes     View frontend (browser) crash groups and events
+  analytics   View traffic, top-N, geo, and AI-referral insights
   releases    View and monitor releases
   domains     Manage custom subdomain
   users       Manage app users and roles
@@ -720,6 +992,88 @@ Examples:
   mindstudio-prod requests get req_abc123
   mindstudio-prod requests stats
   mindstudio-prod requests stats --method mth_abc123`;
+
+const HELP_ANALYTICS = `mindstudio-prod analytics — Traffic, top-N, geo, and AI-referral insights.
+
+Subcommands:
+  summary                        7-KPI snapshot + liveCount
+  timeseries                     Pageviews / visits / uniques per bucket
+  top <dimension>                Top-N by dimension (see list below)
+  events [<name>]                Event-name list (no arg) or stats for one event
+  map                            City lat/lon points for geo rendering
+  live                           One-shot live counter (count + countries + sparkline)
+  ai-sources                     Per-vendor AI-referral breakdown
+  crawlers <overview|timeseries|recent>
+                                 AI-crawler ingestion views
+
+Top dimensions: pages | referrers | countries | devices | browsers | os |
+                languages | source-categories | utms | sources
+
+Shared flags (all optional):
+  --release <id>                 Scope to one release
+  --start <ISO date>             Window start
+  --end <ISO date>               Window end
+  --limit <n>                    Cap result count (where applicable)
+  --buckets <n>                  Bucket count (timeseries only)
+  Filter flags (any filter switches the read to per-event, 30-day retention):
+    --path, --referrer, --country, --city, --device, --browser, --os,
+    --language, --utm-source, --utm-medium, --utm-campaign
+
+Usage:
+  mindstudio-prod analytics summary [--release ...] [--start ...] [--end ...] [filters]
+  mindstudio-prod analytics timeseries [--buckets 24] [shared flags]
+  mindstudio-prod analytics top <dimension> [--limit 25] [shared flags]
+  mindstudio-prod analytics events [<name>] [shared flags]
+  mindstudio-prod analytics map [--limit 500] [shared flags]
+  mindstudio-prod analytics live
+  mindstudio-prod analytics ai-sources [--limit 25] [shared flags]
+  mindstudio-prod analytics crawlers <overview|timeseries|recent> [shared flags]
+
+Examples:
+  mindstudio-prod analytics summary
+  mindstudio-prod analytics summary --country US --device mobile
+  mindstudio-prod analytics timeseries --buckets 24
+  mindstudio-prod analytics top pages --limit 10
+  mindstudio-prod analytics top sources --utm-source google
+  mindstudio-prod analytics events
+  mindstudio-prod analytics events checkout_clicked
+  mindstudio-prod analytics crawlers recent
+
+Notes:
+  - Unfiltered queries hit the rollup (full history). Any filter flag switches
+    to the per-event table, which has 30-day retention — older windows return
+    empty for filtered reads.
+  - 'events' is dual-mode: omit the positional to list event names; pass one
+    to get stats for that single event.`;
+
+const HELP_CRASHES = `mindstudio-prod crashes — View frontend (browser) crash groups and events.
+
+Crashes are grouped by fingerprint (Sentry-style): drill in via 'occurrences'.
+
+Subcommands:
+  list                       List crash groups (one row per fingerprint)
+  occurrences <fingerprint>  List individual events for one crash group
+  get <eventId>              Get full detail (stack + breadcrumbs) for one event
+  stats                      Bucketed time series of total crash volume
+
+Usage:
+  mindstudio-prod crashes list [--release <releaseId>] [--sort recent|frequent] [--limit 50] [--start <ISO date>] [--end <ISO date>]
+  mindstudio-prod crashes occurrences <fingerprint> [--release <releaseId>] [--cursor <token>] [--limit 50] [--start <ISO date>] [--end <ISO date>]
+  mindstudio-prod crashes get <eventId>
+  mindstudio-prod crashes stats [--release <releaseId>] [--start <ISO date>] [--end <ISO date>] [--buckets 24]
+
+Examples:
+  mindstudio-prod crashes list --sort frequent --limit 10
+  mindstudio-prod crashes occurrences abc123fingerprint --limit 25
+  mindstudio-prod crashes get evt_xyz789
+  mindstudio-prod crashes stats --buckets 24
+
+Notes:
+  - 'list' returns groups, not individual events; each row has an exampleEventId
+    you can pass to 'get' for a quick drill-in without paging occurrences.
+  - 'occurrences' is cursor-paginated (not offset). Pass the returned cursor on
+    the next call to fetch the next page.
+  - Time-window defaults to the last 7 days when --start/--end are omitted.`;
 
 const HELP_RELEASES = `mindstudio-prod releases — View and monitor releases.
 
@@ -917,6 +1271,8 @@ async function main() {
   // Subcommand help (before config validation so --help always works)
   const HELP_MAP: Record<string, string> = {
     requests: HELP_REQUESTS,
+    crashes: HELP_CRASHES,
+    analytics: HELP_ANALYTICS,
     releases: HELP_RELEASES,
     domains: HELP_DOMAINS,
     users: HELP_USERS,
@@ -952,6 +1308,48 @@ async function main() {
         default:
           fatal(
             `Unknown subcommand: requests ${sub}. Run 'mindstudio-prod requests --help'`,
+          );
+      }
+      break;
+
+    case 'crashes':
+      switch (sub) {
+        case 'list':
+          return crashesList(appId, rest);
+        case 'occurrences':
+          return crashesOccurrences(appId, rest);
+        case 'get':
+          return crashesGet(appId, rest);
+        case 'stats':
+          return crashesStats(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: crashes ${sub}. Run 'mindstudio-prod crashes --help'`,
+          );
+      }
+      break;
+
+    case 'analytics':
+      switch (sub) {
+        case 'summary':
+          return analyticsSummary(appId, rest);
+        case 'timeseries':
+          return analyticsTimeseries(appId, rest);
+        case 'top':
+          return analyticsTop(appId, rest);
+        case 'events':
+          return analyticsEvents(appId, rest);
+        case 'map':
+          return analyticsMap(appId, rest);
+        case 'live':
+          return analyticsLive(appId);
+        case 'ai-sources':
+          return analyticsAiSources(appId, rest);
+        case 'crawlers':
+          return analyticsCrawlers(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: analytics ${sub}. Run 'mindstudio-prod analytics --help'`,
           );
       }
       break;
