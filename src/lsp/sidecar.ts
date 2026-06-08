@@ -193,6 +193,18 @@ export class LspSidecar {
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
+            case '/screenshot-viewport':
+              // Viewport captures skip the full-page pre-roll scroll and tall
+              // stitch, so they settle far faster — a tighter timeout is enough.
+              result = this.pm
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'screenshotViewport',
+                    params.path ? { path: params.path } : {},
+                    30_000,
+                  )
+                : { url: '', width: 0, height: 0, duration: 0 };
+              break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Not found' }));
