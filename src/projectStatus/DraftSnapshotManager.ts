@@ -348,6 +348,7 @@ export class DraftSnapshotManager {
       '.remy-design-sample.json',
       '.remy-plan.md',
       '.remy-brand.json',
+      '.remy-brand.cache.json',
       '.logs',
     ]) {
       if (fs.existsSync(`${this.workspaceDir}/${f}`)) {
