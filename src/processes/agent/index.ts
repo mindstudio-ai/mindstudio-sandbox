@@ -77,6 +77,7 @@ const EVENT_MAP: Record<string, string> = {
   stopped: 'agentStopped',
   session_restored: 'agentSessionRestored',
   session_cleared: 'agentSessionCleared',
+  models_changed: 'agentModelsChanged',
   user_message: 'agentUserMessage',
   compaction_started: 'agentCompactionStarted',
   compaction_complete: 'agentCompactionComplete',
@@ -420,6 +421,29 @@ function handleStdout(
         ...(typeof event.totalMessageCount === 'number'
           ? { totalMessageCount: event.totalMessageCount }
           : {}),
+        ...(event.models ? { models: event.models } : {}),
+        ...(event.modelSurfaces ? { modelSurfaces: event.modelSurfaces } : {}),
+        ...(event.allowedModelsByType
+          ? { allowedModelsByType: event.allowedModelsByType }
+          : {}),
+      };
+    }
+    return; // internal, don't broadcast
+  }
+
+  // changeModels streams models_changed (instead of history — no reset) ahead
+  // of its completed. Accumulate the same model fields newSession carries so
+  // the agentChangeModels response resolves with the updated picks. A
+  // non-correlated emission (no requestId) falls through to the generic
+  // broadcast as agentModelsChanged.
+  if (
+    event.event === 'models_changed' &&
+    'requestId' in event &&
+    event.requestId
+  ) {
+    const entry = pending.get(event.requestId);
+    if (entry) {
+      entry.data = {
         ...(event.models ? { models: event.models } : {}),
         ...(event.modelSurfaces ? { modelSurfaces: event.modelSurfaces } : {}),
         ...(event.allowedModelsByType

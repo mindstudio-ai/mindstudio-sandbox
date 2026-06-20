@@ -201,6 +201,16 @@ export type AgentDataEvent =
       /** Sparse per-type allow-list — always present from current remy. */
       allowedModelsByType?: AllowedModelsByType;
     }
+  | {
+      event: 'models_changed';
+      requestId?: string;
+      /** Per-agent model picks now active (sparse; absent = all defaults). */
+      models?: AgentModels;
+      /** Full picker registry — same payload newSession returned. */
+      modelSurfaces?: ModelSurfaces;
+      /** Sparse per-type allow-list. */
+      allowedModelsByType?: AllowedModelsByType;
+    }
   | { event: 'session_cleared'; requestId?: string }
   | {
       event: 'compaction_started';
