@@ -432,9 +432,9 @@ function handleStdout(
   }
 
   // changeModels streams models_changed (instead of history — no reset) ahead
-  // of its completed. Accumulate the same model fields newSession carries so
-  // the agentChangeModels response resolves with the updated picks. A
-  // non-correlated emission (no requestId) falls through to the generic
+  // of its completed. Accumulate the same model fields the history event
+  // carries so the agentChangeModels response resolves with the updated picks.
+  // A non-correlated emission (no requestId) falls through to the generic
   // broadcast as agentModelsChanged.
   if (
     event.event === 'models_changed' &&

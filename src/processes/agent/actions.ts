@@ -127,34 +127,21 @@ export function createAgentActions(
         ...(typeof limit === 'number' ? { limit } : {}),
       });
     },
-    // Clear conversation
+    // Clear conversation — the only "start fresh / new session" path. To
+    // start fresh on a specific model, the frontend composes agentClear +
+    // agentChangeModels (newSession is gone; clear no longer touches model
+    // config, so picks persist across a clear unless changeModels follows).
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
       return await response;
     },
-    // Start a fresh session, optionally with per-agent model picks.
-    // Distinct from clear: clear preserves the existing model config;
-    // newSession replaces it. `models` is a sparse map keyed by agent
-    // identifier (parent, visualDesignExpert, ...) — omit (or send
-    // empty) to reset every agent to server defaults. Pass-through;
-    // remy validates the model IDs and surfaces an `invalid_model_override`
-    // error event (broadcast as agentError) when a pick isn't allow-listed.
-    agentNewSession: async (p) => {
-      const { models } = p as { models?: Record<string, string> };
-      const params: Record<string, unknown> = {};
-      if (models && typeof models === 'object') {
-        params.models = models;
-      }
-      const { response } = sendAgentCommand(pm, 'newSession', params, 5_000);
-      return await response;
-    },
     // Change per-agent model picks WITHOUT clearing history. Takes effect on
-    // the next turn (models resolve live per call). Unlike newSession, the
-    // conversation is preserved — reserve agentNewSession for an explicit
-    // "start fresh" affordance. `models` is the same sparse map newSession
-    // takes (parent, visualDesignExpert, ...); omit/empty resets every agent
-    // to server defaults. Pass-through; remy validates the IDs and surfaces
-    // an `invalid_model_override` error event for non-allow-listed picks.
+    // the next turn (models resolve live per call); the conversation is
+    // preserved (use agentClear to start fresh). `models` is a sparse map
+    // keyed by agent identifier (parent, visualDesignExpert, ...) —
+    // omit/empty resets every agent to server defaults. Pass-through; remy
+    // validates the IDs and surfaces an `invalid_model_override` error event
+    // (broadcast as agentError) for non-allow-listed picks.
     agentChangeModels: async (p) => {
       const { models } = p as { models?: Record<string, string> };
       const params: Record<string, unknown> = {};
