@@ -201,6 +201,16 @@ export type AgentDataEvent =
       /** Sparse per-type allow-list — always present from current remy. */
       allowedModelsByType?: AllowedModelsByType;
     }
+  | {
+      event: 'models_changed';
+      requestId?: string;
+      /** Per-agent model picks now active (sparse; absent = all defaults). */
+      models?: AgentModels;
+      /** Full picker registry (same shape as history/session_restored). */
+      modelSurfaces?: ModelSurfaces;
+      /** Sparse per-type allow-list. */
+      allowedModelsByType?: AllowedModelsByType;
+    }
   | { event: 'session_cleared'; requestId?: string }
   | {
       event: 'compaction_started';
@@ -228,7 +238,7 @@ export interface AgentCompletedEvent {
   cancelledMessages?: QueuedMessage[];
   /**
    * The model that actually served the request. Useful for confirming a
-   * newSession pick took effect and for a "running on X" debug banner.
+   * changeModels pick took effect and for a "running on X" debug banner.
    */
   modelId?: string;
   /**

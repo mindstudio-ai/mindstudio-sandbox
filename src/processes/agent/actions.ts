@@ -127,26 +127,44 @@ export function createAgentActions(
         ...(typeof limit === 'number' ? { limit } : {}),
       });
     },
-    // Clear conversation
+    // Clear conversation — the only "start fresh / new session" path. To
+    // start fresh on a specific model, the frontend composes agentClear +
+    // agentChangeModels (newSession is gone; clear no longer touches model
+    // config, so picks persist across a clear unless changeModels follows).
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
       return await response;
     },
-    // Start a fresh session, optionally with per-agent model picks.
-    // Distinct from clear: clear preserves the existing model config;
-    // newSession replaces it. `models` is a sparse map keyed by agent
-    // identifier (parent, visualDesignExpert, ...) — omit (or send
-    // empty) to reset every agent to server defaults. Pass-through;
-    // remy validates the model IDs and surfaces an `invalid_model_override`
-    // error event (broadcast as agentError) when a pick isn't allow-listed.
-    agentNewSession: async (p) => {
+    // Change per-agent model picks WITHOUT clearing history. Takes effect on
+    // the next turn (models resolve live per call); the conversation is
+    // preserved (use agentClear to start fresh). `models` is a sparse map
+    // keyed by agent identifier (parent, visualDesignExpert, ...) —
+    // omit/empty resets every agent to server defaults. Pass-through; remy
+    // validates the IDs and surfaces an `invalid_model_override` error event
+    // (broadcast as agentError) for non-allow-listed picks.
+    agentChangeModels: async (p) => {
       const { models } = p as { models?: Record<string, string> };
       const params: Record<string, unknown> = {};
       if (models && typeof models === 'object') {
         params.models = models;
       }
-      const { response } = sendAgentCommand(pm, 'newSession', params, 5_000);
-      return await response;
+      const { response } = sendAgentCommand(pm, 'changeModels', params, 5_000);
+      const result = await response;
+      // Running-turn guard: remy rejects changeModels mid-turn with
+      // completed { success:false, error:"cannot change models while a turn
+      // is running" }. Surface a clearer instruction; pass every other
+      // failure (e.g. invalid_model_override) through verbatim.
+      if (
+        result.success === false &&
+        typeof result.error === 'string' &&
+        /turn is running/i.test(result.error)
+      ) {
+        return {
+          success: false,
+          error: 'Finish or cancel the current turn first.',
+        };
+      }
+      return result;
     },
     // Compact conversation
     agentCompact: async () => {
