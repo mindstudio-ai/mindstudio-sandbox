@@ -148,8 +148,12 @@ export class DraftSnapshotManager {
     let fetchedOk = false;
 
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      // `--depth=1`: restore only needs the latest snapshot's tree, and the
+      // first post-restore snapshot deltas against the fetched tip (seeded
+      // below) — neither needs the full `_draft` commit chain. Fetching just
+      // the tip keeps a cold boot fast regardless of how deep history grew.
       const fetched = await this.exec(
-        `git fetch --no-tags origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
+        `git fetch --no-tags --depth=1 origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
         { timeout: 300_000 },
       );
 
@@ -231,6 +235,20 @@ export class DraftSnapshotManager {
       this.lastError = reason;
       this.lastRestoreOutcome = 'unresolvable';
       return 'unresolvable';
+    }
+
+    // Seed the local `_draft` branch at the fetched tip so the first snapshot
+    // parents on it and pushes a delta. Without this, `refs/heads/_draft`
+    // doesn't exist post-restore, so doSnapshot creates a parentless root
+    // commit whose push re-uploads the entire snapshot (no common ancestor =
+    // no delta). Best-effort: a failure here just falls back to that old
+    // behavior, so it must not turn a successful restore into unresolvable.
+    const seedRef = await this.exec(`git update-ref ${DRAFT_REF} ${draftSha}`);
+    if (!seedRef.ok) {
+      log.warn(
+        `Could not seed ${DRAFT_BRANCH} branch from fetched tip; first ` +
+          `snapshot will be a full (non-delta) upload`,
+      );
     }
 
     log.info('Workspace restored from draft snapshot');
@@ -379,7 +397,10 @@ export class DraftSnapshotManager {
 
     // Create commit object. Use the current _draft as parent (if it exists)
     // so git can delta-compress the push — only changed objects are transferred.
-    // The old commit becomes unreachable after update-ref, so history stays shallow.
+    // restore() seeds refs/heads/_draft from the fetched tip precisely so this
+    // parent exists on the first post-restore snapshot; without a parent the
+    // commit shares no ancestor with the remote and the push re-uploads the
+    // whole tree (no delta). A parent is absent only on a truly fresh app.
     const parentResult = await this.exec(`git rev-parse ${DRAFT_REF}`);
     const parent = parentResult.ok ? parentResult.stdout.trim() : '';
     const parentFlag = parent ? `-p ${parent}` : '';
