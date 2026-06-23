@@ -150,7 +150,7 @@ export class DraftSnapshotManager {
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
       const fetched = await this.exec(
         `git fetch --no-tags origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
-        { timeout: 90_000 },
+        { timeout: 300_000 },
       );
 
       if (fetched.ok) {
