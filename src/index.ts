@@ -62,6 +62,7 @@ import {
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
 import { DraftSnapshotManager } from './projectStatus/DraftSnapshotManager.js';
+import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
 import {
   initProjectStatus,
   getProjectStatus,
@@ -258,6 +259,17 @@ async function startServices(
     readAppConfig: () => readAppConfig(config.workspaceDir),
     setAppConfig: (updated) => {
       ctx.appConfig = updated;
+    },
+    // Genuine first build finished — push _draft (final metadata) then notify
+    // youai-api to email the creator. Fire-and-forget; never blocks remy's
+    // tool result, never throws.
+    onInitialBuildComplete: () => {
+      void sendInitialBuildCompleteEmail({
+        snapshotManager,
+        appId: ctx.appConfig?.appId ?? null,
+        apiKey: config.apiKey,
+        apiBaseUrl: config.apiBaseUrl,
+      });
     },
   };
   startAgent(

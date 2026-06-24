@@ -18,6 +18,12 @@ export interface ToolContext {
   workspaceDir: string;
   readAppConfig: () => Promise<AppConfig | null>;
   setAppConfig: (config: AppConfig) => void;
+  /**
+   * Fired once, on the genuine first transition into the `buildComplete`
+   * onboarding state. The implementation (wired in index.ts) pushes `_draft`
+   * then POSTs youai-api's initial-build-complete email. Fire-and-forget.
+   */
+  onInitialBuildComplete: () => void;
 }
 
 export interface ExternalToolHandler {
