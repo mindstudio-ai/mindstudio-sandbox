@@ -8,11 +8,15 @@
 
 import type { ProcessManager } from '../ProcessManager.js';
 import { parseAgentMessage } from './events.js';
+import type { QueuedMessage } from './events.js';
 import { transformHistory } from './history.js';
 import {
   getAgentActivity,
   broadcastActivity,
+  getQueuedMessages,
+  setQueuedMessages,
   startTurn,
+  getActiveTurnId,
   startBackgroundTurn,
   endTurn,
   clearActivityOnError,
@@ -277,8 +281,10 @@ function handleStdout(
   }
 
   // --- Ready / session_restored — auto-resume the queue if non-empty.
-  // Remy persists the queue to .remy-stats.json across restarts but does
-  // NOT auto-drain. Send the dedicated `resume` action to kick it off.
+  // Remy persists the queue to .remy-stats.json across restarts but does NOT
+  // auto-drain, and no longer reports the queue inline on these events. Seed
+  // our view from get_history (the snapshot path) and send `resume` if there's
+  // pending work.
   if (event.event === 'ready' || event.event === 'session_restored') {
     // Forward session_restored to the frontend — it carries the active
     // per-agent model picks (models) and conversation size needed for
@@ -289,23 +295,16 @@ function handleStdout(
       const { event: _evt, ...data } = event;
       cb.broadcast('agentSessionRestored', data);
     }
-    if ((event.queuedMessages?.length ?? 0) > 0) {
-      log.info(
-        `Queue non-empty on ${event.event} (${event.queuedMessages?.length} items) — sending resume`,
-      );
-      // Fire-and-forget. Remy's contract: resume completes immediately,
-      // per-turn events follow as the queue drains.
-      sendAgentCommand(pm, 'resume', {}, 30_000);
-    }
+    void seedQueueAndMaybeResume(pm, cb.broadcast);
     return;
   }
 
-  // --- Queued event — a message was enqueued instead of rejected. Under
-  // our policy only automated messages reach remy while busy, so this
-  // should be rare. Pass through so frontend can surface if desired.
-  if (event.event === 'queued') {
-    const { event: _evt, ...data } = event;
-    cb.broadcast('agentQueued', data);
+  // --- Queue changed — full snapshot on every queue mutation. Reconcile our
+  // tracked view (drives derived busy) and forward the snapshot to the FE. ---
+  if (event.event === 'queue_changed') {
+    const snapshot = event.queuedMessages ?? [];
+    setQueuedMessages(snapshot, cb.broadcast);
+    cb.broadcast('agentQueueChanged', { queuedMessages: snapshot });
     return;
   }
 
@@ -320,10 +319,12 @@ function handleStdout(
       const syntheticId = `bg-${++backgroundTurnCounter}`;
       startTurn(syntheticId);
       broadcastActivity(cb.broadcast);
-    } else if (!turnId.startsWith('ac-')) {
-      // Remy-initiated turn (chain-*, bg-*). ac-* turns are already tracked
-      // via startTurn() at the sendAgentCommand site in actions.ts, so we
-      // only handle the non-ac prefixes here.
+    } else if (turnId !== getActiveTurnId()) {
+      // Track any turn that isn't already the active one. Idle ac-* sends are
+      // already tracked via startTurn() at the sendAgentCommand site in
+      // actions.ts (so they're skipped here); remy-initiated turns (chain-*,
+      // bg-*) and queued ac-* sends — which were NOT startTurn'd while merely
+      // queued — get tracked here when they actually run.
       startTurn(turnId);
       broadcastActivity(cb.broadcast);
     }
@@ -361,11 +362,12 @@ function handleStdout(
       }
     }
 
-    // More queued work means remy is firing turn_started for the next
-    // item immediately. Don't flip busy to idle in the gap — the frontend
-    // shouldn't flicker between pipeline steps. Still fire onTurnDone so
-    // a snapshot checkpoint runs between items.
-    const hasMoreQueuedWork = (event.queuedMessages?.length ?? 0) > 0;
+    // More queued work means remy is about to fire turn_started for the next
+    // item. Don't flip busy to idle in the gap — the frontend shouldn't
+    // flicker between pipeline steps. The queue snapshot is tracked from
+    // queue_changed (queuedMessages no longer rides on completed). Still fire
+    // onTurnDone so a snapshot checkpoint runs between items.
+    const hasMoreQueuedWork = getQueuedMessages().length > 0;
 
     if (hasMoreQueuedWork) {
       cb.onTurnDone?.();
@@ -375,7 +377,7 @@ function handleStdout(
     }
 
     // Always broadcast to frontend as the turn-done signal. Spread carries
-    // queuedMessages / cancelledMessages through to the frontend opaquely.
+    // cancelledMessages / cancelledQueued through to the frontend opaquely.
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
 
@@ -595,6 +597,12 @@ export interface AgentHistoryResult {
     }
   >;
   allowedModelsByType?: Record<string, string[]>;
+  /**
+   * Pending-queue snapshot at request time (possibly []). The seed/recovery
+   * path: read on every (re)connect, then reconcile to queue_changed for live
+   * updates.
+   */
+  queuedMessages?: QueuedMessage[];
 }
 
 export interface GetAgentHistoryOpts {
@@ -653,5 +661,43 @@ export async function getAgentHistory(
           >,
         }
       : {}),
+    ...(Array.isArray(result.queuedMessages)
+      ? { queuedMessages: result.queuedMessages as QueuedMessage[] }
+      : {}),
   };
+}
+
+/**
+ * On remy (re)start the queue is no longer reported inline on ready/
+ * session_restored. Fetch it via get_history (the snapshot path), seed our
+ * tracked view, and — since remy persists but does NOT auto-drain — send
+ * `resume` if there's pending work. Fire-and-forget; best-effort.
+ *
+ * Uses a tiny page (`limit: 1`): queuedMessages is the queue snapshot, returned
+ * independently of the messages page. If a future remy gates it on a full page,
+ * drop the limit.
+ */
+async function seedQueueAndMaybeResume(
+  pm: ProcessManager,
+  broadcast: AgentCallbacks['broadcast'],
+): Promise<void> {
+  try {
+    const { queuedMessages } = await getAgentHistory(pm, { limit: 1 });
+    const snapshot = queuedMessages ?? [];
+    setQueuedMessages(snapshot, broadcast);
+    if (snapshot.length > 0) {
+      log.info(
+        `Queue non-empty on (re)start (${snapshot.length} items) — sending resume`,
+      );
+      // Remy's contract: resume completes immediately; per-turn events follow
+      // as the queue drains.
+      sendAgentCommand(pm, 'resume', {}, 30_000);
+    }
+  } catch (err) {
+    log.warn(
+      `Failed to seed queue / resume on (re)start: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }

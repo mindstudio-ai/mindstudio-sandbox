@@ -5,9 +5,11 @@ import { parseJsonEvent } from '../parseJsonEvent.js';
 // ---------------------------------------------------------------------------
 
 /**
- * A message sitting in remy's FIFO queue. Automated chain steps and
- * background flushes queue internally; a user message queues if the
- * sandbox forwards it while remy is busy (we gate this — see actions.ts).
+ * A message sitting in remy's FIFO queue. `source:'user'` is an intentional
+ * mid-turn user send — the sandbox now forwards user messages while remy is
+ * busy and they queue instead of being rejected (see actions.ts). `chain` and
+ * `background` are system items remy enqueues internally. Only `user` items are
+ * cancellable (via cancelQueued); they carry `command.requestId`.
  */
 export interface QueuedMessage {
   command: {
@@ -63,14 +65,13 @@ export type ModelSurfaces = Record<string, ModelSurface>;
  */
 export type AllowedModelsByType = Record<string, string[]>;
 
-/** System events — lifecycle; some may carry queue state on restart/resume. */
+/** System events — lifecycle. */
 export type AgentSystemEvent =
-  | { event: 'ready'; queuedMessages?: QueuedMessage[] }
+  | { event: 'ready' }
   | { event: 'turn_started'; requestId?: string }
   | {
       event: 'session_restored';
       messageCount?: number;
-      queuedMessages?: QueuedMessage[];
       /** Per-agent model picks active on the restored session. */
       models?: AgentModels;
       /** Full picker registry — always present from current remy. */
@@ -79,9 +80,14 @@ export type AgentSystemEvent =
       allowedModelsByType?: AllowedModelsByType;
     }
   | {
-      event: 'queued';
-      requestId: string;
-      position: number;
+      /**
+       * Live queue-state event — emitted on every queue mutation (user message
+       * queued, chain/background enqueued, item shifted out to run, or a cancel/
+       * cancelQueued removal). No requestId. `queuedMessages` is always the full
+       * current snapshot, including [] when the queue empties — reconcile to it,
+       * don't track deltas. Replaces the removed `queued` event.
+       */
+      event: 'queue_changed';
       queuedMessages: QueuedMessage[];
     }
   | { event: 'stopping' }
@@ -227,15 +233,15 @@ export interface AgentCompletedEvent {
   success: boolean;
   error?: string;
   /**
-   * Items still queued when this turn ended. Non-empty → another turn is
-   * starting immediately; busy state should carry across the hand-off.
-   */
-  queuedMessages?: QueuedMessage[];
-  /**
-   * On a cancel command's completed, the items drained from the queue by
-   * the cancel. Typed for completeness; currently not surfaced in any UI.
+   * On a `cancel` command's completed, the items drained from the queue by the
+   * hard stop (all sources). Typed for completeness; not surfaced in any UI.
    */
   cancelledMessages?: QueuedMessage[];
+  /**
+   * On a `cancelQueued` command's completed, the pending user messages removed
+   * (the matched items; [] if nothing matched).
+   */
+  cancelledQueued?: QueuedMessage[];
   /**
    * The model that actually served the request. Useful for confirming a
    * changeModels pick took effect and for a "running on X" debug banner.

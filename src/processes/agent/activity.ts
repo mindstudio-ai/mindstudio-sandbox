@@ -1,9 +1,13 @@
 /**
- * Agent activity tracking — file ops, pending external tools, turn state.
+ * Agent activity tracking — file ops, pending external tools, turn state,
+ * and the live queue snapshot.
  *
- * This is a leaf module with no deps on other agent modules, so both
- * index.ts (event handler) and actions.ts (WS actions) can import freely.
+ * This is a leaf module with no runtime deps on other agent modules (only a
+ * type-only import for QueuedMessage), so both index.ts (event handler) and
+ * actions.ts (WS actions) can import freely.
  */
+
+import type { QueuedMessage } from './events.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,13 +55,22 @@ let activity: AgentActivity = { busy: false, fileOps: [] };
 let activeMessageRequestId: string | null = null;
 const pendingExternalTools = new Map<string, PendingExternalTool>();
 const serverHandledToolIds = new Set<string>();
+// The current pending-queue snapshot, reconciled from remy's queue_changed
+// events. Drives the queue dimension of derived busy (see getAgentActivity).
+let currentQueue: QueuedMessage[] = [];
 
 // ---------------------------------------------------------------------------
 // Activity
 // ---------------------------------------------------------------------------
 
 export function getAgentActivity(): AgentActivity {
-  return { busy: activity.busy, fileOps: [...activity.fileOps] };
+  // Busy is derived: a foreground turn is running OR work is queued. Keeping it
+  // true while the queue is non-empty stops the FE (and the HMR flush wired to
+  // this signal) from going idle between chained/queued turns.
+  return {
+    busy: activity.busy || currentQueue.length > 0,
+    fileOps: [...activity.fileOps],
+  };
 }
 
 export function broadcastActivity(
@@ -67,12 +80,41 @@ export function broadcastActivity(
 }
 
 // ---------------------------------------------------------------------------
+// Queue snapshot (reconciled from remy's queue_changed events)
+// ---------------------------------------------------------------------------
+
+export function getQueuedMessages(): QueuedMessage[] {
+  return [...currentQueue];
+}
+
+/**
+ * Replace the tracked queue snapshot. Broadcasts agentActivityChanged only when
+ * the derived busy state actually flips (e.g. the queue goes empty↔non-empty
+ * while no foreground turn is running) to avoid redundant activity churn.
+ */
+export function setQueuedMessages(
+  snapshot: QueuedMessage[],
+  broadcast: (event: string, data: Record<string, any>) => void,
+): void {
+  const wasBusy = getAgentActivity().busy;
+  currentQueue = snapshot;
+  if (getAgentActivity().busy !== wasBusy) {
+    broadcastActivity(broadcast);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Turn lifecycle
 // ---------------------------------------------------------------------------
 
 export function startTurn(requestId: string): void {
   activeMessageRequestId = requestId;
   activity = { busy: true, fileOps: [] };
+}
+
+/** The requestId of the active foreground turn, or null if none. */
+export function getActiveTurnId(): string | null {
+  return activeMessageRequestId;
 }
 
 /** Track a background turn (no busy state, no activity broadcast). */

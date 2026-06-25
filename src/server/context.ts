@@ -182,6 +182,12 @@ export async function buildInitFrame(
       typeof historyResult.allowedModelsByType === 'object'
         ? historyResult.allowedModelsByType
         : null,
+    // Pending message queue snapshot — seed on connect/reconnect, then
+    // reconcile to the agentQueueChanged broadcast for live updates.
+    queuedMessages:
+      'queuedMessages' in historyResult && historyResult.queuedMessages
+        ? historyResult.queuedMessages
+        : [],
     ...(historyResult.running ? { agentRunning: true } : {}),
     ...(historyResult.currentRequestId
       ? { agentCurrentRequestId: historyResult.currentRequestId }
@@ -226,6 +232,7 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     agentModels: null,
     agentModelSurfaces: null,
     agentAllowedModelsByType: null,
+    queuedMessages: [],
     processes: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
