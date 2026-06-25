@@ -68,16 +68,6 @@ export function createAgentActions(
 
       const isAutomated = text.startsWith('@@automated::');
 
-      // User-typed messages are rejected while the agent is busy. Automated
-      // messages (button clicks, remy chain steps) are allowed to queue —
-      // we don't expose user queueing as a product feature yet.
-      if (!isAutomated && getAgentActivity().busy) {
-        return {
-          success: false,
-          error: 'Agent is busy — please wait for the current turn to finish',
-        };
-      }
-
       // Any new user message ends the Continue-button window — clear the
       // stored aborted trigger. If the user clicked Continue (re-sending
       // the stored trigger), the re-run will re-populate on its next cancel.
@@ -92,12 +82,26 @@ export function createAgentActions(
         }
       }
 
+      // Snapshot busy now — after any pending-external-tool cancel above has
+      // settled — to decide queue vs run. While busy, remy queues the message
+      // and its terminal completed won't arrive until it drains and runs, so we
+      // don't await it; we ack immediately and let the FE confirm via the next
+      // agentQueueChanged (match requestId) and the eventual agentCompleted.
+      const busy = getAgentActivity().busy;
+
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
         ...(!isAutomated && viewContext ? { viewContext } : {}),
       });
+
+      if (busy) {
+        // Queued mid-turn. Don't startTurn (a turn is already active) and don't
+        // await the far-off completed — turn_started tracks it when it runs.
+        return { success: true, requestId, queued: true };
+      }
+
       startTurn(requestId);
       return await response;
     },
@@ -115,6 +119,21 @@ export function createAgentActions(
         }
       }
       return result;
+    },
+    // Cancel pending QUEUED user messages only — never touches the in-flight
+    // turn (use agentCancel for a hard stop). No `id` cancels all pending user
+    // messages; `id` cancels the one whose command.requestId === id. remy
+    // protects chain/background items. Response carries cancelledQueued (the
+    // removed items); remy also fires queue_changed with the new snapshot.
+    agentCancelQueued: async (p) => {
+      const { id } = p as { id?: string };
+      const { response } = sendAgentCommand(
+        pm,
+        'cancelQueued',
+        id ? { id } : {},
+        5_000,
+      );
+      return await response;
     },
     // Paginated history fetch — frontend uses this for scroll-up to load
     // older messages without reconnecting. `before` and `limit` map to
