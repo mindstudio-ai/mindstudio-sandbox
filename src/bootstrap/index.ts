@@ -228,7 +228,19 @@ export async function cloneAppRepo(
 // Git configuration
 // ---------------------------------------------------------------------------
 
-function unshallowAsync(workspaceDir: string): void {
+/**
+ * Deepen the shallow clone in the background so remy can later see full
+ * history for diffs and commits. Fire-and-forget — nothing in boot needs deep
+ * history, and remy only needs it when the user first asks for a diff/commit.
+ *
+ * MUST be kicked off AFTER snapshot restore completes, not from configureGit:
+ * `git fetch --unshallow` and restore()'s `git fetch --depth=1 origin +_draft`
+ * both mutate `.git/shallow` and contend on `.git/shallow.lock`. Running them
+ * concurrently makes whichever loses the race die with "Unable to create
+ * '.git/shallow.lock': File exists." Deferring this keeps the two fetches
+ * serialized without blocking boot.
+ */
+export function unshallowAsync(workspaceDir: string): void {
   const start = Date.now();
   exec(
     'git fetch --unshallow',
@@ -291,10 +303,9 @@ export function configureGit(workspaceDir: string): void {
     label: 'git config safe.directory',
   });
 
-  // Unshallow so remy can see full history for diffs and commits.
-  // Runs in the background — nothing in boot needs deep history, and remy
-  // only needs it when the user first asks for a diff/commit.
-  unshallowAsync(workspaceDir);
+  // NOTE: the background unshallow is deliberately NOT kicked off here — it
+  // races restore()'s `git fetch --depth=1 origin +_draft` on `.git/shallow.lock`.
+  // The caller invokes unshallowAsync() after restore completes instead.
 
   // Install commit-msg hook to add Remy as coauthor on all commits
   const hooksDir = path.join(workspaceDir, '.git', 'hooks');
