@@ -10,6 +10,7 @@ import {
   writeTunnelConfig,
   cloneAppRepo,
   configureGit,
+  unshallowAsync,
   readAppConfig,
   installDependencies,
   linkProdCli,
@@ -429,6 +430,13 @@ async function main(): Promise<void> {
       broadcast('bootstrapProgress', { step: 'error', message });
       return; // skip steps 7+: no project status init, no dev server, no agent edits. WS stays up.
     }
+
+    // Now that restore()'s depth-1 fetch has released `.git/shallow.lock`,
+    // kick off the background unshallow. Deferred to here (rather than inside
+    // configureGit) so the two shallow-mutating fetches never run concurrently.
+    // Only on the success path — no point deepening history if we're refusing
+    // to boot above.
+    unshallowAsync(config.workspaceDir);
 
     // 7. Init project status (after snapshot restore so file is available)
     initProjectStatus(config.workspaceDir);
