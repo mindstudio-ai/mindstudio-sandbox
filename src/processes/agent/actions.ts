@@ -42,6 +42,7 @@ export function createAgentActions(
         text: string;
         attachments?: Array<{
           url: string;
+          key?: string;
           extractedTextUrl?: string;
           transcript?: string;
           durationMs?: number;
