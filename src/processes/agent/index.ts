@@ -685,6 +685,14 @@ async function seedQueueAndMaybeResume(
     const { queuedMessages } = await getAgentHistory(pm, { limit: 1 });
     const snapshot = queuedMessages ?? [];
     setQueuedMessages(snapshot, broadcast);
+    // Re-broadcast the reconciled queue to connected clients. setQueuedMessages
+    // only emits agentActivityChanged on a busy transition, so without this a
+    // client that got an empty init frame (get_history race / fallback frame)
+    // is never told the queue — its UI stays empty until the queue next mutates
+    // (i.e. drains at turn end). Broadcasting here re-syncs the queue snapshot
+    // and, on the FE, re-seeds its queued-message tracking so dequeued messages
+    // still render as chat bubbles.
+    broadcast('agentQueueChanged', { queuedMessages: snapshot });
     if (snapshot.length > 0) {
       log.info(
         `Queue non-empty on (re)start (${snapshot.length} items) — sending resume`,
