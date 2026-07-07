@@ -950,6 +950,155 @@ async function methodsInvoke(appId: string, args: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — issues
+// ---------------------------------------------------------------------------
+
+// Resolve a --body value: `--body -` reads stdin (for long multi-line
+// markdown remy generates); `--body <text>` uses the literal; absent → undefined.
+function readBodyFlag(args: string[]): string | undefined {
+  const val = getFlag(args, 'body');
+  if (val === undefined) {
+    return undefined;
+  }
+  if (val === '-') {
+    return fs.readFileSync(0, 'utf-8');
+  }
+  return val;
+}
+
+async function issuesList(appId: string, args: string[]) {
+  const params = new URLSearchParams();
+  const status = getFlag(args, 'status');
+  const kind = getFlag(args, 'kind');
+  const limit = getFlag(args, 'limit');
+  const cursor = getFlag(args, 'cursor');
+  if (status) {
+    params.set('status', status);
+  }
+  if (kind) {
+    params.set('kind', kind);
+  }
+  if (limit) {
+    params.set('limit', limit);
+  }
+  if (cursor) {
+    params.set('cursor', cursor);
+  }
+  const q = params.toString();
+  out(
+    await api('GET', `/_internal/v2/apps/${appId}/issues${q ? `?${q}` : ''}`),
+  );
+}
+
+async function issuesGet(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  if (!number) {
+    fatal('Usage: mindstudio-prod issues get <number>');
+  }
+  out(await api('GET', `/_internal/v2/apps/${appId}/issues/${number}`));
+}
+
+async function issuesCreate(appId: string, args: string[]) {
+  const title = getPositional(args, 0);
+  if (!title) {
+    fatal(
+      'Usage: mindstudio-prod issues create <title> [--body <text>|--body -] [--kind bug|idea|task]',
+    );
+  }
+  // Everything the CLI files is authored as the agent.
+  const body: Record<string, unknown> = { title, authorKind: 'agent' };
+  const issueBody = readBodyFlag(args);
+  if (issueBody !== undefined) {
+    body.body = issueBody;
+  }
+  const kind = getFlag(args, 'kind');
+  if (kind) {
+    body.kind = kind;
+  }
+  out(await api('POST', `/_internal/v2/apps/${appId}/issues`, body));
+}
+
+async function issuesComment(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  const flagBody = readBodyFlag(args);
+  const commentBody =
+    flagBody !== undefined ? flagBody : getPositional(args, 1);
+  if (!number || !commentBody) {
+    fatal(
+      'Usage: mindstudio-prod issues comment <number> <body>   (or --body - to read stdin)',
+    );
+  }
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/comments`, {
+      body: commentBody,
+      authorKind: 'agent',
+    }),
+  );
+}
+
+async function issuesClose(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  if (!number) {
+    fatal('Usage: mindstudio-prod issues close <number>');
+  }
+  out(
+    await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, {
+      status: 'closed',
+    }),
+  );
+}
+
+async function issuesReopen(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  if (!number) {
+    fatal('Usage: mindstudio-prod issues reopen <number>');
+  }
+  out(
+    await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, {
+      status: 'open',
+    }),
+  );
+}
+
+async function issuesEdit(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  if (!number) {
+    fatal(
+      'Usage: mindstudio-prod issues edit <number> [--title <t>] [--body <t>|--body -] [--kind ...] [--status open|closed]',
+    );
+  }
+  const body: Record<string, unknown> = {};
+  const title = getFlag(args, 'title');
+  const editBody = readBodyFlag(args);
+  const kind = getFlag(args, 'kind');
+  const status = getFlag(args, 'status');
+  if (title !== undefined) {
+    body.title = title;
+  }
+  if (editBody !== undefined) {
+    body.body = editBody;
+  }
+  if (kind !== undefined) {
+    body.kind = kind;
+  }
+  if (status !== undefined) {
+    body.status = status;
+  }
+  if (Object.keys(body).length === 0) {
+    fatal('Provide at least one of --title, --body, --kind, --status');
+  }
+  out(await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, body));
+}
+
+async function issuesDelete(appId: string, args: string[]) {
+  const number = getPositional(args, 0);
+  if (!number) {
+    fatal('Usage: mindstudio-prod issues delete <number>');
+  }
+  out(await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/delete`));
+}
+
+// ---------------------------------------------------------------------------
 // Help text
 // ---------------------------------------------------------------------------
 
@@ -968,6 +1117,7 @@ Commands:
   secrets     Manage app secrets (env vars)
   methods     List and invoke methods
   data        Live database operations (e.g. lift-from-dev)
+  issues      File and manage issues (bugs, ideas, tasks)
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -1252,6 +1402,40 @@ Examples:
   mindstudio-prod methods invoke mth_abc123 --roles admin
   mindstudio-prod methods invoke mth_abc123 --user-id user_abc --roles analyst,admin`;
 
+const HELP_ISSUES = `mindstudio-prod issues — File and manage issues (bugs, ideas, tasks) for the app.
+
+Subcommands:
+  list      List issues (newest first)
+  get       Get one issue + its comment thread
+  create    File a new issue
+  comment   Post a comment on an issue's thread
+  close     Close an issue
+  reopen    Reopen a closed issue
+  edit      Edit an issue's title / body / kind / status
+  delete    Delete an issue
+
+Usage:
+  mindstudio-prod issues list [--status open|closed] [--kind bug|idea|task] [--limit 50] [--cursor <c>]
+  mindstudio-prod issues get <number>
+  mindstudio-prod issues create <title> [--body <text>|--body -] [--kind bug|idea|task]
+  mindstudio-prod issues comment <number> <body>          (or --body - to read stdin)
+  mindstudio-prod issues close <number>
+  mindstudio-prod issues reopen <number>
+  mindstudio-prod issues edit <number> [--title <t>] [--body <t>|--body -] [--kind ...] [--status open|closed]
+  mindstudio-prod issues delete <number>
+
+Notes:
+  - <number> is the friendly per-app issue number (e.g. 42), shown as 'number' in output.
+  - Issues and comments filed via this CLI are authored as the agent (authorKind: "agent").
+  - '--body -' reads the body from stdin — use it for long multi-line markdown.
+
+Examples:
+  mindstudio-prod issues list --status open --kind bug
+  mindstudio-prod issues create "Checkout 500s on empty cart" --kind bug --body "Repro in comments"
+  echo "Long markdown body..." | mindstudio-prod issues create "Refactor auth flow" --kind task --body -
+  mindstudio-prod issues comment 42 "Fixed in the latest release."
+  mindstudio-prod issues close 42`;
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1280,6 +1464,7 @@ async function main() {
     secrets: HELP_SECRETS,
     methods: HELP_METHODS,
     data: HELP_DATA,
+    issues: HELP_ISSUES,
   };
   if (!sub || sub === '--help' || sub === '-h') {
     const helpText = HELP_MAP[group];
@@ -1477,6 +1662,31 @@ async function main() {
         default:
           fatal(
             `Unknown subcommand: data ${sub}. Run 'mindstudio-prod data --help'`,
+          );
+      }
+      break;
+
+    case 'issues':
+      switch (sub) {
+        case 'list':
+          return issuesList(appId, rest);
+        case 'get':
+          return issuesGet(appId, rest);
+        case 'create':
+          return issuesCreate(appId, rest);
+        case 'comment':
+          return issuesComment(appId, rest);
+        case 'close':
+          return issuesClose(appId, rest);
+        case 'reopen':
+          return issuesReopen(appId, rest);
+        case 'edit':
+          return issuesEdit(appId, rest);
+        case 'delete':
+          return issuesDelete(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: issues ${sub}. Run 'mindstudio-prod issues --help'`,
           );
       }
       break;
