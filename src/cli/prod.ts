@@ -1042,7 +1042,7 @@ async function issuesClose(appId: string, args: string[]) {
     fatal('Usage: mindstudio-prod issues close <number>');
   }
   out(
-    await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, {
+    await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/update`, {
       status: 'closed',
     }),
   );
@@ -1054,7 +1054,7 @@ async function issuesReopen(appId: string, args: string[]) {
     fatal('Usage: mindstudio-prod issues reopen <number>');
   }
   out(
-    await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, {
+    await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/update`, {
       status: 'open',
     }),
   );
@@ -1087,7 +1087,13 @@ async function issuesEdit(appId: string, args: string[]) {
   if (Object.keys(body).length === 0) {
     fatal('Provide at least one of --title, --body, --kind, --status');
   }
-  out(await api('PATCH', `/_internal/v2/apps/${appId}/issues/${number}`, body));
+  out(
+    await api(
+      'POST',
+      `/_internal/v2/apps/${appId}/issues/${number}/update`,
+      body,
+    ),
+  );
 }
 
 async function issuesDelete(appId: string, args: string[]) {
