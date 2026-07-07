@@ -1044,6 +1044,7 @@ async function issuesClose(appId: string, args: string[]) {
   out(
     await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/update`, {
       status: 'closed',
+      authorKind: 'agent',
     }),
   );
 }
@@ -1056,6 +1057,7 @@ async function issuesReopen(appId: string, args: string[]) {
   out(
     await api('POST', `/_internal/v2/apps/${appId}/issues/${number}/update`, {
       status: 'open',
+      authorKind: 'agent',
     }),
   );
 }
@@ -1087,6 +1089,8 @@ async function issuesEdit(appId: string, args: string[]) {
   if (Object.keys(body).length === 0) {
     fatal('Provide at least one of --title, --body, --kind, --status');
   }
+  // Attribute any resulting timeline event (e.g. a status flip) to the agent.
+  body.authorKind = 'agent';
   out(
     await api(
       'POST',
