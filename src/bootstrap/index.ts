@@ -12,6 +12,7 @@ import {
   runAsync,
   isInstalled,
   verifyInstalled,
+  globalTscMajor,
   installFromSource,
   setRegistry,
 } from './helpers.js';
@@ -122,25 +123,37 @@ export async function installAgentSdk(progress: ProgressFn): Promise<void> {
   }
 }
 
+// Pinned to the CLASSIC TypeScript line. Do NOT unpin or bump to TS 7+:
+// TypeScript 7 is the native (Go) rewrite that removed `lib/tsserver.js`, the
+// JS server `typescript-language-server` spawns — an unpinned install floated
+// into 7.0 and bricked LSP boot. When we migrate to the native server
+// (`tsgo --lsp` from `@typescript/native-preview`), this whole function changes;
+// until then, stay on 6.x. `typescript@6.0.3` is the latest 6.x (still ships
+// `lib/tsserver.js`); `typescript-language-server@5.3.0` is its latest.
+const PINNED_LSP_SERVER = 'typescript-language-server@5.3.0';
+const PINNED_TYPESCRIPT = 'typescript@6.0.3';
+const CLASSIC_TS_MAJOR = 6;
+
 export async function installLsp(progress: ProgressFn): Promise<void> {
-  // Guard on BOTH the language server AND `tsc` (the `typescript` package's bin,
-  // present in every TS version — unlike `tsserver`, which latest TS no longer
-  // ships as a bin). The server resolves TypeScript from this global install; if
-  // the server binary is present but `typescript` isn't (warm sandbox, pre-baked
-  // image, or a pruned install), a server-only check would skip the install and
-  // tsserver would fail to initialize with "Could not find a valid TypeScript
-  // installation" — bricking the boot.
-  if (isInstalled('typescript-language-server') && isInstalled('tsc')) {
+  // Skip only when the language server is present AND the global TypeScript is
+  // on the classic (6.x) line. A bare "is `tsc` present?" check isn't enough: a
+  // warm/pre-baked environment may already carry a floated `typescript@7` (which
+  // still ships `bin/tsc`), and skipping there would strand us on the broken 7.0.
+  // Version-gating forces a corrective (down)grade to the pinned classic build.
+  if (
+    isInstalled('typescript-language-server') &&
+    globalTscMajor() === CLASSIC_TS_MAJOR
+  ) {
     progress('installLsp', 'Already installed, skipping');
     log.info(
-      'typescript-language-server + typescript already installed, skipping',
+      `typescript-language-server + typescript@${CLASSIC_TS_MAJOR}.x already installed, skipping`,
     );
     return;
   }
 
   progress('installLsp', 'Installing TypeScript language server...');
-  run('npm install -g typescript-language-server typescript', {
-    label: 'npm install -g typescript-language-server typescript',
+  run(`npm install -g ${PINNED_LSP_SERVER} ${PINNED_TYPESCRIPT}`, {
+    label: `npm install -g ${PINNED_LSP_SERVER} ${PINNED_TYPESCRIPT}`,
   });
 
   verifyInstalled('typescript-language-server');
