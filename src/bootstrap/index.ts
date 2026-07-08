@@ -123,9 +123,18 @@ export async function installAgentSdk(progress: ProgressFn): Promise<void> {
 }
 
 export async function installLsp(progress: ProgressFn): Promise<void> {
-  if (isInstalled('typescript-language-server')) {
+  // Guard on BOTH the language server AND `tsc` (the `typescript` package's bin,
+  // present in every TS version — unlike `tsserver`, which latest TS no longer
+  // ships as a bin). The server resolves TypeScript from this global install; if
+  // the server binary is present but `typescript` isn't (warm sandbox, pre-baked
+  // image, or a pruned install), a server-only check would skip the install and
+  // tsserver would fail to initialize with "Could not find a valid TypeScript
+  // installation" — bricking the boot.
+  if (isInstalled('typescript-language-server') && isInstalled('tsc')) {
     progress('installLsp', 'Already installed, skipping');
-    log.info('typescript-language-server already installed, skipping');
+    log.info(
+      'typescript-language-server + typescript already installed, skipping',
+    );
     return;
   }
 
@@ -135,6 +144,7 @@ export async function installLsp(progress: ProgressFn): Promise<void> {
   });
 
   verifyInstalled('typescript-language-server');
+  verifyInstalled('tsc');
 }
 
 // ---------------------------------------------------------------------------
