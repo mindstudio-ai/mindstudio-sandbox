@@ -138,6 +138,25 @@ export function isInstalled(binaryName: string): boolean {
   }
 }
 
+/**
+ * Major version of the `tsc` on PATH (i.e. the global TypeScript), or null if
+ * `tsc` is absent or its output can't be parsed. `tsc --version` prints
+ * `"Version 6.0.3"`. Best-effort, mirrors `isInstalled` — used to detect a
+ * stray global TypeScript that floated off the pinned classic line.
+ */
+export function globalTscMajor(): number | null {
+  try {
+    const out = execSync('tsc --version', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = out.match(/Version (\d+)\./);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Log the install location of a binary, or warn if missing. */
 export function verifyInstalled(binaryName: string): void {
   if (isInstalled(binaryName)) {
