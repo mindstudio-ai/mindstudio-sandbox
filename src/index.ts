@@ -185,13 +185,27 @@ async function startServices(
 ): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
   const { processManager, registry } = managers;
 
-  // TypeScript language server
+  // TypeScript language server. A failed init (e.g. TypeScript not resolvable
+  // in the environment) must NOT brick the boot — the LSP is a dev-convenience
+  // that feeds code intelligence to remy and the editor, not a critical
+  // dependency. Degrade gracefully: log, leave the client in its not-running
+  // state, and carry on. Mirrors the non-fatal npm-install path above.
   log.info('Starting LSP...');
   const lspClient = new LspClient();
-  await lspClient.start(config.workspaceDir, registry);
+  try {
+    await lspClient.start(config.workspaceDir, registry);
+  } catch (err) {
+    log.error(
+      `LSP failed to start; continuing without code intelligence: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
   ctx.lspClient = lspClient;
 
-  // LSP HTTP sidecar for remy
+  // LSP HTTP sidecar for remy — started regardless of the init outcome so the
+  // configured lsp-url is always live. If the LSP isn't running, requests
+  // degrade to "not running" errors rather than connection failures.
   const lspSidecar = new LspSidecar(lspClient);
   await lspSidecar.start(4388);
   lspSidecar.setProcessManager(processManager);

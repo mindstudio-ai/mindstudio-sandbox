@@ -6,7 +6,7 @@
  * WebSocket, remy via HTTP sidecar) share the same language server instance.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
@@ -24,6 +24,28 @@ interface PendingRequest {
 
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB — safety cap on LSP message buffer
 const REQUEST_TIMEOUT_MS = 30_000; // 30s — reject hung requests
+
+/**
+ * Absolute path to the globally-installed TypeScript's `tsserver.js`, or null.
+ *
+ * typescript-language-server resolves TypeScript from the workspace by default,
+ * but nothing installs a workspace-root `typescript` — it's installed globally
+ * alongside the language server (see bootstrap `installLsp`). Pinning
+ * `tsserver.path` to that global copy removes reliance on resolution heuristics,
+ * which is what surfaces as `-32603 Could not find a valid TypeScript
+ * installation` when the heuristics come up empty. Best-effort: returns null
+ * (→ let the server resolve on its own) if the global copy can't be located.
+ */
+async function resolveGlobalTsserverPath(): Promise<string | null> {
+  try {
+    const root = execSync('npm root -g', { encoding: 'utf-8' }).trim();
+    const tsserver = path.join(root, 'typescript', 'lib', 'tsserver.js');
+    await fs.access(tsserver);
+    return tsserver;
+  } catch {
+    return null;
+  }
+}
 
 export class LspClient {
   private process: ChildProcess | null = null;
@@ -105,9 +127,23 @@ export class LspClient {
     const rootUri = `file://${workspaceDir}`;
     log.debug(`Sending initialize (rootUri: ${rootUri})`);
 
+    // Pin the server at the globally-installed TypeScript so init doesn't depend
+    // on the workspace resolving a `typescript` it never installs at its root.
+    const tsserverPath = await resolveGlobalTsserverPath();
+    if (tsserverPath) {
+      log.info(`Pinning tsserver.path to global TypeScript: ${tsserverPath}`);
+    } else {
+      log.warn(
+        'Global TypeScript not located; letting the server resolve TypeScript on its own',
+      );
+    }
+
     const initResult = await this.request('initialize', {
       processId: process.pid,
       rootUri,
+      ...(tsserverPath
+        ? { initializationOptions: { tsserver: { path: tsserverPath } } }
+        : {}),
       capabilities: {
         textDocument: {
           synchronization: {
