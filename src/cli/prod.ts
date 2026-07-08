@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -83,6 +84,31 @@ async function api(
   }
 
   return res.json();
+}
+
+/**
+ * Like `api`, but never exits the process — returns a structured result so a
+ * caller can react to a status (e.g. tolerate a 404 while a release row is
+ * still being created after a push). `body` is the parsed JSON when possible.
+ */
+async function apiTry(
+  method: string,
+  apiPath: string,
+): Promise<{ ok: boolean; status: number; body: any }> {
+  const res = await fetch(`${API_BASE}${apiPath}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    body = { message: await res.text().catch(() => '') };
+  }
+  return { ok: res.ok, status: res.status, body };
 }
 
 async function apiStream(
@@ -506,9 +532,21 @@ async function analyticsCrawlers(appId: string, args: string[]) {
 // Commands — releases
 // ---------------------------------------------------------------------------
 
-async function releasesList(appId: string) {
-  const dashboard = await api('GET', `/_internal/v2/apps/${appId}/dashboard`);
-  out(dashboard.releases ?? []);
+async function releasesList(appId: string, args: string[]) {
+  // Newest-first, non-dev releases. `--limit` is honored via the paginated
+  // releases endpoint (default 20, max 100) — the dashboard's release list is
+  // hardcoded to 10 and ignores a limit, which is why callers that passed
+  // `--limit 1` silently got the full set.
+  const limit = getFlag(args, 'limit');
+  const params = new URLSearchParams();
+  if (limit) {
+    params.set('limit', limit);
+  }
+  const result = await api(
+    'GET',
+    `/_internal/v2/apps/${appId}/releases${qs(params)}`,
+  );
+  out(result.releases ?? []);
 }
 
 async function releasesGet(appId: string, args: string[]) {
@@ -575,6 +613,149 @@ async function releasesStatus(appId: string, args: string[]) {
     }
 
     await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
+// Exit codes for `releases wait` — let callers branch on $? instead of parsing
+// JSON. 0 = deployed, everything else is a distinct non-success outcome.
+const WAIT_EXIT = {
+  ok: 0, // live (or preview, for a feature branch)
+  failed: 1, // build failed
+  timeout: 2, // still building when --timeout elapsed
+  notFound: 3, // no release ever appeared for the commit
+  superseded: 4, // built, but a newer release replaced it (no longer live)
+} as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Progress to stderr so stdout stays a single clean JSON object for parsing. */
+function progress(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
+/** Current HEAD commit SHA in the workspace, or null if git isn't resolvable. */
+function gitHeadSha(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: WORKSPACE_DIR,
+      encoding: 'utf-8',
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Print the final wait result and set the process exit code (no truncation). */
+function finishWait(data: unknown, code: number): void {
+  out(data);
+  process.exitCode = code;
+}
+
+/** Compact, stable projection of a release for the wait result. */
+function summarizeRelease(release: any) {
+  return {
+    releaseId: release.id,
+    commitSha: release.commitSha,
+    branch: release.branch ?? null,
+    status: release.status,
+    buildDurationMs: release.buildDurationMs ?? null,
+    publishedAt: release.publishedAt ?? null,
+  };
+}
+
+/**
+ * Wait for the release built from a git commit to reach a terminal state.
+ *
+ * This is the "publish and wait until live" primitive: after `git push`, a
+ * caller has a commit SHA (not a release id), so we resolve the release by
+ * commit, then poll until it goes live / fails / times out — reporting the
+ * verdict via the exit code so the caller never has to scrape output.
+ *
+ * `--commit` defaults to the workspace's HEAD. Success is `live` (default
+ * branch) or `preview` (feature branch); `failed`/`superseded` and timeout
+ * each get their own exit code.
+ */
+async function releasesWait(appId: string, args: string[]) {
+  const commit = getFlag(args, 'commit') ?? gitHeadSha();
+  if (!commit) {
+    fatal(
+      'Could not determine commit SHA — pass --commit <sha> or run inside the app git repo',
+    );
+  }
+  const timeoutMs = parseInt(getFlag(args, 'timeout') ?? '300', 10) * 1000;
+  const POLL_MS = 3000;
+  // A push returns before the receive-pack hook necessarily finishes inserting
+  // the release row, so tolerate 404s for a short grace window while resolving.
+  const RESOLVE_GRACE_MS = 30_000;
+  const shortSha = commit.slice(0, 8);
+  const releasePath = `/_internal/v2/apps/${appId}/releases/by-commit/${commit}`;
+  const start = Date.now();
+
+  // Phase 1 — resolve the release for this commit.
+  let release: any = null;
+  while (true) {
+    const r = await apiTry('GET', releasePath);
+    if (r.ok) {
+      release = r.body;
+      break;
+    }
+    if (r.status !== 404) {
+      fatal(
+        `Failed to resolve release for ${shortSha}: HTTP ${r.status} ${JSON.stringify(r.body)}`,
+      );
+    }
+    if (Date.now() - start > RESOLVE_GRACE_MS) {
+      finishWait(
+        {
+          status: 'not_found',
+          commitSha: commit,
+          error: `No release created for commit ${shortSha} within ${RESOLVE_GRACE_MS / 1000}s`,
+        },
+        WAIT_EXIT.notFound,
+      );
+      return;
+    }
+    progress(`waiting for release to be created for ${shortSha}…`);
+    await sleep(POLL_MS);
+  }
+
+  // Phase 2 — poll status until terminal.
+  const SUCCESS = new Set(['live', 'preview']);
+  while (true) {
+    if (SUCCESS.has(release.status)) {
+      finishWait(summarizeRelease(release), WAIT_EXIT.ok);
+      return;
+    }
+    if (release.status === 'failed') {
+      finishWait(summarizeRelease(release), WAIT_EXIT.failed);
+      return;
+    }
+    if (release.status === 'superseded') {
+      finishWait(summarizeRelease(release), WAIT_EXIT.superseded);
+      return;
+    }
+    if (Date.now() - start > timeoutMs) {
+      finishWait(
+        {
+          ...summarizeRelease(release),
+          error: `Timed out after ${timeoutMs / 1000}s (last status: ${release.status})`,
+        },
+        WAIT_EXIT.timeout,
+      );
+      return;
+    }
+    progress(
+      `${release.status}… (${Math.round((Date.now() - start) / 1000)}s)`,
+    );
+    await sleep(POLL_MS);
+    const r = await apiTry('GET', releasePath);
+    if (r.ok) {
+      release = r.body;
+    }
+    // A transient non-ok keeps the last known release; the timeout guard above
+    // still applies, so we don't loop forever on a persistent error.
   }
 }
 
@@ -1238,20 +1419,30 @@ Notes:
 const HELP_RELEASES = `mindstudio-prod releases — View and monitor releases.
 
 Subcommands:
-  list      List all releases
+  list      List releases, newest first (--limit N, default 20, max 100)
   get       Get full details of a specific release
   current   Get the currently live release
-  status    Check release status (optionally poll until complete)
+  status    Check a release's status by id (optionally poll until complete)
+  wait      Wait for the release built from a commit to go live
 
 Usage:
-  mindstudio-prod releases list
+  mindstudio-prod releases list [--limit 20]
   mindstudio-prod releases get <releaseId>
   mindstudio-prod releases current
   mindstudio-prod releases status <releaseId> [--wait] [--timeout 120]
+  mindstudio-prod releases wait [--commit <sha>] [--timeout 300]
+
+'releases wait' is the "publish and wait until live" primitive. After a
+'git push', run it to block until the pushed commit's release is terminal.
+--commit defaults to the workspace HEAD. It prints one JSON object and sets
+the exit code so you can branch on $? without parsing:
+  0  live (deployed)        2  timed out (still building)   4  superseded
+  1  build failed           3  no release found for commit
 
 Examples:
-  mindstudio-prod releases current
-  mindstudio-prod releases status rel_abc123 --wait`;
+  git push origin HEAD && mindstudio-prod releases wait
+  mindstudio-prod releases wait --commit 91ca67a --timeout 600
+  mindstudio-prod releases list --limit 1`;
 
 const HELP_DOMAINS = `mindstudio-prod domains — Manage your app's domains.
 
@@ -1552,13 +1743,15 @@ async function main() {
     case 'releases':
       switch (sub) {
         case 'list':
-          return releasesList(appId);
+          return releasesList(appId, rest);
         case 'get':
           return releasesGet(appId, rest);
         case 'current':
           return releasesCurrent(appId);
         case 'status':
           return releasesStatus(appId, rest);
+        case 'wait':
+          return releasesWait(appId, rest);
         default:
           fatal(
             `Unknown subcommand: releases ${sub}. Run 'mindstudio-prod releases --help'`,

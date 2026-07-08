@@ -67,7 +67,10 @@ import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail
 import {
   initProjectStatus,
   getProjectStatus,
+  getOnboardingState,
+  setOnboardingState,
 } from './projectStatus/ProjectStatusManager.js';
+import { readForkSource } from './projectStatus/forkDetection.js';
 import type { AppConfig } from './types.js';
 import { toolRegistry } from './agentTools/index.js';
 import { setupFileWatcher } from './fileWatcher/index.js';
@@ -440,6 +443,25 @@ async function main(): Promise<void> {
 
     // 7. Init project status (after snapshot restore so file is available)
     initProjectStatus(config.workspaceDir);
+
+    // 7b. Forked-app onboarding stamp. A fork is a main-only git copy of its
+    // source, so it carries no _draft — where .project-status.json lives — and
+    // would otherwise boot into onboarding. The backend leaves a durable git
+    // trailer on main's stamp commit; if we see it and haven't already finished,
+    // stamp finished. Gated on state (not the trailer, which lives in history
+    // forever) → one-time on first boot, then self-heals (the stamped status
+    // rides the next draft snapshot, so later boots restore finished and skip).
+    if (getOnboardingState() !== 'onboardingFinished') {
+      const forkSource = await readForkSource(config.workspaceDir);
+      if (forkSource) {
+        log.info(
+          `Forked app detected (source ${forkSource}); marking onboarding finished`,
+        );
+        if (setOnboardingState('onboardingFinished')) {
+          broadcast('projectStatusChanged', getProjectStatus());
+        }
+      }
+    }
 
     // 8. Read app config
     const appConfig = await readAppConfig(config.workspaceDir);
