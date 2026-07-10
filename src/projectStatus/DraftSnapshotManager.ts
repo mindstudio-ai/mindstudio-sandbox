@@ -59,6 +59,19 @@ export class DraftSnapshotManager {
    * `/status` so silent push rot — pushes that fail every interval without
    * anyone noticing — is at least visible to anyone polling. */
   private consecutivePushFailures = 0;
+  /** Epoch ms before which we must not attempt another push. Set on push
+   * failure (exponential backoff + jitter), cleared on success. While inside
+   * this window snapshots still commit locally — they just skip the network
+   * push so a degraded git endpoint isn't hammered at a fixed cadence. */
+  private pushBackoffUntil: number | null = null;
+  /** Local `_draft` tip we last successfully pushed. A push is needed only
+   * when the current tip differs from this — which is how a deferred push
+   * (committed locally, not yet pushed) still gets shipped even when the tree
+   * stops changing. */
+  private lastPushedSha: string | null = null;
+  /** Pending timer that re-attempts a deferred push once the backoff window
+   * elapses, independent of the next file/turn trigger. */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -86,6 +99,7 @@ export class DraftSnapshotManager {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.clearRetryTimer();
   }
 
   /** Schedule a snapshot after a delay (debounced). Resets on repeated calls. */
@@ -110,6 +124,7 @@ export class DraftSnapshotManager {
       lastError: this.lastError,
       lastRestoreOutcome: this.lastRestoreOutcome,
       consecutivePushFailures: this.consecutivePushFailures,
+      pushBackoffUntil: this.pushBackoffUntil,
     };
   }
 
@@ -244,7 +259,12 @@ export class DraftSnapshotManager {
     // no delta). Best-effort: a failure here just falls back to that old
     // behavior, so it must not turn a successful restore into unresolvable.
     const seedRef = await this.exec(`git update-ref ${DRAFT_REF} ${draftSha}`);
-    if (!seedRef.ok) {
+    if (seedRef.ok) {
+      // The remote already has this tip, so record it as pushed — a first
+      // post-restore snapshot with an unchanged tree then correctly skips a
+      // no-op push rather than re-uploading what's already there.
+      this.lastPushedSha = draftSha;
+    } else {
       log.warn(
         `Could not seed ${DRAFT_BRANCH} branch from fetched tip; first ` +
           `snapshot will be a full (non-delta) upload`,
@@ -384,82 +404,163 @@ export class DraftSnapshotManager {
     }
     log.debug(`Tree: ${treeSha.slice(0, 8)}`);
 
-    // Skip if tree is identical to the last snapshot (nothing changed)
+    // Decide whether a new commit is needed. If the tree is identical to the
+    // one we last committed, skip creating a redundant commit — but do NOT
+    // return here: a prior commit may have been committed locally and never
+    // pushed (a push deferred by backoff), and that still has to ship. The
+    // push decision below is driven by lastPushedSha, not the tree.
+    let draftSha: string;
     if (this.lastTreeSha && treeSha === this.lastTreeSha) {
-      log.info(`No changes since last snapshot, skipping`);
-      try {
-        fs.unlinkSync(TMP_INDEX);
-      } catch {
-        // fine
+      this.cleanupTmpIndex();
+      const head = await this.exec(`git rev-parse ${DRAFT_REF}`);
+      if (!head.ok || !head.stdout.trim()) {
+        // No local _draft and nothing changed — genuinely nothing to do.
+        return true;
       }
+      draftSha = head.stdout.trim();
+    } else {
+      // Create commit object. Use the current _draft as parent (if it exists)
+      // so git can delta-compress the push — only changed objects are transferred.
+      // restore() seeds refs/heads/_draft from the fetched tip precisely so this
+      // parent exists on the first post-restore snapshot; without a parent the
+      // commit shares no ancestor with the remote and the push re-uploads the
+      // whole tree (no delta). A parent is absent only on a truly fresh app.
+      const parentResult = await this.exec(`git rev-parse ${DRAFT_REF}`);
+      const parent = parentResult.ok ? parentResult.stdout.trim() : '';
+      const parentFlag = parent ? `-p ${parent}` : '';
+      const msg = `snapshot ${new Date().toISOString()}`;
+      const commitResult = await this.exec(
+        `git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`,
+      );
+      const commitSha = commitResult.ok ? commitResult.stdout.trim() : '';
+      if (!commitSha) {
+        this.lastError = 'could not create commit';
+        log.error('Snapshot failed: could not create commit');
+        return false;
+      }
+      log.debug(`Commit: ${commitSha.slice(0, 8)}`);
+
+      // Point _draft ref at the new commit. This is the durability point: the
+      // user's work is now safe on the local _draft regardless of whether the
+      // push below happens now or is deferred by backoff.
+      const updateRef = await this.exec(
+        `git update-ref ${DRAFT_REF} ${commitSha}`,
+      );
+      if (!updateRef.ok) {
+        this.lastError = 'could not update ref';
+        log.error('Snapshot failed: could not update ref');
+        return false;
+      }
+      this.lastTreeSha = treeSha;
+      this.cleanupTmpIndex();
+      draftSha = commitSha;
+    }
+
+    // Already synced — the remote has this exact tip. Nothing to push.
+    if (draftSha === this.lastPushedSha) {
+      log.debug('Local _draft already pushed; nothing to sync');
+      this.lastError = null;
       return true;
     }
 
-    // Create commit object. Use the current _draft as parent (if it exists)
-    // so git can delta-compress the push — only changed objects are transferred.
-    // restore() seeds refs/heads/_draft from the fetched tip precisely so this
-    // parent exists on the first post-restore snapshot; without a parent the
-    // commit shares no ancestor with the remote and the push re-uploads the
-    // whole tree (no delta). A parent is absent only on a truly fresh app.
-    const parentResult = await this.exec(`git rev-parse ${DRAFT_REF}`);
-    const parent = parentResult.ok ? parentResult.stdout.trim() : '';
-    const parentFlag = parent ? `-p ${parent}` : '';
-    const msg = `snapshot ${new Date().toISOString()}`;
-    const commitResult = await this.exec(
-      `git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`,
-    );
-    const commitSha = commitResult.ok ? commitResult.stdout.trim() : '';
-    if (!commitSha) {
-      this.lastError = 'could not create commit';
-      log.error('Snapshot failed: could not create commit');
-      return false;
-    }
-    log.debug(`Commit: ${commitSha.slice(0, 8)}`);
-
-    // Point _draft ref at the new commit
-    const updateRef = await this.exec(
-      `git update-ref ${DRAFT_REF} ${commitSha}`,
-    );
-    if (!updateRef.ok) {
-      this.lastError = 'could not update ref';
-      log.error('Snapshot failed: could not update ref');
+    // Back off a degraded git endpoint. The commit above is already durable
+    // locally, so deferring the push loses nothing — whenever it next succeeds
+    // it carries the latest committed state. Skip the push inside the backoff
+    // window and let the retry timer fire once the window elapses.
+    const now = Date.now();
+    if (this.pushBackoffUntil !== null && now < this.pushBackoffUntil) {
+      log.info(
+        `Committed locally; deferring push ~${Math.round((this.pushBackoffUntil - now) / 1000)}s ` +
+          `(backoff, consecutivePushFailures=${this.consecutivePushFailures})`,
+      );
+      this.scheduleRetryAfterBackoff();
       return false;
     }
 
-    // Push to remote using + prefix for unconditional force.
-    let pushed = await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`);
+    // One push attempt per cycle — deliberately no immediate retry. A failed
+    // push still makes the server do work, so back-to-back retries against a
+    // struggling endpoint only amplify and prolong the outage. The `+` forces
+    // the update and never deletes the remote ref, so a failed push can't
+    // destroy the last good snapshot; spacing is handled by the backoff below.
+    const pushed = await this.exec(
+      `git push origin +${DRAFT_REF}:${DRAFT_REF}`,
+    );
     if (!pushed.ok) {
-      // Push failed (e.g., transient 502, slow server). Retry once without
-      // deleting the remote ref — a failed push should never destroy the last
-      // good snapshot. The + prefix already forces the update.
-      log.warn('Push failed, retrying once');
-      pushed = await this.exec(`git push origin +${DRAFT_REF}:${DRAFT_REF}`);
-      if (!pushed.ok) {
-        this.consecutivePushFailures++;
-        this.lastError = 'push failed after retry';
-        log.warn(
-          `Snapshot committed locally but push failed after retry (consecutivePushFailures=${this.consecutivePushFailures})`,
-        );
-        return false;
-      }
+      this.consecutivePushFailures++;
+      this.pushBackoffUntil = Date.now() + this.computePushBackoffMs();
+      this.lastError = 'push failed';
+      log.warn(
+        `Snapshot committed locally but push failed ` +
+          `(consecutivePushFailures=${this.consecutivePushFailures}, ` +
+          `next attempt in ~${Math.round((this.pushBackoffUntil - Date.now()) / 1000)}s)`,
+      );
+      this.scheduleRetryAfterBackoff();
+      return false;
     }
 
+    // Success — clear the backoff and record what we pushed.
     this.consecutivePushFailures = 0;
-    this.lastTreeSha = treeSha;
-
-    // Clean up temp index
-    try {
-      fs.unlinkSync(TMP_INDEX);
-    } catch {
-      // fine
-    }
+    this.pushBackoffUntil = null;
+    this.clearRetryTimer();
+    this.lastPushedSha = draftSha;
 
     const elapsed = Date.now() - startTime;
     this.lastSuccessAt = Date.now();
     this.lastDurationMs = elapsed;
     this.lastError = null;
-    log.info(`Snapshot completed in ${elapsed}ms (${commitSha.slice(0, 8)})`);
+    log.info(`Snapshot completed in ${elapsed}ms (${draftSha.slice(0, 8)})`);
     return true;
+  }
+
+  /** Remove the temp index file (best-effort; absence is fine). */
+  private cleanupTmpIndex(): void {
+    try {
+      fs.unlinkSync(TMP_INDEX);
+    } catch {
+      // doesn't exist, fine
+    }
+  }
+
+  /**
+   * Backoff before the next push attempt, in ms: exponential in the number of
+   * consecutive failures (2s, 4s, 8s, …) capped at 60s, with full jitter
+   * across [delay/2, delay] so many sandboxes backing off a shared endpoint
+   * don't resynchronize into retry waves.
+   */
+  private computePushBackoffMs(): number {
+    const BASE_MS = 2_000;
+    const CAP_MS = 60_000;
+    const exp = Math.min(
+      CAP_MS,
+      BASE_MS * 2 ** (this.consecutivePushFailures - 1),
+    );
+    return Math.round(exp / 2 + Math.random() * (exp / 2));
+  }
+
+  /**
+   * Ensure a single pending timer re-attempts the deferred push once the
+   * backoff window elapses — otherwise a deferred push would wait for the next
+   * file/turn trigger or the 60s periodic tick. At most one is scheduled.
+   */
+  private scheduleRetryAfterBackoff(): void {
+    if (this.retryTimer) {
+      return;
+    }
+    const now = Date.now();
+    const waitMs = Math.max(0, (this.pushBackoffUntil ?? now) - now) + 250;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.snapshot().catch(() => {});
+    }, waitMs);
+    this.retryTimer.unref();
+  }
+
+  /** Cancel any pending backoff-retry timer. */
+  private clearRetryTimer(): void {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
   }
 
   /**
