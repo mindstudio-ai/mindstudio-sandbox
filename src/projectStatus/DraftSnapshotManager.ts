@@ -72,6 +72,12 @@ export class DraftSnapshotManager {
   /** Pending timer that re-attempts a deferred push once the backoff window
    * elapses, independent of the next file/turn trigger. */
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set on a successful boot restore. `_draft` is latest-wins — rehydration
+   * only ever fetches the tip — so its commit history is never read. On the
+   * first snapshot after boot we re-root (commit parentless) to drop the
+   * remote's unbounded history chain; the git server's gc then reclaims it.
+   * Consumed once the re-root commit is created locally. See restore(). */
+  private rerootPending = false;
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
@@ -252,24 +258,23 @@ export class DraftSnapshotManager {
       return 'unresolvable';
     }
 
-    // Seed the local `_draft` branch at the fetched tip so the first snapshot
-    // parents on it and pushes a delta. Without this, `refs/heads/_draft`
-    // doesn't exist post-restore, so doSnapshot creates a parentless root
-    // commit whose push re-uploads the entire snapshot (no common ancestor =
-    // no delta). Best-effort: a failure here just falls back to that old
-    // behavior, so it must not turn a successful restore into unresolvable.
-    const seedRef = await this.exec(`git update-ref ${DRAFT_REF} ${draftSha}`);
-    if (seedRef.ok) {
-      // The remote already has this tip, so record it as pushed — a first
-      // post-restore snapshot with an unchanged tree then correctly skips a
-      // no-op push rather than re-uploading what's already there.
-      this.lastPushedSha = draftSha;
-    } else {
-      log.warn(
-        `Could not seed ${DRAFT_BRANCH} branch from fetched tip; first ` +
-          `snapshot will be a full (non-delta) upload`,
-      );
-    }
+    // Re-root `_draft` on boot. It's latest-wins — rehydration only ever
+    // fetches the tip (`--depth=1` above), so the commit history is never
+    // read. If we seeded the local branch at the fetched tip and parented the
+    // next snapshot on it, the remote's full chain would stay reachable
+    // forever: tens of thousands of snapshots of large session/log state that
+    // nothing reads, bloating the server repo until its gc/tar/upload starve
+    // the per-repo push lock (gateway timeouts). Instead, leave
+    // `refs/heads/_draft` unset so the first snapshot commits parentless (see
+    // doSnapshot); its force-push replaces the remote tip with a fresh root,
+    // orphaning the old chain so the git server's gc reclaims it. Cost: that
+    // first push re-uploads the full tree (no delta); every snapshot after
+    // parents on the new root and deltas as before. Boot-only, so the
+    // full-upload cost is paid at most once per session.
+    //
+    // NB: intentionally do NOT record draftSha as lastPushedSha — the re-root
+    // must push even when the tree is unchanged, to drop the remote history.
+    this.rerootPending = true;
 
     log.info('Workspace restored from draft snapshot');
     this.lastError = null;
@@ -419,15 +424,21 @@ export class DraftSnapshotManager {
       }
       draftSha = head.stdout.trim();
     } else {
-      // Create commit object. Use the current _draft as parent (if it exists)
-      // so git can delta-compress the push — only changed objects are transferred.
-      // restore() seeds refs/heads/_draft from the fetched tip precisely so this
-      // parent exists on the first post-restore snapshot; without a parent the
-      // commit shares no ancestor with the remote and the push re-uploads the
-      // whole tree (no delta). A parent is absent only on a truly fresh app.
-      const parentResult = await this.exec(`git rev-parse ${DRAFT_REF}`);
-      const parent = parentResult.ok ? parentResult.stdout.trim() : '';
-      const parentFlag = parent ? `-p ${parent}` : '';
+      // Parent on the current _draft tip so git delta-compresses the push —
+      // only changed objects are transferred. EXCEPT on the first snapshot
+      // after a boot restore, where we deliberately re-root (commit parentless)
+      // to drop _draft's never-read history so the server can reclaim it (see
+      // restore()). A parent is otherwise absent only on a truly fresh app.
+      let parentFlag = '';
+      if (this.rerootPending) {
+        log.info(
+          'Re-rooting _draft on boot — dropping history; this push re-uploads the full tree (no delta)',
+        );
+      } else {
+        const parentResult = await this.exec(`git rev-parse ${DRAFT_REF}`);
+        const parent = parentResult.ok ? parentResult.stdout.trim() : '';
+        parentFlag = parent ? `-p ${parent}` : '';
+      }
       const msg = `snapshot ${new Date().toISOString()}`;
       const commitResult = await this.exec(
         `git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`,
@@ -452,6 +463,12 @@ export class DraftSnapshotManager {
         return false;
       }
       this.lastTreeSha = treeSha;
+      // Re-root consumed: subsequent snapshots parent on this new root and
+      // delta as normal. Cleared only after the commit is durable locally, so
+      // a failed commit/update-ref above retries the re-root next cycle. Even
+      // if the push is deferred by backoff, the local chain is now orphan-
+      // rooted, so whenever it lands it re-roots the remote.
+      this.rerootPending = false;
       this.cleanupTmpIndex();
       draftSha = commitSha;
     }
