@@ -59,6 +59,12 @@ export function setupFileWatcher(
   ): void {
     batcher.push('fileChanged', { path: filePath, changeType });
 
+    // Any real workspace change schedules a debounced `_draft` snapshot — the
+    // primary snapshot trigger. The watcher ignores `.logs`, so browser/tunnel
+    // log churn never reaches here; only the backstop persists that. See
+    // DraftSnapshotManager.scheduleSnapshot.
+    ctx.snapshotManager?.scheduleSnapshot();
+
     if (changeType === 'modified' || changeType === 'created') {
       lspSidecar.onFileChanged(filePath).catch(() => {});
 

@@ -21,7 +21,6 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('workspaceEdit');
 
-const SNAPSHOT_TRIGGER_THRESHOLD = 10;
 const BINARY_SNIFF_BYTES = 8192;
 const EOL_SNIFF_BYTES = 65536;
 
@@ -331,7 +330,6 @@ export async function applyWorkspaceEdits(
   results: FileResult[];
   totalApplied: number;
   totalErrors: number;
-  snapshotScheduled: boolean;
 }> {
   const params = rawParams as unknown as ApplyParams;
   if (!params.files || !Array.isArray(params.files)) {
@@ -363,22 +361,12 @@ export async function applyWorkspaceEdits(
       r.status === 'overlap',
   ).length;
 
-  let snapshotScheduled = false;
-  if (
-    !opts.dryRun &&
-    totalApplied >= SNAPSHOT_TRIGGER_THRESHOLD &&
-    ctx.snapshotManager
-  ) {
-    ctx.snapshotManager.scheduleSnapshot();
-    snapshotScheduled = true;
-    log.info(
-      `Scheduled snapshot after ${totalApplied} successful file edit(s)`,
-    );
-  }
-
+  // Snapshots are scheduled centrally by the file watcher's change handler
+  // (each applied edit fires ctx.onFileChanged → scheduleSnapshot), so there's
+  // no per-edit snapshot trigger here. See DraftSnapshotManager.
   log.info(
-    `applyWorkspaceEdits done: applied=${totalApplied}, errors=${totalErrors}, snapshotScheduled=${snapshotScheduled}`,
+    `applyWorkspaceEdits done: applied=${totalApplied}, errors=${totalErrors}`,
   );
 
-  return { results, totalApplied, totalErrors, snapshotScheduled };
+  return { results, totalApplied, totalErrors };
 }
