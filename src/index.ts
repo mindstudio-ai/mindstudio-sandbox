@@ -320,6 +320,9 @@ async function startServices(
         }
         return handler.handle(id, input, toolContext);
       },
+      // Explicit snapshot trigger on turn completion — kept alongside the file
+      // watcher's trigger so snapshot-on-turn doesn't silently depend on remy
+      // happening to rewrite (watched) .remy-stats.json each turn.
       onTurnDone: () => snapshotManager.scheduleSnapshot(),
     },
   );
@@ -573,7 +576,8 @@ async function main(): Promise<void> {
     // 14. File watcher
     setupFileWatcher(config, managers, lspSidecar);
 
-    // 15. Start periodic snapshots
+    // 15. Start the snapshot backstop timer (real changes and agent turns
+    // trigger snapshots sooner via the file watcher / onTurnDone).
     snapshotManager.start();
 
     // Ready

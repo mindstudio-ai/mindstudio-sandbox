@@ -1,12 +1,28 @@
 /**
- * Periodic git snapshot manager.
+ * Git snapshot manager for the `_draft` branch.
  *
- * Commits all workspace state (files + session state) to a `_draft` branch
- * and force-pushes to the remote. On boot, restores from the draft if one
- * exists. Provides durability against unclean container deaths.
+ * Commits all workspace state (files + session state) to a `_draft` branch and
+ * force-pushes to the remote. On boot, restores from the draft if one exists.
+ * Provides durability against unclean container deaths. Uses git plumbing
+ * commands with a temporary index file so snapshots are completely isolated
+ * from remy's working tree and any in-progress git ops.
  *
- * Uses git plumbing commands with a temporary index file so snapshots are
- * completely isolated from remy's working tree and any in-progress git ops.
+ * Trigger model — everything funnels into the single-flight `snapshot()`, which
+ * runs the authoritative `git add -A` and no-ops only when the tree is
+ * genuinely unchanged:
+ *   - Real workspace changes (editor / agent / external file writes) and agent
+ *     turn completion call `scheduleSnapshot()` — a debounce clamped to
+ *     SNAPSHOT_DEBOUNCE_MS: a burst coalesces into one snapshot, but sustained
+ *     activity still snapshots at a steady cadence rather than deferring.
+ *   - A SNAPSHOT_BACKSTOP_MS backstop timer (`start()`) is the safety net: it
+ *     catches anything the event triggers missed (e.g. a dropped file-watcher
+ *     event) and persists `.logs` diagnostic churn on an otherwise-idle app.
+ *   - SIGTERM does a final synchronous `snapshot()` before the pod drains.
+ *   - A push-retry timer re-attempts a push deferred by backoff.
+ *
+ * File-change events deliberately exclude `.logs` (the watcher ignores it), so
+ * constant browser/tunnel log writes don't drive snapshots — only the backstop
+ * persists them.
  */
 
 import { exec as execCb } from 'node:child_process';
@@ -44,10 +60,21 @@ type FetchOutcome = 'no_draft' | 'transient' | 'permanent';
 
 const RESTORE_RETRY_BACKOFFS_MS = [2_000, 6_000, 18_000];
 
+// Snapshot trigger cadence. `scheduleSnapshot` coalesces a burst of changes
+// into one snapshot but never defers past SNAPSHOT_DEBOUNCE_MS from the first
+// pending change (so sustained activity still snapshots regularly). The
+// backstop is the wall-clock safety net for missed events / idle log churn.
+const SNAPSHOT_DEBOUNCE_MS = 60_000;
+const SNAPSHOT_BACKSTOP_MS = 5 * 60_000;
+
 export class DraftSnapshotManager {
   private workspaceDir: string;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private backstopTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Epoch ms of the first change in the current debounce window, or null when
+   * clean. Anchors the SNAPSHOT_DEBOUNCE_MS clamp so a steady change stream
+   * can't defer the snapshot indefinitely. */
+  private debounceSinceMs: number | null = null;
   private inProgress = false;
   private lastTreeSha: string | null = null;
   private lastAttemptAt: number | null = null;
@@ -83,40 +110,62 @@ export class DraftSnapshotManager {
     this.workspaceDir = workspaceDir;
   }
 
-  /** Start periodic snapshots. */
-  start(intervalMs = 60_000): void {
-    if (this.timer) {
+  /** Start the backstop timer — the safety net that snapshots any changes the
+   * event triggers missed, and persists `.logs` churn on an otherwise-idle
+   * app. Real changes and turns snapshot far sooner via `scheduleSnapshot`. */
+  start(intervalMs = SNAPSHOT_BACKSTOP_MS): void {
+    if (this.backstopTimer) {
       return;
     }
-    log.info(`Starting periodic snapshots every ${intervalMs / 1000}s`);
-    this.timer = setInterval(() => {
+    log.info(`Starting snapshot backstop every ${intervalMs / 1000}s`);
+    this.backstopTimer = setInterval(() => {
       this.snapshot().catch(() => {});
     }, intervalMs);
-    this.timer.unref();
+    this.backstopTimer.unref();
   }
 
-  /** Stop periodic and debounced snapshots. */
+  /** Stop the backstop, the debounce, and the push-retry timers. */
   stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (this.backstopTimer) {
+      clearInterval(this.backstopTimer);
+      this.backstopTimer = null;
     }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.debounceSinceMs = null;
     this.clearRetryTimer();
   }
 
-  /** Schedule a snapshot after a delay (debounced). Resets on repeated calls. */
-  scheduleSnapshot(delayMs = 5_000): void {
+  /**
+   * Schedule a debounced snapshot in response to a real workspace change or a
+   * completed agent turn. The first change opens a window and the snapshot
+   * fires SNAPSHOT_DEBOUNCE_MS later, absorbing every change in between — so a
+   * burst coalesces into one snapshot, and sustained activity snapshots at a
+   * steady SNAPSHOT_DEBOUNCE_MS cadence instead of being deferred indefinitely
+   * (as a naive reset-on-every-change debounce would). Mirrors youai-api's
+   * DraftSyncStore.scheduleFlush. The backstop covers anything not routed here.
+   */
+  scheduleSnapshot(delayMs = SNAPSHOT_DEBOUNCE_MS): void {
+    if (this.debounceSinceMs === null) {
+      this.debounceSinceMs = Date.now();
+    }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    const remaining = this.debounceSinceMs + delayMs - Date.now();
+    if (remaining <= 0) {
+      this.debounceSinceMs = null;
+      this.snapshot().catch(() => {});
+      return;
     }
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      this.debounceSinceMs = null;
       this.snapshot().catch(() => {});
-    }, delayMs);
+    }, remaining);
     this.debounceTimer.unref();
   }
 
@@ -557,7 +606,7 @@ export class DraftSnapshotManager {
   /**
    * Ensure a single pending timer re-attempts the deferred push once the
    * backoff window elapses — otherwise a deferred push would wait for the next
-   * file/turn trigger or the 60s periodic tick. At most one is scheduled.
+   * file/turn trigger or the backstop tick. At most one is scheduled.
    */
   private scheduleRetryAfterBackoff(): void {
     if (this.retryTimer) {

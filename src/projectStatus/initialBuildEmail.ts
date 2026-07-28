@@ -27,7 +27,7 @@ export interface InitialBuildEmailDeps {
 }
 
 // Bounded retry for the pre-POST snapshot. snapshot() returns false immediately
-// when another snapshot (periodic / onTurnDone) is already in progress, and
+// when another snapshot (backstop / onTurnDone / file-change) is already in progress, and
 // that in-flight one may have started before remy wrote the final metadata. So
 // we retry briefly to land a fresh push that includes the real
 // name/description/iconUrl, rather than emailing scaffold defaults.
