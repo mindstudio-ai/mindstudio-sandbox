@@ -11,9 +11,10 @@
  * runs the authoritative `git add -A` and no-ops only when the tree is
  * genuinely unchanged:
  *   - Real workspace changes (editor / agent / external file writes) and agent
- *     turn completion call `scheduleSnapshot()` — a debounce clamped to
- *     SNAPSHOT_DEBOUNCE_MS: a burst coalesces into one snapshot, but sustained
- *     activity still snapshots at a steady cadence rather than deferring.
+ *     turn completion call `scheduleSnapshot()` — a short SNAPSHOT_DEBOUNCE_MS
+ *     debounce (so the trailing edit/turn is captured within seconds, before an
+ *     abrupt idle-stop can drop it) clamped to SNAPSHOT_MAX_AGE_MS (so sustained
+ *     activity still snapshots at a steady cadence rather than deferring).
  *   - A SNAPSHOT_BACKSTOP_MS backstop timer (`start()`) is the safety net: it
  *     catches anything the event triggers missed (e.g. a dropped file-watcher
  *     event) and persists `.logs` diagnostic churn on an otherwise-idle app.
@@ -60,11 +61,19 @@ type FetchOutcome = 'no_draft' | 'transient' | 'permanent';
 
 const RESTORE_RETRY_BACKOFFS_MS = [2_000, 6_000, 18_000];
 
-// Snapshot trigger cadence. `scheduleSnapshot` coalesces a burst of changes
-// into one snapshot but never defers past SNAPSHOT_DEBOUNCE_MS from the first
-// pending change (so sustained activity still snapshots regularly). The
-// backstop is the wall-clock safety net for missed events / idle log churn.
-const SNAPSHOT_DEBOUNCE_MS = 60_000;
+// Snapshot trigger cadence.
+//   - DEBOUNCE: short trailing debounce — the last edit/turn is captured within
+//     seconds of activity settling. This is the real durability guarantee: the
+//     final snapshot on SIGTERM is unreliable on an idle-stop (see state.ts —
+//     "shutdowns where SIGTERM never arrives"), so a slow trailing edge
+//     silently loses the last chunk of work (e.g. a tool-only agent turn whose
+//     only artifact is the unwatched .remy-session.json).
+//   - MAX_AGE: ceiling on the debounce — sustained activity can't defer the
+//     snapshot past this, so a continuous stream still snapshots regularly.
+//   - BACKSTOP: wall-clock safety net for anything the event triggers missed
+//     (dropped watcher events) and to persist idle `.logs` churn.
+const SNAPSHOT_DEBOUNCE_MS = 5_000;
+const SNAPSHOT_MAX_AGE_MS = 60_000;
 const SNAPSHOT_BACKSTOP_MS = 5 * 60_000;
 
 export class DraftSnapshotManager {
@@ -72,7 +81,7 @@ export class DraftSnapshotManager {
   private backstopTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   /** Epoch ms of the first change in the current debounce window, or null when
-   * clean. Anchors the SNAPSHOT_DEBOUNCE_MS clamp so a steady change stream
+   * clean. Anchors the SNAPSHOT_MAX_AGE_MS clamp so a steady change stream
    * can't defer the snapshot indefinitely. */
   private debounceSinceMs: number | null = null;
   private inProgress = false;
@@ -140,14 +149,15 @@ export class DraftSnapshotManager {
 
   /**
    * Schedule a debounced snapshot in response to a real workspace change or a
-   * completed agent turn. The first change opens a window and the snapshot
-   * fires SNAPSHOT_DEBOUNCE_MS later, absorbing every change in between — so a
-   * burst coalesces into one snapshot, and sustained activity snapshots at a
-   * steady SNAPSHOT_DEBOUNCE_MS cadence instead of being deferred indefinitely
-   * (as a naive reset-on-every-change debounce would). Mirrors youai-api's
+   * completed agent turn. Reset-per-change but clamped: the timer fires
+   * SNAPSHOT_DEBOUNCE_MS after the most recent change (so the trailing edit/turn
+   * is captured within seconds — the durability guarantee, since the final
+   * snapshot on SIGTERM can't be relied on), but never later than
+   * SNAPSHOT_MAX_AGE_MS after the first pending change (so a sustained stream
+   * still snapshots at a steady cadence). Mirrors youai-api's
    * DraftSyncStore.scheduleFlush. The backstop covers anything not routed here.
    */
-  scheduleSnapshot(delayMs = SNAPSHOT_DEBOUNCE_MS): void {
+  scheduleSnapshot(): void {
     if (this.debounceSinceMs === null) {
       this.debounceSinceMs = Date.now();
     }
@@ -155,17 +165,21 @@ export class DraftSnapshotManager {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    const remaining = this.debounceSinceMs + delayMs - Date.now();
-    if (remaining <= 0) {
+    const dirtyAge = Date.now() - this.debounceSinceMs;
+    if (dirtyAge >= SNAPSHOT_MAX_AGE_MS) {
       this.debounceSinceMs = null;
       this.snapshot().catch(() => {});
       return;
     }
+    const delay = Math.min(
+      SNAPSHOT_DEBOUNCE_MS,
+      SNAPSHOT_MAX_AGE_MS - dirtyAge,
+    );
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       this.debounceSinceMs = null;
       this.snapshot().catch(() => {});
-    }, remaining);
+    }, delay);
     this.debounceTimer.unref();
   }
 
