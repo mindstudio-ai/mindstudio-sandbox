@@ -1539,8 +1539,6 @@ The set command updates only the environments you specify:
   --prod-clear     Clear the prod environment value
   Omitted fields are left unchanged.
 
-Note: Setting or deleting secrets stops all active sandboxes for this app.
-
 Examples:
   mindstudio-prod secrets list
   mindstudio-prod secrets get STRIPE_SECRET_KEY
