@@ -151,8 +151,33 @@ export function clearActivityOnError(): void {
 // Pending external tools
 // ---------------------------------------------------------------------------
 
-export function hasPendingExternalTools(): boolean {
-  return pendingExternalTools.size > 0;
+// Subset of external tools that block on a user action (answering a form,
+// approving a plan, confirming a destructive op). Mirrors remy's
+// USER_BLOCKING_EXTERNAL_TOOLS in remy/src/agent.ts — keep the two in sync.
+// Only these should force a turn-cancel when a message arrives mid-turn: remy
+// is stuck until the user acts, so the message would otherwise never process.
+// Every other in-flight tool (QA/browser sub-agents, design expert, runMethod,
+// …) resolves on its own, so a mid-turn message must queue and run after.
+const USER_BLOCKING_TOOLS = new Set([
+  'promptUser',
+  'presentPublishPlan',
+  'confirmDestructiveAction',
+]);
+
+/**
+ * True only when remy is awaiting a user-blocking external tool (a form, a plan
+ * approval, a destructive-action confirm) — the sole case where a mid-turn
+ * message must cancel the turn to unblock remy. A pending autonomous tool (QA
+ * agent, design expert, runMethod, …) does not count: it resolves on its own,
+ * so the message should queue and run when the turn completes.
+ */
+export function hasPendingUserBlockingTool(): boolean {
+  for (const tool of pendingExternalTools.values()) {
+    if (USER_BLOCKING_TOOLS.has(tool.name)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function clearPendingExternalTools(): void {

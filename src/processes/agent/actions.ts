@@ -9,7 +9,7 @@ import {
   getAgentHistory,
 } from './index.js';
 import {
-  hasPendingExternalTools,
+  hasPendingUserBlockingTool,
   clearPendingExternalTools,
   startTurn,
   getAgentActivity,
@@ -52,11 +52,16 @@ export function createAgentActions(
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
 
-      // If remy is blocked waiting for an external tool result (e.g., a
-      // promptUser that was never answered), cancel the current turn first
-      // so remy can accept the new message.
-      if (hasPendingExternalTools()) {
-        log.info('Cancelling pending external tools before sending message');
+      // If remy is blocked on a *user-blocking* external tool (a promptUser
+      // form, a plan approval, a destructive-action confirm) that will never
+      // resolve on its own, cancel the current turn first so remy can accept
+      // the new message. Autonomous in-flight tools (QA/browser sub-agents,
+      // design expert, runMethod, …) are NOT cancelled — remy queues the
+      // message and runs it when the turn completes.
+      if (hasPendingUserBlockingTool()) {
+        log.info(
+          'Cancelling user-blocking external tool before sending message',
+        );
         clearPendingExternalTools();
         const { response: cancelResponse } = sendAgentCommand(
           pm,
