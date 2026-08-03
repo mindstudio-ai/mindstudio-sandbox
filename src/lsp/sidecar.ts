@@ -205,6 +205,28 @@ export class LspSidecar {
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
+            case '/set-viewport':
+              // Reuse the `browser` command with a single setViewport step so
+              // there's no separate tunnel handler. `mode` is 'desktop' |
+              // 'mobile' | 'default' ('default' → the app's defaultPreviewMode);
+              // remy's per-run reset passes 'default'. Timeout exceeds the 15s
+              // page.reload inside the supervisor's setPreviewMode.
+              result = this.pm
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'browser',
+                    {
+                      steps: [
+                        {
+                          command: 'setViewport',
+                          mode: params.mode ?? 'default',
+                        },
+                      ],
+                    },
+                    20_000,
+                  )
+                : { success: false, error: 'tunnel not available' };
+              break;
             default:
               res.writeHead(404, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Not found' }));
