@@ -760,6 +760,88 @@ async function releasesWait(appId: string, args: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands — diagnostics (post-deploy Lighthouse audit)
+// ---------------------------------------------------------------------------
+
+// Diagnostics are written asynchronously ~30-60s after a release goes live, so a
+// freshly-deployed release has no row yet. This is the shape we print in that
+// window (and on --wait timeout) so the caller knows to retry.
+const DIAGNOSTICS_PENDING = {
+  status: 'pending',
+  message:
+    'Diagnostics run ~30–60s after go-live — not ready yet; retry shortly or pass --wait.',
+};
+
+/**
+ * Resolve a release id from `--release <id>`, else the current live release
+ * (same source as `releases current`). Fatals if neither is available.
+ */
+async function resolveReleaseId(
+  appId: string,
+  args: string[],
+): Promise<string> {
+  const flag = getFlag(args, 'release');
+  if (flag) {
+    return flag;
+  }
+  const dashboard = await api('GET', `/_internal/v2/apps/${appId}/dashboard`);
+  const releaseId = dashboard?.liveRelease?.id;
+  if (!releaseId) {
+    fatal('No live release — deploy first, or pass --release <id>.');
+  }
+  return releaseId;
+}
+
+// Print the diagnostics for a release: Lighthouse scores, runtime findings
+// (console errors + failed requests), the distilled failing-audit summary, and a
+// fresh signed URL to the raw report (re-minted by the release GET each call).
+async function diagnosticsGet(appId: string, args: string[]) {
+  const releaseId = await resolveReleaseId(appId, args);
+  const path = `/_internal/v2/apps/${appId}/releases/${releaseId}`;
+
+  if (hasFlag(args, 'wait')) {
+    const timeout = parseInt(getFlag(args, 'timeout') ?? '120', 10) * 1000;
+    const start = Date.now();
+    // Poll until a diagnostics row lands (success or error is terminal).
+    while (true) {
+      const release = await api('GET', path);
+      if (release.diagnostics) {
+        out(release.diagnostics);
+        return;
+      }
+      if (Date.now() - start > timeout) {
+        out(DIAGNOSTICS_PENDING);
+        return;
+      }
+      await sleep(3000);
+    }
+  }
+
+  const release = await api('GET', path);
+  out(release.diagnostics ?? DIAGNOSTICS_PENDING);
+}
+
+// Fetch + print the raw Lighthouse JSON report for a release (one command → full
+// report). Pulls the signed URL off the release's diagnostics, then GETs it.
+async function diagnosticsReport(appId: string, args: string[]) {
+  const releaseId = await resolveReleaseId(appId, args);
+  const release = await api(
+    'GET',
+    `/_internal/v2/apps/${appId}/releases/${releaseId}`,
+  );
+  const url = release.diagnostics?.lighthouseJsonUrl;
+  if (!url) {
+    out(DIAGNOSTICS_PENDING);
+    return;
+  }
+  const res = await fetch(url);
+  if (!res.ok) {
+    fatal(`Failed to fetch Lighthouse report: HTTP ${res.status}`);
+  }
+  out(await res.json());
+}
+
+// ---------------------------------------------------------------------------
 // Commands — domains
 // ---------------------------------------------------------------------------
 
@@ -1302,6 +1384,7 @@ Commands:
   crashes     View frontend (browser) crash groups and events
   analytics   View traffic, top-N, geo, and AI-referral insights
   releases    View and monitor releases
+  diagnostics View the post-deploy Lighthouse audit (scores, issues, raw report)
   domains     Manage custom subdomain
   users       Manage app users and roles
   db          Query the production database
@@ -1443,6 +1526,38 @@ Examples:
   git push origin HEAD && mindstudio-prod releases wait
   mindstudio-prod releases wait --commit 91ca67a --timeout 600
   mindstudio-prod releases list --limit 1`;
+
+const HELP_DIAGNOSTICS = `mindstudio-prod diagnostics — Post-deploy Lighthouse audit.
+
+Every live deploy runs a headless-Chrome audit of the app: Lighthouse scores
+(performance, accessibility, best-practices, SEO), runtime findings (console
+errors + failed network requests), a distilled list of the failing audits, and
+a signed URL to the full raw report.
+
+Subcommands:
+  get       Scores + runtime findings + failing-audit summary + a fresh signed
+            report URL (the actionable overview)
+  report    Fetch and print the raw Lighthouse JSON report (full drill-down)
+
+Usage:
+  mindstudio-prod diagnostics get [--release <id>] [--wait] [--timeout 120]
+  mindstudio-prod diagnostics report [--release <id>]
+
+Both default to the current live release; pass --release <id> for a specific one.
+
+Notes:
+  - The audit runs ASYNCHRONOUSLY, ~30–60s AFTER a release goes live. Right after
+    a deploy it won't be ready — 'get' returns {"status":"pending"}. Retry in a
+    bit, or use 'get --wait' to block until it lands (default --timeout 120s).
+  - The report URL is signed and short-lived; re-run the command to get a fresh
+    one rather than reusing an old URL.
+  - Diagnostics are produced for live releases only.
+
+Examples:
+  mindstudio-prod diagnostics get
+  mindstudio-prod diagnostics get --wait
+  mindstudio-prod diagnostics get --release rel_abc123
+  mindstudio-prod diagnostics report`;
 
 const HELP_DOMAINS = `mindstudio-prod domains — Manage your app's domains.
 
@@ -1657,6 +1772,7 @@ async function main() {
     crashes: HELP_CRASHES,
     analytics: HELP_ANALYTICS,
     releases: HELP_RELEASES,
+    diagnostics: HELP_DIAGNOSTICS,
     domains: HELP_DOMAINS,
     users: HELP_USERS,
     db: HELP_DB,
@@ -1753,6 +1869,19 @@ async function main() {
         default:
           fatal(
             `Unknown subcommand: releases ${sub}. Run 'mindstudio-prod releases --help'`,
+          );
+      }
+      break;
+
+    case 'diagnostics':
+      switch (sub) {
+        case 'get':
+          return diagnosticsGet(appId, rest);
+        case 'report':
+          return diagnosticsReport(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: diagnostics ${sub}. Run 'mindstudio-prod diagnostics --help'`,
           );
       }
       break;
