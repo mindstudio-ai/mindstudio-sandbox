@@ -19,6 +19,7 @@ import {
   getActiveTurnId,
   startBackgroundTurn,
   endTurn,
+  setActiveTurnModel,
   clearActivityOnError,
   trackToolStart,
   trackToolDone,
@@ -66,6 +67,7 @@ export interface AgentCallbacks {
 /** Maps remy's headless event names to our WebSocket event names. */
 const EVENT_MAP: Record<string, string> = {
   ready: 'agentReady',
+  turn_started: 'agentTurnStarted',
   completed: 'agentCompleted',
   text: 'agentText',
   thinking: 'agentThinking',
@@ -328,7 +330,21 @@ function handleStdout(
       startTurn(turnId);
       broadcastActivity(cb.broadcast);
     }
-    return;
+    // Cache attribution for clients that connect mid-turn. Set unconditionally
+    // and *after* the branches above: sandbox-initiated turns are already
+    // startTurn'd in actions.ts, so they skip both branches, and startTurn
+    // resets this — doing it inside either branch would miss those entirely.
+    setActiveTurnModel({
+      model: event.model,
+      modelOverride: event.modelOverride,
+    });
+    // Deliberately falls through to the generic broadcast at the bottom
+    // instead of returning: that path spreads the whole event, so the model
+    // attribution remy attaches here (`model`, `modelOverride`) reaches the
+    // frontend for the in-flight turn without per-field plumbing. Nothing
+    // between here and there matches `turn_started` — the activity switch and
+    // external-tool handling key off tool_*/error, and the server-handled
+    // suppression requires an `id`.
   }
 
   // --- User messages — turn-starting message echoed by remy for every

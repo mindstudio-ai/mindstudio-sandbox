@@ -15,6 +15,20 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('hmr-relay');
 
+// A WebSocket 'close' event can carry reserved codes — 1005 ("no status
+// received") or 1006 ("abnormal closure") — that were never sent on the wire.
+// Passing those to `ws.close(code)` throws "First argument must be a valid
+// error code number". Only 1000 and 3000–4999 are valid to send (RFC 6455), so
+// forward those and fall back to a clean 1000 for anything else. Without this,
+// relaying a peer's close code straight through crashed the close handler on
+// every socket drop (leaking the paired socket because `destroy()` never ran).
+function safeCloseCode(code?: number): number {
+  return code === 1000 ||
+    (typeof code === 'number' && code >= 3000 && code <= 4999)
+    ? code
+    : 1000;
+}
+
 interface BufferedMessage {
   data: WebSocket.Data;
   isBinary: boolean;
@@ -102,11 +116,19 @@ export class HmrRelay {
       }
     });
 
-    // Lifecycle: if either side closes, close the other
+    // Lifecycle: if either side closes, close the other. Sanitize the code
+    // (peer 'close' events surface reserved 1005/1006 that ws.close() rejects)
+    // and guard the call so destroy() always runs even if close() still throws.
     this.upstream.on('close', (code, reason) => {
       log.debug(`Upstream closed (code=${code})`);
       if (this.client.readyState === WebSocket.OPEN) {
-        this.client.close(code, reason);
+        try {
+          this.client.close(safeCloseCode(code), reason);
+        } catch (err) {
+          log.debug(
+            `Failed to relay close to client: ${(err as Error).message}`,
+          );
+        }
       }
       this.destroy();
     });
@@ -114,7 +136,13 @@ export class HmrRelay {
     this.client.on('close', (code, reason) => {
       log.debug(`Client closed (code=${code})`);
       if (this.upstream.readyState === WebSocket.OPEN) {
-        this.upstream.close(code, reason);
+        try {
+          this.upstream.close(safeCloseCode(code), reason);
+        } catch (err) {
+          log.debug(
+            `Failed to relay close to upstream: ${(err as Error).message}`,
+          );
+        }
       }
       this.destroy();
     });

@@ -38,7 +38,7 @@ export function createAgentActions(
   return {
     // User sends a message to the agent
     agentMessage: async (p) => {
-      const { text, attachments, viewContext } = p as {
+      const { text, attachments, viewContext, buildModel } = p as {
         text: string;
         attachments?: Array<{
           url: string;
@@ -49,6 +49,14 @@ export function createAgentActions(
           isVoice?: boolean;
         }>;
         viewContext?: Record<string, unknown>;
+        /**
+         * Optional model to execute an approved plan on ("Build with X").
+         * Forwarded verbatim — remy scopes it (honored only on the
+         * approvePlan message) and validates it against allowedModelsByType,
+         * with an independent server-side gate. Validating here too would
+         * mean tracking model state the sandbox doesn't own.
+         */
+        buildModel?: string;
       };
       log.info(`Sending message: ${text.slice(0, 100)}...`);
 
@@ -100,6 +108,9 @@ export function createAgentActions(
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
         ...(!isAutomated && viewContext ? { viewContext } : {}),
+        // Omitted entirely when absent, so the default-model payload stays
+        // byte-identical to what we sent before this existed.
+        ...(buildModel ? { buildModel } : {}),
       });
 
       if (busy) {
