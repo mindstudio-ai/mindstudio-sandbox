@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { parseJsonConfig } from '../utils/jsonConfig.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -26,19 +27,26 @@ const WORKSPACE_DIR =
 
 function loadAppId(): string {
   const manifestPath = path.join(WORKSPACE_DIR, 'mindstudio.json');
+  let raw: string;
   try {
-    const raw = fs.readFileSync(manifestPath, 'utf-8');
-    const manifest = JSON.parse(raw);
-    if (!manifest.appId) {
-      fatal('mindstudio.json exists but has no appId');
-    }
-    return manifest.appId;
+    raw = fs.readFileSync(manifestPath, 'utf-8');
   } catch (err: any) {
     if (err.code === 'ENOENT') {
       fatal(`mindstudio.json not found at ${manifestPath}`);
     }
     fatal(`Failed to read mindstudio.json: ${err.message}`);
   }
+  // Tolerant parse, but deliberately read-only: this is a short-lived CLI and
+  // shouldn't mutate the workspace out from under the running sandbox. The
+  // sandbox repairs the file on its own read path.
+  const result = parseJsonConfig<{ appId?: string }>(raw);
+  if (!result.ok) {
+    fatal(`Failed to parse mindstudio.json: ${result.error}`);
+  }
+  if (!result.value.appId) {
+    fatal('mindstudio.json exists but has no appId');
+  }
+  return result.value.appId;
 }
 
 function fatal(message: string): never {

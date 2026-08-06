@@ -1,6 +1,7 @@
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../../logger.js';
+import { parseJsonConfig } from '../../utils/jsonConfig.js';
 import type { ExternalToolHandler } from '../types.js';
 
 const log = createLogger('tool:setProjectMetadata');
@@ -25,7 +26,14 @@ export const setProjectMetadataTool: ExternalToolHandler = {
     try {
       const manifestPath = path.join(ctx.workspaceDir, 'mindstudio.json');
       const raw = fsSync.readFileSync(manifestPath, 'utf-8');
-      const manifest = JSON.parse(raw);
+      // Tolerant parse; the canonical rewrite below doubles as the repair,
+      // so a sloppy manifest is normalized as a side effect of any metadata
+      // update rather than needing its own write path.
+      const parsed = parseJsonConfig<Record<string, unknown>>(raw);
+      if (!parsed.ok) {
+        throw new Error(`mindstudio.json is not parseable: ${parsed.error}`);
+      }
+      const manifest = parsed.value;
       if (newName != null) {
         manifest.name = newName;
       }

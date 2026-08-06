@@ -7,6 +7,7 @@ import type { Config } from '../config.js';
 import type { AppConfig } from '../types.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import { createLogger } from '../logger.js';
+import { loadJsonConfigFile } from '../utils/jsonConfig.js';
 import {
   run,
   runAsync,
@@ -386,25 +387,26 @@ export async function readAppConfig(
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
   log.debug(`Reading app config from ${manifestPath}`);
 
-  let raw: string;
-  try {
-    raw = await fs.readFile(manifestPath, 'utf-8');
-  } catch {
-    log.error(`App config not found at ${manifestPath}`);
+  // Parse the full manifest — AppConfig is the typed subset but we
+  // store the complete object so we can forward it to clients.
+  //
+  // Tolerant + self-repairing: a trailing comma from an agent edit is
+  // rescued by JSON5 and the file is rewritten as strict JSON. The repair
+  // happens inside this call, i.e. BEFORE the interface-resolution loop
+  // below mutates `iface.config` — writing after that point would persist
+  // the resolved interface blobs back into mindstudio.json.
+  const result = await loadJsonConfigFile<AppConfig>(manifestPath, {
+    normalize: true,
+  });
+  if (!result.ok) {
+    if (result.notFound) {
+      log.error(`App config not found at ${manifestPath}`);
+    } else {
+      log.error(`Failed to parse app config: ${result.error}`);
+    }
     return null;
   }
-
-  let config: AppConfig;
-  try {
-    // Parse the full manifest — AppConfig is the typed subset but we
-    // store the complete object so we can forward it to clients
-    config = JSON.parse(raw) as AppConfig;
-  } catch (err) {
-    log.error(
-      `Failed to parse app config: ${err instanceof Error ? err.message : err}`,
-    );
-    return null;
-  }
+  const config = result.value;
 
   log.info(`App: "${config.name}" (${config.appId})`);
   log.debug(
@@ -421,17 +423,28 @@ export async function readAppConfig(
   // inner object keyed by type (e.g. web.json → { "web": {...} } → {...}).
   // Mirrors the deploy pipeline's readManifestFromRepo behavior.
   for (const iface of config.interfaces ?? []) {
-    try {
-      const configPath = path.join(workspaceDir, iface.path);
-      const raw = await fs.readFile(configPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      const inner = parsed[iface.type];
-      if (inner && typeof inner === 'object') {
-        iface.config = inner;
-        log.debug(`  ${iface.type} config resolved from ${iface.path}`);
+    const configPath = path.join(workspaceDir, iface.path);
+    const ifaceResult = await loadJsonConfigFile<Record<string, unknown>>(
+      configPath,
+      { normalize: true },
+    );
+    if (!ifaceResult.ok) {
+      if (ifaceResult.notFound) {
+        log.debug(`  ${iface.type} config not found at ${iface.path}`);
+      } else {
+        // Previously silent: an unparseable web.json fell through to the
+        // default devCommand/devPort, which can silently point the tunnel at
+        // the wrong port.
+        log.warn(
+          `  ${iface.type} config at ${iface.path} is unparseable: ${ifaceResult.error}`,
+        );
       }
-    } catch {
-      log.debug(`  ${iface.type} config not found at ${iface.path}`);
+      continue;
+    }
+    const inner = ifaceResult.value[iface.type];
+    if (inner && typeof inner === 'object') {
+      iface.config = inner as Record<string, unknown>;
+      log.debug(`  ${iface.type} config resolved from ${iface.path}`);
     }
   }
 
