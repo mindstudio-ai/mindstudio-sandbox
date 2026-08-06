@@ -65,10 +65,29 @@ export type ModelSurfaces = Record<string, ModelSurface>;
  */
 export type AllowedModelsByType = Record<string, string[]>;
 
+/**
+ * Marks a turn/message that ran on a build-override model ("Build with X")
+ * rather than the user's normal default. `from` is the default it diverged
+ * from. Present only for build-driven overrides — a user changing their own
+ * default mid-session is a deliberate choice and is intentionally unmarked,
+ * so the frontend keys the override treatment off this field's presence
+ * rather than comparing `model` against the default.
+ */
+export interface ModelOverride {
+  from: string;
+}
+
 /** System events — lifecycle. */
 export type AgentSystemEvent =
   | { event: 'ready' }
-  | { event: 'turn_started'; requestId?: string }
+  | {
+      event: 'turn_started';
+      requestId?: string;
+      /** Model executing this turn. */
+      model?: string;
+      /** Set when a build override put this turn on a non-default model. */
+      modelOverride?: ModelOverride;
+    }
   | {
       event: 'session_restored';
       messageCount?: number;

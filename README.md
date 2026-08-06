@@ -174,7 +174,7 @@ The first message on connect is an `init` event with everything needed to bootst
 | `activeImpersonation` | `string[] \| null` | Currently impersonated role IDs, or null |
 | `fileTree` | `TreeEntry[]` | Code file tree (based on expanded dirs) |
 | `specFileTree` | `TreeEntry[]` | Spec file tree (`src/` — always fully expanded) |
-| `chatHistory` | `Message[]` | Agent conversation history from remy |
+| `chatHistory` | `Message[]` | Agent conversation history from remy. Assistant messages carry `model?` and `modelOverride?` — see [Model selection](#model-selection) |
 | `processes` | `ProcessInfo[]` | All tracked processes |
 | `editorState` | `EditorState` | Code editor tabs + active tab + expanded dirs |
 | `specEditorState` | `SpecEditorState` | Spec editor tabs + active tab |
@@ -220,7 +220,7 @@ All agent actions await the agent's `completed` event and return it as the WS re
 
 | Action | Params | Description |
 |--------|--------|-------------|
-| `agentMessage` | `{ text, attachments?, viewContext? }` | Send a message to the agent. Returns on `completed` |
+| `agentMessage` | `{ text, attachments?, viewContext?, buildModel? }` | Send a message to the agent. Returns on `completed`. `buildModel` picks the model that executes an approved plan — see [Model selection](#model-selection) |
 | `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed |
 
 #### Automated Actions
@@ -246,6 +246,55 @@ Messages with `@@automated::` prefix in history are automated — use the prefix
 | `agentClear` | `{}` | Clear conversation, start fresh session |
 | `externalToolResult` | `{ id, result }` | Send a result back for any external tool (promptUser, presentSyncPlan, etc.). Fire-and-forget |
 | `setProjectOnboardingState` | `{ state }` | Advance onboarding state |
+
+#### Model selection
+
+Planning always runs on the strong default model. When the user approves a **normal**
+plan, they may optionally choose a cheaper/faster model to *execute* that build.
+
+**Sending the choice.** Add `buildModel` to the `agentMessage` params alongside the
+approve sentinel:
+
+```json
+{ "action": "agentMessage",
+  "requestId": "…",
+  "params": { "text": "@@automated::approvePlan@@", "buildModel": "deepseek-v4-flash-0731" } }
+```
+
+Omit `buildModel` entirely to use the default — that payload is identical to what was
+sent before this field existed. The sandbox forwards the value verbatim; remy scopes and
+validates it:
+
+- honored only on the `approvePlan` message — ignored on chat approvals ("looks good, go
+  ahead") and on the initial onboarding approval, which always uses the strong model
+- an unknown or invalid id is ignored and the build falls back to the default
+- it applies to the **parent agent only**; specialist subagents (design, QA, architecture,
+  copy, spec-sync) keep their own models, so a build "on DeepSeek" did not run entirely
+  on DeepSeek
+- it rides along with the approved plan for the life of that build across multiple turns
+  — do **not** resend it on continuation messages. A new plan starts fresh on the default.
+
+**Populating the picker.** No extra round-trip needed — `agentSessionRestored`,
+`agentModelsChanged`, and the history response all carry:
+
+| Field | Use |
+|-------|-----|
+| `allowedModelsByType.text` | The valid build models (the dropdown's options) |
+| `modelSurfaces.parent.default` | The current effective default — the "build with the usual model" choice; selecting it means send no `buildModel` |
+| `models` | Sparse map of per-agent picks active on the session |
+
+**Reading attribution back.** Assistant messages in `chatHistory` carry `model` (the model
+that produced them), and `modelOverride: { from }` when a build override made that turn
+diverge from the user's default. Nested subagent messages inside a tool block's
+`subAgentMessages` carry their own `model` and never a `modelOverride`.
+
+Apply any "this ran on a different model" treatment **if and only if `modelOverride` is
+present** — do not derive it by comparing `model` to the default. A user who simply
+changes their own default mid-session produces messages with a different `model` and no
+`modelOverride`, and that deliberate choice is intentionally left unmarked.
+
+`agentTurnStarted` carries the same two fields for the in-flight turn, so live rendering
+and post-reload rendering agree. Older messages predate this and have neither field.
 
 ### Tunnel
 
@@ -308,6 +357,7 @@ Streaming events are broadcast in real-time while a message command is in flight
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `agentReady` | | Agent initialized and ready |
+| `agentTurnStarted` | `{ requestId?, model?, modelOverride? }` | A turn began. `model` is the model executing it; `modelOverride` (`{ from }`) is present only when a "Build with X" override put this turn on a non-default model. Gives live attribution for the in-flight turn — the same values persist on the message in `chatHistory` after reload |
 | `agentThinking` | `{ text, requestId?, parentToolId? }` | Internal reasoning (streaming chunks) |
 | `agentText` | `{ text, requestId?, parentToolId? }` | Visible response text (streaming chunks) |
 | `agentToolStart` | `{ id, name, input, partial?, requestId?, parentToolId? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, etc.), multiple events with `partial: true` arrive before the final one |
@@ -318,7 +368,8 @@ Streaming events are broadcast in real-time while a message command is in flight
 | `agentError` | `{ message?, error?, requestId? }` | Agent error |
 | `agentStopping` | | Agent shutting down |
 | `agentStopped` | | Agent process exited |
-| `agentSessionRestored` | `{ messageCount? }` | Previous session restored on startup |
+| `agentSessionRestored` | `{ messageCount?, models?, modelSurfaces?, allowedModelsByType? }` | Previous session restored on startup. Carries the model registry — see [Model selection](#model-selection) |
+| `agentModelsChanged` | `{ models?, modelSurfaces?, allowedModelsByType? }` | Model picks or the registry changed. Same payload shape as `agentSessionRestored` |
 | `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
 
 ### Processes

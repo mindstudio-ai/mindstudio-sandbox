@@ -18,6 +18,11 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *   3. Drop hidden assistant messages (internal prompts)
  *   4. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
  *   5. Recurse into subAgentMessages on tool blocks
+ *   6. Preserve per-message model attribution (`model`, `modelOverride`)
+ *
+ * Note the assistant envelope is rebuilt field-by-field rather than spread, to
+ * keep remy's internal fields out of the frontend payload. Anything new that
+ * needs to reach the frontend has to be added here explicitly.
  */
 export function transformHistory(
   raw: unknown[],
@@ -108,7 +113,22 @@ export function transformHistory(
         blocks.push(block);
       }
 
-      result.push({ role: 'assistant', content: blocks });
+      // Model attribution rides on the message envelope, so it has to be
+      // copied across explicitly — this rebuild is why it used to vanish.
+      // Applies to nested subagent messages too, via the recursion above:
+      // those carry their own `model` and never a `modelOverride`, which is
+      // what the frontend keys the override treatment off.
+      const assistantMsg: Record<string, unknown> = {
+        role: 'assistant',
+        content: blocks,
+      };
+      if (m.model) {
+        assistantMsg.model = m.model;
+      }
+      if (m.modelOverride) {
+        assistantMsg.modelOverride = m.modelOverride;
+      }
+      result.push(assistantMsg);
       continue;
     }
   }

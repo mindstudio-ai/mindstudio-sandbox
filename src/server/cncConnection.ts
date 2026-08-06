@@ -2,6 +2,10 @@ import { WebSocket } from 'ws';
 import type { WsRequest, WsResponse } from '../types.js';
 import { buildInitFrame, buildFallbackInitFrame } from './context.js';
 import { handlers } from './wsHandlers/index.js';
+import {
+  getActiveTurnId,
+  getActiveTurnModel,
+} from '../processes/agent/activity.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
@@ -54,6 +58,35 @@ export function createCncConnectionHandler(
       ws.send(JSON.stringify(buildFallbackInitFrame(getProxyActive())));
     }
     pendingInit.delete(ws);
+
+    // Rehydrate the in-flight turn's model attribution. `agentTurnStarted`
+    // fires once, at turn start, so a client that connects mid-turn — a reload
+    // during a long build — otherwise can't tell the turn is running on an
+    // override model until it commits to history. Nothing in the init frame
+    // carries it: `agentRunning` comes from remy's history payload, which has
+    // no attribution for the running turn.
+    //
+    // Same event name and shape as the live broadcast, so the frontend has one
+    // rehydration path. Sent only to this socket rather than broadcast, so
+    // other open tabs don't re-run their turn-start handling.
+    //
+    // Gated on our own turn state (driven by the `completed` event) rather
+    // than remy's `running` flag, so a finished turn can't leave a rail
+    // hanging. Fails closed: no cached attribution means no event.
+    const activeTurnId = getActiveTurnId();
+    const activeTurnModel = getActiveTurnModel();
+    if (activeTurnId && activeTurnModel) {
+      ws.send(
+        JSON.stringify({
+          event: 'agentTurnStarted',
+          requestId: activeTurnId,
+          ...activeTurnModel,
+        }),
+      );
+      log.debug('Re-emitted agentTurnStarted for in-flight turn', {
+        requestId: activeTurnId,
+      });
+    }
 
     // Request dispatch
     ws.on('message', async (raw) => {

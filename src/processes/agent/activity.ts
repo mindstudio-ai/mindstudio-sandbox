@@ -7,7 +7,7 @@
  * actions.ts (WS actions) can import freely.
  */
 
-import type { QueuedMessage } from './events.js';
+import type { ModelOverride, QueuedMessage } from './events.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +32,12 @@ export interface PendingExternalTool {
   input: Record<string, unknown>;
 }
 
+/** Model attribution remy reported for the turn currently in flight. */
+export interface ActiveTurnModel {
+  model?: string;
+  modelOverride?: ModelOverride;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -53,6 +59,9 @@ export const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
 
 let activity: AgentActivity = { busy: false, fileOps: [] };
 let activeMessageRequestId: string | null = null;
+// Attribution for the in-flight turn, cached so a client connecting mid-turn
+// can be told which model is running. Lives and dies with the turn.
+let activeTurnModel: ActiveTurnModel | null = null;
 const pendingExternalTools = new Map<string, PendingExternalTool>();
 const serverHandledToolIds = new Set<string>();
 // The current pending-queue snapshot, reconciled from remy's queue_changed
@@ -110,6 +119,10 @@ export function setQueuedMessages(
 export function startTurn(requestId: string): void {
   activeMessageRequestId = requestId;
   activity = { busy: true, fileOps: [] };
+  // Drop the previous turn's attribution. actions.ts calls this at send time,
+  // before remy's turn_started arrives, so without the reset a turn running on
+  // the default would inherit the prior turn's override and show a false rail.
+  activeTurnModel = null;
 }
 
 /** The requestId of the active foreground turn, or null if none. */
@@ -120,6 +133,28 @@ export function getActiveTurnId(): string | null {
 /** Track a background turn (no busy state, no activity broadcast). */
 export function startBackgroundTurn(requestId: string): void {
   activeMessageRequestId = requestId;
+  activeTurnModel = null;
+}
+
+/**
+ * Record the model attribution remy reported on `turn_started`. Normalizes
+ * to null when neither field is present, so an older remy (or a turn with
+ * nothing to attribute) doesn't leave an empty object behind that would make
+ * us re-emit a contentless event on reconnect.
+ */
+export function setActiveTurnModel(info: ActiveTurnModel): void {
+  activeTurnModel =
+    info.model || info.modelOverride
+      ? {
+          ...(info.model ? { model: info.model } : {}),
+          ...(info.modelOverride ? { modelOverride: info.modelOverride } : {}),
+        }
+      : null;
+}
+
+/** Attribution for the in-flight turn, or null if none is known. */
+export function getActiveTurnModel(): ActiveTurnModel | null {
+  return activeTurnModel;
 }
 
 /**
@@ -136,6 +171,7 @@ export function endTurn(requestId: string | undefined): boolean {
   }
   activeMessageRequestId = null;
   activity = { busy: false, fileOps: [] };
+  activeTurnModel = null;
   pendingExternalTools.clear();
   serverHandledToolIds.clear();
   return true;
@@ -143,6 +179,7 @@ export function endTurn(requestId: string | undefined): boolean {
 
 export function clearActivityOnError(): void {
   activity = { busy: false, fileOps: [] };
+  activeTurnModel = null;
   pendingExternalTools.clear();
   serverHandledToolIds.clear();
 }
