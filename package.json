@@ -20,6 +20,7 @@
     "@mindstudio-ai/agent": "^0.1.79",
     "chokidar": "^5.0.0",
     "http-proxy": "^1.18.1",
+    "json5": "^2.2.3",
     "node-pty": "^1.1.0",
     "ws": "^8.18.0"
   },
