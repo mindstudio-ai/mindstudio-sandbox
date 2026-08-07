@@ -188,7 +188,10 @@ export class LspSidecar {
                 ? await sendTunnelCommand(
                     this.pm,
                     'screenshotFullPage',
-                    params.path ? { path: params.path } : {},
+                    {
+                      ...(params.path ? { path: params.path } : {}),
+                      ...(params.format ? { format: params.format } : {}),
+                    },
                     120_000,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
@@ -200,7 +203,14 @@ export class LspSidecar {
                 ? await sendTunnelCommand(
                     this.pm,
                     'screenshotViewport',
-                    params.path ? { path: params.path } : {},
+                    {
+                      ...(params.path ? { path: params.path } : {}),
+                      ...(params.width != null ? { width: params.width } : {}),
+                      ...(params.height != null
+                        ? { height: params.height }
+                        : {}),
+                      ...(params.format ? { format: params.format } : {}),
+                    },
                     30_000,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
