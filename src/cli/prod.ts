@@ -1154,6 +1154,25 @@ async function dataLiftFromDev(appId: string, args: string[]) {
   );
 }
 
+async function dataLiftFromLive(appId: string, args: string[]) {
+  if (!hasFlag(args, 'confirm')) {
+    fatal(
+      'Usage: mindstudio-prod data lift-from-live [--truncate] --confirm\n' +
+        'Refusing to run without --confirm: this destructively replaces the ' +
+        "dev release's databases with a snapshot of live (wiping local dev " +
+        'data). Live/prod data is never touched. With --truncate it instead ' +
+        'empties the dev databases (keeps schema, no data pulled from live).',
+    );
+  }
+  const truncate = hasFlag(args, 'truncate');
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/manage/lift-live-to-dev`, {
+      confirm: true,
+      ...(truncate ? { mode: 'truncate' } : {}),
+    }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Commands — methods
 // ---------------------------------------------------------------------------
@@ -1398,7 +1417,7 @@ Commands:
   db          Query the production database
   secrets     Manage app secrets (env vars)
   methods     List and invoke methods
-  data        Live database operations (e.g. lift-from-dev)
+  data        Sync databases between dev and live (lift-from-dev / lift-from-live)
   issues      File and manage issues (bugs, ideas, tasks)
 
 Run 'mindstudio-prod <command> --help' for details on each command.
@@ -1670,13 +1689,15 @@ Examples:
   mindstudio-prod secrets set OLD_KEY --prod-clear
   mindstudio-prod secrets delete OLD_KEY`;
 
-const HELP_DATA = `mindstudio-prod data — Live database operations.
+const HELP_DATA = `mindstudio-prod data — Database sync between dev and live.
 
 Subcommands:
-  lift-from-dev    Destructively replace live's databases with a snapshot of dev's.
+  lift-from-dev     Destructively replace live's databases with a snapshot of dev's.
+  lift-from-live    Destructively replace dev's databases with a snapshot of live's.
 
 Usage:
   mindstudio-prod data lift-from-dev --confirm
+  mindstudio-prod data lift-from-live [--truncate] --confirm
 
 What lift-from-dev does:
   Copies every live-release database from its dev-release counterpart by name
@@ -1684,17 +1705,29 @@ What lift-from-dev does:
   updated to match dev. Database/table IDs stay stable — clients don't need
   to reload anything. Writes an audit row tagged 'lift-dev-to-live'.
 
+What lift-from-live does:
+  The reverse — pulls live's databases down over dev's, so the sandbox matches
+  prod. Useful for reproducing a prod bug against real data or re-syncing a
+  stale sandbox. Only dev is overwritten; live/prod data is never touched.
+  Requires an existing dev release (start a dev session first). With --truncate
+  it instead empties the dev databases (keeps schema + IDs, no data pulled from
+  live). Writes an audit row tagged 'lift-live-to-dev'.
+
 Critical constraints:
-  - Whole-database overwrite, INCLUDING auth tables. If live has real signed-up
-    users, this lift wipes them. Intended for first-publish / pre-launch data
-    sync only. Do NOT run on a production app with real users.
+  - Whole-database overwrite, INCLUDING auth tables. lift-from-dev wipes live's
+    users — intended for first-publish / pre-launch sync only; do NOT run on a
+    production app with real users. (lift-from-live only wipes dev, so it's the
+    safe direction.)
   - All-or-nothing per database. No per-table lift. To preserve some tables
     while replacing others, use a method invoked via 'methods invoke --roles'.
   - --confirm is mandatory. The CLI refuses to run without it as a guardrail.
-  - Wait ~10s after a final dev write before lifting (flush-loop race window).
+  - Wait ~10s after a final write to the source before lifting (flush-loop race
+    window).
 
 Examples:
-  mindstudio-prod data lift-from-dev --confirm`;
+  mindstudio-prod data lift-from-dev --confirm
+  mindstudio-prod data lift-from-live --confirm
+  mindstudio-prod data lift-from-live --truncate --confirm`;
 
 const HELP_METHODS = `mindstudio-prod methods — List and invoke methods.
 
@@ -1997,6 +2030,8 @@ async function main() {
       switch (sub) {
         case 'lift-from-dev':
           return dataLiftFromDev(appId, rest);
+        case 'lift-from-live':
+          return dataLiftFromLive(appId, rest);
         default:
           fatal(
             `Unknown subcommand: data ${sub}. Run 'mindstudio-prod data --help'`,
