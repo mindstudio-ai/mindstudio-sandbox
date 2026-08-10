@@ -1402,6 +1402,51 @@ async function issuesDelete(appId: string, args: string[]) {
 // Help text
 // ---------------------------------------------------------------------------
 
+async function prerenderInvalidate(appId: string, args: string[]) {
+  const body: Record<string, unknown> = {};
+  if (!hasFlag(args, 'all')) {
+    const paths: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i].startsWith('--')) {
+        i++; // skip flag value
+        continue;
+      }
+      paths.push(args[i]);
+    }
+    if (paths.length === 0) {
+      fatal(
+        'Usage: mindstudio-prod prerender invalidate <path...>   (or --all to purge every snapshot)',
+      );
+    }
+    body.paths = paths;
+  }
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/prerender/invalidate`, body),
+  );
+}
+
+// Verify what a crawler actually gets: fetch the app's public URL with a bot
+// User-Agent so the origin serves the prerender snapshot branch. Not an authed
+// api() call — it hits the public serve path exactly as a crawler would. A cold
+// path returns the live SPA (and triggers a render); re-run to see the snapshot.
+async function prerenderGet(appId: string, args: string[]) {
+  const path = getPositional(args, 0);
+  if (!path) {
+    fatal('Usage: mindstudio-prod prerender get <path>');
+  }
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  const isDev = !API_BASE.includes('api.mindstudio.ai');
+  const host = `${appId}${isDev ? '-dev' : ''}.madewithremy.com`;
+  const url = `https://${host}${normalized}`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Twitterbot/1.0 (+mindstudio-prod prerender verify)',
+    },
+  });
+  const html = await res.text();
+  out({ url, status: res.status, html });
+}
+
 const HELP = `mindstudio-prod — Manage your production MindStudio app.
 
 Usage: mindstudio-prod <command> <subcommand> [options]
@@ -1419,6 +1464,7 @@ Commands:
   methods     List and invoke methods
   data        Sync databases between dev and live (lift-from-dev / lift-from-live)
   issues      File and manage issues (bugs, ideas, tasks)
+  prerender   Manage + verify prerendered snapshots served to bots/crawlers
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -1791,6 +1837,27 @@ Examples:
   mindstudio-prod issues comment 42 "Fixed in the latest release."
   mindstudio-prod issues close 42`;
 
+const HELP_PRERENDER = `mindstudio-prod prerender — Manage prerendered snapshots served to bots/crawlers.
+
+Subcommands:
+  invalidate   Purge cached snapshot(s) so crawlers get a fresh render next visit
+  get          Fetch a path as a crawler (bot UA) to verify the snapshot
+
+Usage:
+  mindstudio-prod prerender invalidate <path...>     Purge specific paths
+  mindstudio-prod prerender invalidate --all         Purge every snapshot for the app
+  mindstudio-prod prerender get <path>               Print { url, status, html } as a crawler sees it
+
+Notes:
+  - 'get' hits the public serve path with a bot User-Agent. A warm path returns the
+    snapshot; a cold path returns the live SPA and triggers a render — re-run to see it.
+  - Invalidation targets the current LIVE release; a deploy already invalidates on its own.
+
+Examples:
+  mindstudio-prod prerender invalidate /u/abc123
+  mindstudio-prod prerender invalidate --all
+  mindstudio-prod prerender get /u/abc123`;
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1821,6 +1888,7 @@ async function main() {
     methods: HELP_METHODS,
     data: HELP_DATA,
     issues: HELP_ISSUES,
+    prerender: HELP_PRERENDER,
   };
   if (!sub || sub === '--help' || sub === '-h') {
     const helpText = HELP_MAP[group];
@@ -1891,6 +1959,19 @@ async function main() {
         default:
           fatal(
             `Unknown subcommand: analytics ${sub}. Run 'mindstudio-prod analytics --help'`,
+          );
+      }
+      break;
+
+    case 'prerender':
+      switch (sub) {
+        case 'invalidate':
+          return prerenderInvalidate(appId, rest);
+        case 'get':
+          return prerenderGet(appId, rest);
+        default:
+          fatal(
+            `Unknown subcommand: prerender ${sub}. Run 'mindstudio-prod prerender --help'`,
           );
       }
       break;
