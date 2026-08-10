@@ -3,13 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type httpProxy from 'http-proxy';
 import { ctx } from './context.js';
-import { createLogger } from '../logger.js';
 import { getVersions } from './versionCache.js';
 import { getAgentActivity } from '../processes/agent/activity.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
-
-const log = createLogger('http');
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -140,7 +137,7 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    proxy.web(req, res, {}, (err) => {
+    proxy.web(req, res, {}, () => {
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'text/html' });
         res.end('<html><body><p>Preview unavailable</p></body></html>');

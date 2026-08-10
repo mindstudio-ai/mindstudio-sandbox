@@ -1,15 +1,14 @@
 /**
- * Tolerant loader for MindStudio-owned JSON config files.
+ * Tolerant LOADER for MindStudio-owned JSON config files: parse + repair on disk.
  *
- * App configs (`mindstudio.json`, interface configs like `web.json`) are
- * authored by remy, so they pick up the usual LLM-JSON slop — most often a
- * trailing comma left behind when an array entry is deleted. A single one of
- * those used to take the whole sandbox down: readAppConfig returned null, the
- * web interface became undiscoverable, and the dev server never started.
+ * The parsing itself lives in `parseJsonConfig.ts`, a pure leaf — see there for
+ * the strict-then-JSON5 strategy and why remy's output needs it. This module is
+ * the half that touches the filesystem.
  *
- * Strategy: strict JSON.parse first, JSON5 as a rescue, then rewrite the file
- * as canonical strict JSON. Tolerating the slop WITHOUT rewriting would be
- * worse than failing — we aren't the only strict parser of these files (the
+ * A single trailing comma used to take the whole sandbox down: readAppConfig
+ * returned null, the web interface became undiscoverable, and the dev server
+ * never started. Tolerating the slop WITHOUT rewriting would be worse than
+ * failing — we aren't the only strict parser of these files (the
  * `mindstudio-prod` CLI and the server-side deploy pipeline both are), so a
  * lenient-only read just relocates the failure to publish time, far from the
  * edit that caused it. Repairing on disk fixes it for every consumer at once,
@@ -25,54 +24,17 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import JSON5 from 'json5';
 import { createLogger } from '../logger.js';
 // Imported from the watcher leaf, NOT `fileWatcher/index.js`: that barrel
 // imports readAppConfig from bootstrap, and bootstrap imports this module.
 import { suppressPath } from '../fileWatcher/watcher.js';
 import { withFileLock } from './fileLock.js';
+import { msg, parseJsonConfig, type ParseResult } from './parseJsonConfig.js';
+
+// Re-exported so existing importers of this module keep working unchanged.
+export { parseJsonConfig, type ParseResult };
 
 const log = createLogger('json-config');
-
-export type ParseResult<T> =
-  | { ok: true; value: T; repaired: false }
-  /** Strict parse failed; JSON5 rescued it. `error` is the strict failure. */
-  | { ok: true; value: T; repaired: true; error: string }
-  /** `notFound` separates "no such file" from "file exists but is broken" —
-   *  callers log those very differently. */
-  | { ok: false; error: string; notFound: boolean };
-
-function msg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Parse a config string. Pure — no I/O, no repair. Use this when the caller
- * already holds the file contents, or must not write (e.g. the CLI).
- */
-export function parseJsonConfig<T>(raw: string): ParseResult<T> {
-  let strictError: string;
-  try {
-    return { ok: true, value: JSON.parse(raw) as T, repaired: false };
-  } catch (err) {
-    strictError = msg(err);
-  }
-
-  try {
-    return {
-      ok: true,
-      value: JSON5.parse(raw) as T,
-      repaired: true,
-      error: strictError,
-    };
-  } catch (err) {
-    // Report the JSON5 error, not the strict one. JSON5 got further — it
-    // tolerated the slop and failed on whatever is genuinely broken (a
-    // truncated write, say), so its position is the actionable one. The
-    // strict error would point at the first trailing comma and mislead.
-    return { ok: false, error: msg(err), notFound: false };
-  }
-}
 
 /**
  * Read and parse a config file, repairing it in place when JSON5 rescues a

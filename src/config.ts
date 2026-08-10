@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { createLogger, setLogLevel, type LogLevel } from './logger.js';
 
 const log = createLogger('config');

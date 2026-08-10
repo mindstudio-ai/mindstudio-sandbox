@@ -11,13 +11,11 @@ import { parseAgentMessage } from './events.js';
 import type { QueuedMessage } from './events.js';
 import { transformHistory } from './history.js';
 import {
-  getAgentActivity,
   broadcastActivity,
   getQueuedMessages,
   setQueuedMessages,
   startTurn,
   getActiveTurnId,
-  startBackgroundTurn,
   endTurn,
   setActiveTurnModel,
   clearActivityOnError,

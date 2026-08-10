@@ -138,7 +138,7 @@ export class LspClient {
       );
     }
 
-    const initResult = await this.request('initialize', {
+    await this.request('initialize', {
       processId: process.pid,
       rootUri,
       ...(tsserverPath
