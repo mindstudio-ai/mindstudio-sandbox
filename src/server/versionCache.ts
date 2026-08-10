@@ -44,7 +44,7 @@ function npmVersion(pkg: string): Promise<string> {
     execCb(
       `npm list -g ${pkg} --depth=0`,
       { encoding: 'utf-8', timeout: 10_000 },
-      (err, stdout) => {
+      (_err, stdout) => {
         // npm list exits non-zero when the package is missing, but still
         // prints output — try to parse either way.
         const output = stdout ?? '';

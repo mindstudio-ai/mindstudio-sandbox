@@ -37,7 +37,7 @@ with a dash, use --name=value; to pass a positional beginning with a dash, put
 All output is JSON. Configuration is read from environment variables
 (MINDSTUDIO_API_KEY, API_BASE_URL) and mindstudio.json (appId).`;
 
-export const GROUPS = [
+const GROUPS = [
   'requests',
   'crashes',
   'analytics',
@@ -53,7 +53,7 @@ export const GROUPS = [
   'prerender',
 ] as const;
 
-export type Route = { key: CommandKey; argv: string[] };
+type Route = { key: CommandKey; argv: string[] };
 
 const KEYS = new Set<string>(Object.keys(SPECS));
 

@@ -2,10 +2,7 @@ import {
   setOnboardingState,
   type ProjectOnboardingState,
 } from '../../projectStatus/ProjectStatusManager.js';
-import { createLogger } from '../../logger.js';
 import type { ExternalToolHandler } from '../types.js';
-
-const log = createLogger('tool:setProjectOnboardingState');
 
 export const setProjectOnboardingStateTool: ExternalToolHandler = {
   handle(id, input, ctx) {

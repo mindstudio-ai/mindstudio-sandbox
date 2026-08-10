@@ -32,7 +32,7 @@ export interface FlagSpec {
   max?: number;
 }
 
-export interface PositionalSpec {
+interface PositionalSpec {
   name: string;
   required?: boolean;
   /** Must be declared last. Collects the remainder; read via `Args.rest()`. */
@@ -91,7 +91,10 @@ export class Args {
     if (value === undefined) {
       // Unreachable via parseCommand — guards against a spec that forgot
       // `required: true` on a positional the handler treats as mandatory.
-      throw new UsageError(`Missing required argument <${name}>.`, this.usage);
+      throw new UsageError(
+        `Missing required argument <${name}>.`,
+        this.spec.usage,
+      );
     }
     return value;
   }
@@ -118,10 +121,6 @@ export class Args {
 
   bool(flag: string): boolean {
     return this.flags[flag] === true;
-  }
-
-  has(flag: string): boolean {
-    return this.flags[flag] !== undefined;
   }
 
   /**
@@ -156,10 +155,6 @@ export class Args {
     }
     const qs = params.toString();
     return qs ? `?${qs}` : '';
-  }
-
-  get usage(): string {
-    return this.spec.usage;
   }
 
   private indexOf(name: string): number {

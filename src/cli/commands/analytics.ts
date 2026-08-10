@@ -3,7 +3,7 @@ import { api, seg } from '../api.js';
 import { out } from '../output.js';
 import type { Handler } from '../types.js';
 
-export const TOP_DIMENSIONS = [
+const TOP_DIMENSIONS = [
   'pages',
   'referrers',
   'countries',
@@ -16,7 +16,7 @@ export const TOP_DIMENSIONS = [
   'sources',
 ] as const;
 
-export const CRAWLERS_SUBS = ['overview', 'timeseries', 'recent'] as const;
+const CRAWLERS_SUBS = ['overview', 'timeseries', 'recent'] as const;
 
 /**
  * Shared analytics flags. Any filter flag switches the API read from the rollup
