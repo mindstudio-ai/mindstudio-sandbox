@@ -27,6 +27,7 @@ Commands:
   data        Sync databases between dev and live (lift-from-dev / lift-from-live)
   issues      File and manage issues (bugs, ideas, tasks)
   prerender   Manage + verify prerendered snapshots served to bots/crawlers
+  files       Upload + manage files on the app's CDN (build-time)
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -51,6 +52,7 @@ const GROUPS = [
   'data',
   'issues',
   'prerender',
+  'files',
 ] as const;
 
 type Route = { key: CommandKey; argv: string[] };
