@@ -66,7 +66,7 @@ async function filesPut(appId: string, a: Args) {
   const contentType = a.str('content-type');
 
   out(
-    await api('POST', `/_internal/v2/apps/${appId}/files`, {
+    await api('POST', `/_internal/v2/apps/${appId}/file-storage`, {
       store,
       access,
       key,
@@ -77,7 +77,7 @@ async function filesPut(appId: string, a: Args) {
 }
 
 async function filesList(appId: string) {
-  out(await api('GET', `/_internal/v2/apps/${appId}/files/summary`));
+  out(await api('GET', `/_internal/v2/apps/${appId}/file-storage/summary`));
 }
 
 async function filesRm(appId: string, a: Args) {
@@ -90,7 +90,7 @@ async function filesRm(appId: string, a: Args) {
     fatal('--key is required.');
   }
   out(
-    await api('POST', `/_internal/v2/apps/${appId}/files/delete`, {
+    await api('POST', `/_internal/v2/apps/${appId}/file-storage/delete`, {
       store,
       access: resolveAccess(a),
       keys: [key],
