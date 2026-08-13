@@ -423,6 +423,21 @@ export async function readAppConfig(
   // inner object keyed by type (e.g. web.json → { "web": {...} } → {...}).
   // Mirrors the deploy pipeline's readManifestFromRepo behavior.
   for (const iface of config.interfaces ?? []) {
+    // An entry with no path has no file to resolve — either its config is inline
+    // under `config` (already carried by the parsed manifest, so leaving it
+    // untouched is correct), or the type has nothing to configure at all.
+    // Skipping matches the pipeline this loop mirrors, which logs and continues.
+    //
+    // This was fatal rather than cosmetic: `path.join(dir, undefined)` throws,
+    // and the throw escapes readAppConfig's null-return contract into main()'s
+    // catch, so one absent optional field on one interface took the whole
+    // sandbox down at bootstrap instead of reaching the degraded mode the caller
+    // already handles. The not-found branch below has always tolerated the file
+    // being absent; only the field itself was unguarded.
+    if (!iface.path) {
+      log.debug(`  ${iface.type} declares no config path — nothing to resolve`);
+      continue;
+    }
     const configPath = path.join(workspaceDir, iface.path);
     const ifaceResult = await loadJsonConfigFile<Record<string, unknown>>(
       configPath,

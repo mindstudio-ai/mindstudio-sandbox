@@ -62,7 +62,14 @@ export interface AppConfig {
   }>;
   interfaces: Array<{
     type: string;
-    path: string;
+    /**
+     * Path to this interface's config file, relative to the workspace.
+     * Optional in the manifest schema (see remy's prompt/compiled/manifest.md):
+     * an interface may carry its config inline under `config`, or declare a type
+     * with nothing to configure at all (`{"type":"api"}`). Typing it as required
+     * is what let `path.join(dir, undefined)` reach production.
+     */
+    path?: string;
     config?: Record<string, unknown>;
   }>;
   scenarios?: Array<{

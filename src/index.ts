@@ -218,7 +218,12 @@ async function startServices(
     | undefined;
   const devPort = webConfig?.devPort ?? 5173;
   const devCommand = webConfig?.devCommand ?? 'npm run dev';
-  const webDir = webInterface
+  // Keyed on the path, not just the entry: `path` is optional in the manifest
+  // schema, and path.dirname(undefined) throws the same way readAppConfig's loop
+  // did. A web interface that names no config file gives us no directory to run
+  // the dev server in, which the `else` below already reports as "no web
+  // interface" rather than treating as fatal.
+  const webDir = webInterface?.path
     ? path.resolve(config.workspaceDir, path.dirname(webInterface.path))
     : null;
 
