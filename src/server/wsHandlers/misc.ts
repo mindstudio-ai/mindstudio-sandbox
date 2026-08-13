@@ -30,6 +30,4 @@ export const miscHandlers: Record<string, ActionHandler> = {
   getResources: async () => {
     return ctx.resourceMonitor?.collectNow() ?? {};
   },
-
-  ping: async () => ({ pong: true }),
 };
