@@ -19,6 +19,7 @@ import { HmrRelay, HmrRelayManager } from './HmrRelay.js';
 import { createHttpHandler } from './httpRoutes.js';
 import { createLspConnectionHandler } from './lspBridge.js';
 import { createCncConnectionHandler } from './cncConnection.js';
+import { startCncHeartbeat } from './cncHeartbeat.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('ws-server');
@@ -27,6 +28,7 @@ let sandboxToken: string = '';
 let proxyTarget: number | null = null;
 /** Clients that haven't received their init frame yet — skip in broadcast. */
 const pendingInit = new Set<WebSocket>();
+let stopCncHeartbeat: (() => void) | null = null;
 let proxy: httpProxy | null = null;
 
 let httpServer: http.Server;
@@ -115,6 +117,7 @@ export function startServer(
         getClientCount: () => wss.clients.size,
       }),
     );
+    stopCncHeartbeat = startCncHeartbeat(wss);
 
     // --- WebSocket upgrade routing ---
     httpServer.on('upgrade', (req, socket: net.Socket, head) => {
@@ -233,6 +236,8 @@ export function stopServer(): Promise<void> {
       lspWss.close();
     }
     if (wss) {
+      stopCncHeartbeat?.();
+      stopCncHeartbeat = null;
       for (const client of wss.clients) {
         client.close(1001, 'Server shutting down');
       }
