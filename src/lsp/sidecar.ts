@@ -22,6 +22,28 @@ interface DiagnosticItem {
   code: number | string | undefined;
 }
 
+// Timeouts for browser commands relayed to the tunnel.
+//
+// These are the middle rung of a three-layer ladder, and the ladder only works
+// if every layer is strictly slower than the one it wraps — that way the
+// innermost layer, which knows *what* was slow, is always the one that reports
+// the failure. When two rungs matched, the outer timer won (it started first) and
+// the caller got a bare "timeout (Ns)" with no error code and none of the partial
+// results, which is exactly what made a slow page look like broken plumbing.
+//
+//   tunnel                          this file            remy
+//   viewport capture       20s   <  30s              <  45s
+//   full-page capture      90s   <  120s             <  135s
+//   whole browser command  100s  <  120s                 (no timer; owned here)
+//
+// See mindstudio-local-model-tunnel/src/dev/browser/screenshot.ts and
+// src/dev/stdin-commands/browser.ts for the inner values.
+const SCREENSHOT_VIEWPORT_TIMEOUT_MS = 30_000;
+const SCREENSHOT_FULLPAGE_TIMEOUT_MS = 120_000;
+const SETUP_BROWSER_TIMEOUT_MS = 15_000;
+// Exceeds the 15s page.reload inside the supervisor's setPreviewMode.
+const SET_VIEWPORT_TIMEOUT_MS = 20_000;
+
 const SEVERITY_MAP: Record<number, string> = {
   1: 'error',
   2: 'warning',
@@ -179,7 +201,7 @@ export class LspSidecar {
                       ...(params.auth ? { auth: params.auth } : {}),
                       ...(params.path ? { path: params.path } : {}),
                     },
-                    15_000,
+                    SETUP_BROWSER_TIMEOUT_MS,
                   )
                 : { success: false, error: 'tunnel not available' };
               break;
@@ -192,13 +214,13 @@ export class LspSidecar {
                       ...(params.path ? { path: params.path } : {}),
                       ...(params.format ? { format: params.format } : {}),
                     },
-                    120_000,
+                    SCREENSHOT_FULLPAGE_TIMEOUT_MS,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
             case '/screenshot-viewport':
-              // Viewport captures skip the full-page pre-roll scroll and tall
-              // stitch, so they settle far faster — a tighter timeout is enough.
+              // Viewport captures skip the full-page pre-roll scroll, so they
+              // settle far faster — a tighter timeout is enough.
               result = this.pm
                 ? await sendTunnelCommand(
                     this.pm,
@@ -211,7 +233,7 @@ export class LspSidecar {
                         : {}),
                       ...(params.format ? { format: params.format } : {}),
                     },
-                    30_000,
+                    SCREENSHOT_VIEWPORT_TIMEOUT_MS,
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
@@ -219,8 +241,7 @@ export class LspSidecar {
               // Reuse the `browser` command with a single setViewport step so
               // there's no separate tunnel handler. `mode` is 'desktop' |
               // 'mobile' | 'default' ('default' → the app's defaultPreviewMode);
-              // remy's per-run reset passes 'default'. Timeout exceeds the 15s
-              // page.reload inside the supervisor's setPreviewMode.
+              // remy's per-run reset passes 'default'.
               result = this.pm
                 ? await sendTunnelCommand(
                     this.pm,
@@ -233,7 +254,7 @@ export class LspSidecar {
                         },
                       ],
                     },
-                    20_000,
+                    SET_VIEWPORT_TIMEOUT_MS,
                   )
                 : { success: false, error: 'tunnel not available' };
               break;
