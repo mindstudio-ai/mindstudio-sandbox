@@ -28,7 +28,9 @@ const CONFIG_FLAGS = {
   'min-chars': { type: 'number', min: 0 },
   'drop-blocks': { type: 'string' },
   contextual: { type: 'string' },
+  'describe-images': { type: 'string' },
   'embedding-model': { type: 'string' },
+  'image-model': { type: 'string' },
   'extraction-model': { type: 'string' },
   // Live — take effect on the next search, no rebuild.
   rerank: { type: 'string' },
@@ -564,6 +566,12 @@ Tuning a corpus:
     --contextual <true|false>  LLM context blurb per chunk. Improves retrieval
                              on long documents; costs a model call per chunk
                              at ingest. Off by default — measure on your data.
+    --describe-images <true|false>  Vision pass over images inside documents,
+                             substituting a description into the searchable
+                             text. ON by default: a document with no images
+                             costs nothing, and an undescribed chart is
+                             invisible to search rather than merely ranked low.
+    --image-model <id>
     --embedding-model <id>
     --extraction-model <id>
 
