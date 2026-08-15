@@ -32,6 +32,11 @@ import {
   prerenderSpecs,
 } from './prerender.js';
 import { filesHandlers, filesHelp, filesSpecs } from './files.js';
+import {
+  dataSourcesHandlers,
+  dataSourcesHelp,
+  dataSourcesSpecs,
+} from './dataSources.js';
 
 export const SPECS = {
   ...requestsSpecs,
@@ -48,6 +53,7 @@ export const SPECS = {
   ...issuesSpecs,
   ...prerenderSpecs,
   ...filesSpecs,
+  ...dataSourcesSpecs,
 };
 
 export type CommandKey = keyof typeof SPECS;
@@ -67,6 +73,7 @@ export const HANDLERS = {
   ...issuesHandlers,
   ...prerenderHandlers,
   ...filesHandlers,
+  ...dataSourcesHandlers,
 };
 
 /**
@@ -93,4 +100,5 @@ export const GROUP_HELP: Record<string, string> = {
   issues: issuesHelp,
   prerender: prerenderHelp,
   files: filesHelp,
+  datasources: dataSourcesHelp,
 };

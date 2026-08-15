@@ -109,6 +109,7 @@ const INTERNAL_TOOLS = new Set([
   'lspDiagnostics',
   'restartProcess',
   'screenshot',
+  'loadSkill',
 ]);
 
 /**
