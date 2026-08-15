@@ -102,6 +102,10 @@ export const dataSourcesSpecs = {
       'Usage: mindstudio-prod datasources drop [--source <slug>] [--version <n>]',
     flags: { source: { type: 'string' }, version: { type: 'string' } },
   },
+  'datasources delete': {
+    usage: 'Usage: mindstudio-prod datasources delete --source <slug>',
+    flags: { source: { type: 'string' } },
+  },
 } satisfies Record<string, CommandSpec>;
 
 const base = (appId: string) => `/_internal/v2/apps/${appId}/datasources`;
@@ -305,6 +309,26 @@ async function dataSourcesRm(appId: string, a: Args) {
     documentId,
   });
   out({ deleted: documentId });
+}
+
+/**
+ * Delete a whole data source — every version, every document, every byte.
+ *
+ * The ONE command where --source is required rather than defaulted: every
+ * other command defaulting to "${DEFAULT_SOURCE}" is convenience, but a
+ * destructive command silently targeting the default corpus is a foot-gun.
+ * Extraction caches survive (shared across sources by content hash), so
+ * re-ingesting the same files into a new source costs no re-extraction.
+ */
+async function dataSourcesDelete(appId: string, a: Args) {
+  const slug = a.str('source');
+  if (!slug) {
+    fatal(
+      '--source is required — deletion never falls back to the default source.',
+    );
+  }
+  const result = await api('POST', `${base(appId)}/delete`, { slug });
+  out({ dataSource: slug, ...result });
 }
 
 async function dataSourcesSearch(appId: string, a: Args) {
@@ -527,6 +551,7 @@ export const dataSourcesHandlers = {
   'datasources revectorize': dataSourcesRevectorize,
   'datasources promote': dataSourcesPromote,
   'datasources drop': dataSourcesDrop,
+  'datasources delete': dataSourcesDelete,
 } satisfies Record<keyof typeof dataSourcesSpecs, Handler>;
 
 export const dataSourcesHelp = `mindstudio-prod datasources — Build and query a searchable document corpus.
@@ -544,6 +569,7 @@ Subcommands:
   revectorize  Rebuild a corpus under new settings, alongside the live one
   promote      Make a rebuilt version live
   drop         Discard a candidate or a superseded version
+  delete       Delete a whole data source — documents, vectors and versions
 
 Usage:
   mindstudio-prod datasources add [--source <slug>] [--wait] [--timeout <sec>] <file...>
@@ -555,6 +581,7 @@ Usage:
   mindstudio-prod datasources revectorize [--source <slug>] [settings...] [--wait]
   mindstudio-prod datasources promote [--source <slug>] [--force]
   mindstudio-prod datasources drop [--source <slug>] [--version <n>]
+  mindstudio-prod datasources delete --source <slug>
 
 Tuning a corpus:
   There is no single chunking or retrieval setup that suits every dataset, so
@@ -563,6 +590,7 @@ Tuning a corpus:
 
   FREE — take effect on the next search, no rebuild:
     --rerank <true|false>    Cross-encoder reranking (default true)
+    --rerank-model <id>      Which cross-encoder reranks (live, no rebuild)
     --hybrid <true|false>    Semantic + keyword matching (default true)
     --top-k <n>              Default results per search
 
@@ -590,6 +618,9 @@ Notes:
   --wait blocks until processing finishes, so you can search immediately after.
     Exits ${EXIT.buildFailed} if a document failed, ${EXIT.timeout} on timeout.
   Re-adding an unchanged file is free: no upload, no re-embedding.
+  delete requires an explicit --source (no default) and refuses while documents
+    are still ingesting. Extraction caches survive deletion, so re-ingesting
+    the same files elsewhere costs no re-extraction.
   Re-vectorizing reuses stored extractions, so changing chunking never re-runs
   document extraction — only re-chunking and re-embedding.
 
