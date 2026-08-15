@@ -34,6 +34,10 @@ const CONFIG_FLAGS = {
   'extraction-model': { type: 'string' },
   // Live — take effect on the next search, no rebuild.
   rerank: { type: 'string' },
+  // Which cross-encoder reranks. Live, not pinned: a reranker runs at query
+  // time over text already in the index, so switching costs nothing and is
+  // retroactive — unlike the embedding model, which invalidates every vector.
+  'rerank-model': { type: 'string' },
   hybrid: { type: 'string' },
   'top-k': { type: 'number', min: 1 },
 } as const satisfies Record<string, FlagSpec>;
@@ -381,7 +385,13 @@ function configFromFlags(a: Args): { ingest: any; retrieval: any } {
   }
 
   const retrieval: any = { ...triState(a, 'hybrid', 'hybrid') };
-  const rerank = triState(a, 'rerank', 'enabled');
+  // `enabled` and `modelId` are two facets of one `rerank` object, so they're
+  // built together — sending only one of them is fine, because the server
+  // merges `rerank` a level deeper rather than replacing it wholesale.
+  const rerank = {
+    ...triState(a, 'rerank', 'enabled'),
+    ...(a.str('rerank-model') ? { modelId: a.str('rerank-model') } : {}),
+  };
   if (Object.keys(rerank).length) {
     retrieval.rerank = rerank;
   }
