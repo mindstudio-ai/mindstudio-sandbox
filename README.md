@@ -87,7 +87,7 @@ Both the agent and tunnel use the same IPC pattern: newline-delimited JSON over 
 
 **System events vs command responses:** System events (lifecycle, connection status) have no `requestId`. Command responses always do. The handler distinguishes them with `if (msg.requestId)`.
 
-**Agent specifics:** Streaming events (`text`, `thinking`, `tool_start`, etc.) carry the originating command's `requestId` and are broadcast to the frontend in real-time. Each command ends with a `completed` event. `tool_result` is fire-and-forget (no `requestId`).
+**Agent specifics:** Streaming events (`text`, `thinking`, `tool_start`, etc.) carry the originating command's `requestId` and are broadcast to the frontend in real-time. Each command ends with a `completed` event. Messages sent while a turn is running are queued (see `queue_changed`/`agentQueueChanged`); when the turn ends, contiguous queued user messages and background results are delivered together as one merged turn — the first queued message's `requestId` is the turn's primary id, each absorbed message echoes its own `user_message` (`queued: true`, original `requestId`), and after the primary's `completed`, each other absorbed `requestId` gets a `completed` with the same outcome and `absorbed: true`. `tool_result` is fire-and-forget (no `requestId`).
 
 **Tunnel specifics:** Command responses are consumed by the resolver and returned as WS response data. System events are broadcast to the frontend.
 
@@ -220,8 +220,9 @@ All agent actions await the agent's `completed` event and return it as the WS re
 
 | Action | Params | Description |
 |--------|--------|-------------|
-| `agentMessage` | `{ text, attachments?, viewContext?, buildModel? }` | Send a message to the agent. Returns on `completed`. `buildModel` picks the model that executes an approved plan — see [Model selection](#model-selection) |
-| `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed |
+| `agentMessage` | `{ text, attachments?, viewContext?, buildModel? }` | Send a message to the agent. If the agent is idle, returns on `completed`; if a turn is running, returns immediately with `{ queued: true, requestId }` and the message's own `completed` arrives when it eventually runs (possibly merged into one turn with other queued messages). `buildModel` picks the model that executes an approved plan — see [Model selection](#model-selection) |
+| `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed; the reply carries `cancelledMessages` (queued chain/background items flushed by the cancel — queued user messages are preserved and run next) |
+| `agentCancelQueued` | `{ id? }` | Remove pending queued user messages without touching the in-flight turn. Omit `id` for all, or pass a queued message's `requestId`. Replies with `cancelledQueued`; the queue snapshot updates via `agentQueueChanged` |
 
 #### Automated Actions
 
@@ -363,7 +364,9 @@ Streaming events are broadcast in real-time while a message command is in flight
 | `agentToolStart` | `{ id, name, input, partial?, requestId?, parentToolId? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, etc.), multiple events with `partial: true` arrive before the final one |
 | `agentToolInputDelta` | `{ id, name, result, requestId?, parentToolId? }` | Streaming tool input content (progressive updates) |
 | `agentToolDone` | `{ id, name, result?, isError?, requestId?, parentToolId? }` | Tool execution completed |
-| `agentCompleted` | `{ requestId, success, error? }` | Command finished. Also returned as the WS response for the originating action |
+| `agentCompleted` | `{ requestId, success, error?, absorbed? }` | Command finished. Also returned as the WS response for the originating action. `absorbed: true` marks the synthetic terminal of a requestId that was merged into another turn — it resolves that command but carries no turn lifecycle (the primary requestId's completed, which arrives first, drives busy/turn-done) |
+| `agentUserMessage` | `{ text, requestId?, attachments?, queued? }` | A user message entering a turn, echoed by remy. Queue-delivered messages carry `queued: true` and their own original `requestId`; a merged turn emits one per absorbed message |
+| `agentQueueChanged` | `{ queuedMessages }` | Remy's pending-message queue changed. Full authoritative snapshot (empty array when drained); the initial snapshot rides on the init frame and `agentGetHistory` |
 | `agentStatus` | `{ message, requestId? }` | Contextual status label (e.g., "Writing files...") |
 | `agentError` | `{ message?, error?, requestId? }` | Agent error |
 | `agentStopping` | | Agent shutting down |
