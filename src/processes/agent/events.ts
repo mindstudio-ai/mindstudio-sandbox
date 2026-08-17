@@ -113,15 +113,23 @@ export type AgentSystemEvent =
   | { event: 'stopped' };
 
 /**
- * Turn-starting user message echoed by remy for every turn — sandbox-
- * originated (`ac-*`), chained (`chain-*`), and background (`bg-*`).
- * Rendering is driven purely by the `@@automated::X@@` prefix in `text`;
- * the `requestId` prefix indicates origin but does not affect rendering.
+ * User message echoed by remy as it enters a turn — sandbox-originated
+ * (`ac-*`), chained (`chain-*`), and background (`bg-*`/`background-*`).
+ * A merged turn (contiguous queued user messages + background results
+ * delivered together) emits one of these per absorbed message, each with
+ * its own original `requestId` and `queued: true`.
  */
 export interface AgentUserMessageEvent {
   event: 'user_message';
   text: string;
   requestId?: string;
+  /** Attachments riding on the message (voice transcript, images, files) —
+   * the live event's parity with get_history, so queued sends render fully. */
+  attachments?: unknown[];
+  /** True when the message was delivered from remy's queue rather than sent
+   * while the agent was idle. The frontend renders queued echoes (idle sends
+   * are rendered optimistically at send time instead). */
+  queued?: boolean;
 }
 
 /** Streaming events during a command — carry requestId. */
@@ -245,12 +253,21 @@ export type AgentDataEvent =
     }
   | { event: 'compaction_complete'; requestId?: string; error?: string };
 
-/** Terminal event — exactly one per command. */
+/**
+ * Terminal event — exactly one per command. When remy merges contiguous
+ * queued messages into one turn, the turn's primary requestId gets the real
+ * completed first, then each other absorbed requestId gets one completed
+ * with the same outcome and `absorbed: true` immediately after. Absorbed
+ * terminals resolve their pending command but carry no turn lifecycle —
+ * busy/endTurn/activity handling belongs to the primary alone.
+ */
 export interface AgentCompletedEvent {
   event: 'completed';
   requestId?: string;
   success: boolean;
   error?: string;
+  /** True for a merged-away requestId's synthetic terminal (see above). */
+  absorbed?: boolean;
   /**
    * On a `cancel` command's completed, the items drained from the queue by the
    * hard stop (all sources). Typed for completeness; not surfaced in any UI.

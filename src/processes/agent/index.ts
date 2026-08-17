@@ -312,6 +312,9 @@ function handleStdout(
   // --- Turn started — track remy-initiated turns ---
 
   if (event.event === 'turn_started') {
+    // Fresh turn — drop any trigger text captured from a previous turn's
+    // user_message so a plain turn can't inherit a stale automated trigger.
+    currentAutomatedTurnText = null;
     const turnId = event.requestId;
     if (!turnId) {
       // Legacy path (pre-uniform-user_message contract): remy didn't emit a
@@ -352,11 +355,18 @@ function handleStdout(
 
   if (event.event === 'user_message') {
     // Snapshot the trigger text for potential cancel → Continue-button
-    // re-trigger. Only automated turns (sandbox- or chain-initiated) get
-    // tracked; user-typed messages don't surface a resume affordance.
-    currentAutomatedTurnText = event.text.startsWith('@@automated::')
-      ? event.text
-      : null;
+    // re-trigger. Only action-sentinel turns (sandbox- or chain-initiated)
+    // get tracked; user-typed messages and background_results deliveries
+    // don't surface a resume affordance — and, since a merged turn emits one
+    // user_message per absorbed message, a plain text must never null a
+    // trigger armed earlier in the same turn (the reset lives in
+    // turn_started).
+    if (
+      event.text.startsWith('@@automated::') &&
+      !event.text.startsWith('@@automated::background_results@@')
+    ) {
+      currentAutomatedTurnText = event.text;
+    }
     const { event: _evt, ...data } = event;
     cb.broadcast('agentUserMessage', data);
     return;
@@ -375,6 +385,17 @@ function handleStdout(
         }
         entry.resolve({ ...entry.data, ...event });
       }
+    }
+
+    // Synthetic terminal for a requestId that was merged into another turn.
+    // The primary requestId's completed (which always arrives first) already
+    // ran the turn lifecycle — endTurn, activity broadcast, onTurnDone,
+    // abort-trigger snapshot. This one only needed to resolve its pending
+    // command (above) and reach the frontend.
+    if (event.absorbed) {
+      const { event: _evt, ...data } = event;
+      cb.broadcast('agentCompleted', data);
+      return;
     }
 
     // More queued work means remy is about to fire turn_started for the next
