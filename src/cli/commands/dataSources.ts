@@ -45,10 +45,11 @@ const CONFIG_FLAGS = {
 export const dataSourcesSpecs = {
   'datasources add': {
     usage:
-      'Usage: mindstudio-prod datasources add [--source <slug>] [--wait] [--timeout <sec>] <file...>',
+      'Usage: mindstudio-prod datasources add [--source <slug>] [--metadata <k=v,...>] [--wait] [--timeout <sec>] <file...>',
     positionals: [{ name: 'file', required: true, variadic: true }],
     flags: {
       source: { type: 'string' },
+      metadata: { type: 'string' },
       wait: { type: 'boolean' },
       timeout: { type: 'string' },
     },
@@ -67,7 +68,7 @@ export const dataSourcesSpecs = {
   },
   'datasources search': {
     usage:
-      'Usage: mindstudio-prod datasources search [--source <slug>] [--top-k <n>] [--candidate] <query>',
+      'Usage: mindstudio-prod datasources search [--source <slug>] [--top-k <n>] [--mode <hybrid|semantic|lexical>] [--filter <k=v,...|json>] [--phrase <text>] [--contains <words>] [--max-per-document <n>] [--rerank <true|false>] [--hybrid <true|false>] [--highlight] [--candidate] <query>',
     positionals: [{ name: 'query', required: true }],
     flags: {
       source: { type: 'string' },
@@ -75,6 +76,12 @@ export const dataSourcesSpecs = {
       candidate: { type: 'boolean' },
       rerank: { type: 'string' },
       hybrid: { type: 'string' },
+      mode: { type: 'string' },
+      filter: { type: 'string' },
+      phrase: { type: 'string' },
+      contains: { type: 'string' },
+      'max-per-document': { type: 'number', min: 1 },
+      highlight: { type: 'boolean' },
     },
   },
   'datasources config': {
@@ -125,6 +132,7 @@ const sourceOf = (a: Args) => a.str('source') || DEFAULT_SOURCE;
 async function dataSourcesAdd(appId: string, a: Args) {
   const files = a.rest('file');
   const slug = sourceOf(a);
+  const metadata = parseKeyValuePairs(a.str('metadata'), 'metadata');
   const results: any[] = [];
 
   for (const file of files) {
@@ -140,10 +148,14 @@ async function dataSourcesAdd(appId: string, a: Args) {
     const filename = path.basename(file);
     const contentHash = createHash('sha256').update(bytes!).digest('hex');
 
+    // Metadata rides the token request too: when the file is already current
+    // the flow ends right here, and the server applies a metadata change in
+    // place — no re-upload, no re-embed.
     const token = await api('POST', `${base(appId)}/upload-token`, {
       slug,
       filename,
       contentHash,
+      ...(metadata ? { metadata } : {}),
     });
 
     if (token.alreadyCurrent) {
@@ -163,6 +175,7 @@ async function dataSourcesAdd(appId: string, a: Args) {
       contentHash,
       contentType: token.contentType,
       size: bytes!.length,
+      ...(metadata ? { metadata } : {}),
     });
 
     results.push({
@@ -337,15 +350,110 @@ async function dataSourcesSearch(appId: string, a: Args) {
     ...triState(a, 'rerank', 'rerank'),
     ...triState(a, 'hybrid', 'hybrid'),
   };
+
+  const mode = a.str('mode');
+  if (mode && !['hybrid', 'semantic', 'lexical'].includes(mode)) {
+    fatal(`--mode must be "hybrid", "semantic" or "lexical" (got "${mode}").`);
+  }
+  const filter = filterFromFlags(a);
+  const maxPerDocument = a.num('max-per-document');
+
   out(
     await api('POST', `${base(appId)}/search`, {
       slug: sourceOf(a),
       query: a.req('query'),
       ...(topK ? { topK } : {}),
+      ...(mode ? { mode } : {}),
+      ...(filter ? { filter } : {}),
+      ...(maxPerDocument !== undefined ? { maxPerDocument } : {}),
+      ...(a.bool('highlight') ? { highlight: true } : {}),
       ...(a.bool('candidate') ? { candidate: true } : {}),
       ...(Object.keys(retrieval).length ? { retrieval } : {}),
     }),
   );
+}
+
+/**
+ * Assemble the search filter from its flags.
+ *
+ * `--filter` covers the common case as `key=value` metadata equality and the
+ * full grammar as a JSON object (`{"pages":{"max":3},...}`) — the same shape
+ * the SDK's `SearchFilter` takes. `--phrase`/`--contains` are spelled out as
+ * their own flags because required-words is the thing a person actually
+ * reaches for at a shell.
+ */
+function filterFromFlags(a: Args): Record<string, unknown> | undefined {
+  let filter: Record<string, unknown> = {};
+
+  const raw = a.str('filter');
+  if (raw !== undefined) {
+    if (raw.trimStart().startsWith('{')) {
+      try {
+        filter = JSON.parse(raw);
+      } catch (err: any) {
+        fatal(`--filter is not valid JSON: ${err.message}`);
+      }
+    } else {
+      const metadata = parseKeyValuePairs(raw, 'filter');
+      if (metadata) {
+        filter.metadata = metadata;
+      }
+    }
+  }
+
+  const phrase = a.str('phrase');
+  if (phrase) {
+    filter.phrase = phrase;
+  }
+  const contains = a.str('contains');
+  if (contains) {
+    filter.contains = contains;
+  }
+
+  return Object.keys(filter).length ? filter : undefined;
+}
+
+/**
+ * `key=value[,key=value…]` into an object, with scalar coercion.
+ *
+ * Coercion matters for round-tripping: a document tagged `year: 2026` through
+ * the SDK stores a number, and a filter comparing against the string "2026"
+ * would silently never match. `true`/`false` and numeric literals therefore
+ * become their typed values; quote nothing — there is no string syntax, so a
+ * value that must stay the string "2026" needs the JSON form of `--filter`.
+ */
+function parseKeyValuePairs(
+  raw: string | undefined,
+  flag: string,
+): Record<string, string | number | boolean> | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const pairs: Record<string, string | number | boolean> = {};
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) {
+      fatal(`--${flag} entries must be key=value (got "${trimmed}").`);
+    }
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    pairs[key] =
+      value === 'true'
+        ? true
+        : value === 'false'
+          ? false
+          : value !== '' && !Number.isNaN(Number(value))
+            ? Number(value)
+            : value;
+  }
+  if (Object.keys(pairs).length === 0) {
+    fatal(`--${flag} needs at least one key=value pair.`);
+  }
+  return pairs;
 }
 
 /**
@@ -391,6 +499,14 @@ function configFromFlags(a: Args): { ingest: any; retrieval: any } {
   }
 
   const contextual = triState(a, 'contextual', 'enabled');
+  // `describe` and `modelId` are two facets of one `images` object, same shape
+  // as `rerank` below. These flags were accepted and silently DROPPED for a
+  // while — the exact failure mode the strict arg parser exists to prevent,
+  // reintroduced one layer up.
+  const images = {
+    ...triState(a, 'describe-images', 'describe'),
+    ...(a.str('image-model') ? { modelId: a.str('image-model') } : {}),
+  };
   const embeddingModel = a.str('embedding-model');
   const extractionModel = a.str('extraction-model');
 
@@ -400,6 +516,9 @@ function configFromFlags(a: Args): { ingest: any; retrieval: any } {
   }
   if (Object.keys(contextual).length) {
     ingest.contextual = contextual;
+  }
+  if (Object.keys(images).length) {
+    ingest.images = images;
   }
   if (embeddingModel) {
     ingest.embedding = { modelId: embeddingModel };
@@ -572,16 +691,34 @@ Subcommands:
   delete       Delete a whole data source — documents, vectors and versions
 
 Usage:
-  mindstudio-prod datasources add [--source <slug>] [--wait] [--timeout <sec>] <file...>
+  mindstudio-prod datasources add [--source <slug>] [--metadata <k=v,...>] [--wait] [--timeout <sec>] <file...>
   mindstudio-prod datasources list
   mindstudio-prod datasources status [--source <slug>]
   mindstudio-prod datasources rm [--source <slug>] --document <id>
-  mindstudio-prod datasources search [--source <slug>] [--top-k <n>] [--candidate] <query>
+  mindstudio-prod datasources search [--source <slug>] [search options] <query>
   mindstudio-prod datasources config [--source <slug>] [settings...]
   mindstudio-prod datasources revectorize [--source <slug>] [settings...] [--wait]
   mindstudio-prod datasources promote [--source <slug>] [--force]
   mindstudio-prod datasources drop [--source <slug>] [--version <n>]
   mindstudio-prod datasources delete --source <slug>
+
+Search options:
+  --top-k <n>              Results to return (default 5, max 50)
+  --mode <m>               hybrid (default) | semantic | lexical. Lexical is
+                           keyword-only — no query embedding, fastest, right
+                           for identifiers like error codes or SKUs.
+  --filter <k=v,...>       Match document metadata set at add time. Values
+                           coerce: true/false and numbers become typed.
+                           Pass a JSON object for the full grammar:
+                           metadata, filename, documentIds, pages, contains,
+                           phrase — e.g. --filter '{"pages":{"max":3}}'
+  --phrase <text>          Chunk must contain this exact word sequence
+  --contains <words>       Chunk must contain ALL these words, any order
+  --max-per-document <n>   Cap hits per document; backfills from others
+  --rerank <true|false>    Override reranking for this query
+  --hybrid <true|false>    Same as --mode semantic when false
+  --highlight              Include per-hit match offsets
+  --candidate              Search the candidate version instead of the live one
 
 Tuning a corpus:
   There is no single chunking or retrieval setup that suits every dataset, so
@@ -617,7 +754,9 @@ Notes:
   --source defaults to "${DEFAULT_SOURCE}" and is created on first use.
   --wait blocks until processing finishes, so you can search immediately after.
     Exits ${EXIT.buildFailed} if a document failed, ${EXIT.timeout} on timeout.
-  Re-adding an unchanged file is free: no upload, no re-embedding.
+  Re-adding an unchanged file is free: no upload, no re-embedding. Re-adding
+    with a different --metadata updates the tags in place, also free.
+  --metadata tags documents for search-time filtering (scalars, ≤16 keys).
   delete requires an explicit --source (no default) and refuses while documents
     are still ingesting. Extraction caches survive deletion, so re-ingesting
     the same files elsewhere costs no re-extraction.
@@ -626,7 +765,10 @@ Notes:
 
 Examples:
   mindstudio-prod datasources add --source policies --wait docs/*.pdf
+  mindstudio-prod datasources add --source policies --metadata department=legal,year=2026 contract.pdf
   mindstudio-prod datasources search --source policies "what are the payment terms?"
+  mindstudio-prod datasources search --source policies --filter department=legal --phrase "notice period" "termination"
+  mindstudio-prod datasources search --source policies --mode lexical "ERR-7741X"
 
   # Try smaller chunks without touching what's live, then compare and cut over
   mindstudio-prod datasources revectorize --source policies --max-chars 900 --wait

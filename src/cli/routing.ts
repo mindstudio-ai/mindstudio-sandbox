@@ -29,6 +29,7 @@ Commands:
   prerender   Manage + verify prerendered snapshots served to bots/crawlers
   files       Upload + manage files on the app's CDN (build-time)
   datasources Build and query searchable document corpora (RAG)
+  voice       Phone numbers, voice call log + transcripts, voice policy settings
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -55,6 +56,7 @@ const GROUPS = [
   'prerender',
   'files',
   'datasources',
+  'voice',
 ] as const;
 
 type Route = { key: CommandKey; argv: string[] };
