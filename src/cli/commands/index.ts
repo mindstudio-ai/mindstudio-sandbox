@@ -37,6 +37,7 @@ import {
   dataSourcesHelp,
   dataSourcesSpecs,
 } from './dataSources.js';
+import { voiceHandlers, voiceHelp, voiceSpecs } from './voice.js';
 
 export const SPECS = {
   ...requestsSpecs,
@@ -54,6 +55,7 @@ export const SPECS = {
   ...prerenderSpecs,
   ...filesSpecs,
   ...dataSourcesSpecs,
+  ...voiceSpecs,
 };
 
 export type CommandKey = keyof typeof SPECS;
@@ -74,6 +76,7 @@ export const HANDLERS = {
   ...prerenderHandlers,
   ...filesHandlers,
   ...dataSourcesHandlers,
+  ...voiceHandlers,
 };
 
 /**
@@ -101,4 +104,5 @@ export const GROUP_HELP: Record<string, string> = {
   prerender: prerenderHelp,
   files: filesHelp,
   datasources: dataSourcesHelp,
+  voice: voiceHelp,
 };
