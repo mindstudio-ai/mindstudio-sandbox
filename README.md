@@ -376,7 +376,7 @@ Streaming events are broadcast in real-time while a message command is in flight
 | `agentModelsChanged` | `{ models?, modelSurfaces?, allowedModelsByType? }` | Model picks or the registry changed. Same payload shape as `agentSessionRestored` |
 | `agentActivityChanged` | `{ busy, fileOps }` | Agent activity tracking. `busy` is derived: a turn is running OR work is queued OR a compaction is in flight (remy queues messages behind a compaction exactly like a running turn). `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
 | `agentCompactionStarted` | `{ blocking, requestId? }` | A conversation compaction began |
-| `agentCompactionComplete` | `{ error?, summaries?, requestId? }` | Compaction finished. On success `summaries` carries `[{ name, text, recent?, startedAt }]` for the frontend's checkpoint card; the spliced checkpoint message itself arrives on the next full history load |
+| `agentCompactionComplete` | `{ error?, requestId? }` | Compaction finished. Every compaction also renders as a normal `compactConversation` tool call (user/gate compactions get a remy-synthesized tool block driven by standard `agentToolStart`/`agentToolBackgroundComplete` events; the summary is the block's `backgroundResult`) |
 
 ### Processes
 
