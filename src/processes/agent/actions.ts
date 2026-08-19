@@ -257,3 +257,32 @@ export function createAgentActions(
     },
   };
 }
+
+/**
+ * Quiesce the agent before a pre-destroy flush: drop queued user messages
+ * FIRST (a plain cancel preserves them, and they'd immediately start the next
+ * turn — remy's handleCancel removes only chain/background items), then abort
+ * the in-flight turn, then await idle. Best-effort and bounded — returns
+ * whether the agent actually went idle. Safe when the agent isn't running
+ * (sendAgentCommand resolves {success:false} immediately) and when remy is
+ * wedged (the short ACK timeouts resolve rather than reject, so two dead
+ * round-trips can't eat the whole budget).
+ */
+export async function quiesceAgent(
+  pm: ProcessManager,
+  budgetMs: number,
+): Promise<boolean> {
+  if (pm.getState('agent') !== 'running') {
+    return true; // nothing to quiesce
+  }
+  const deadline = Date.now() + budgetMs;
+  await sendAgentCommand(pm, 'cancelQueued', {}, 2_500).response;
+  await sendAgentCommand(pm, 'cancel', {}, 2_500).response;
+  while (Date.now() < deadline) {
+    if (!getAgentActivity().busy) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return !getAgentActivity().busy;
+}

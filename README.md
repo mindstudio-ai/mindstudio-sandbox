@@ -374,7 +374,9 @@ Streaming events are broadcast in real-time while a message command is in flight
 | `agentStopped` | | Agent process exited |
 | `agentSessionRestored` | `{ messageCount?, models?, modelSurfaces?, allowedModelsByType? }` | Previous session restored on startup. Carries the model registry — see [Model selection](#model-selection) |
 | `agentModelsChanged` | `{ models?, modelSurfaces?, allowedModelsByType? }` | Model picks or the registry changed. Same payload shape as `agentSessionRestored` |
-| `agentActivityChanged` | `{ busy, fileOps }` | Agent file operation tracking. `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
+| `agentActivityChanged` | `{ busy, fileOps }` | Agent activity tracking. `busy` is derived: a turn is running OR work is queued OR a compaction is in flight (remy queues messages behind a compaction exactly like a running turn). `fileOps`: `[{ toolCallId, path, action }]` where `action` is `reading`, `writing`, or `editing` |
+| `agentCompactionStarted` | `{ blocking, requestId? }` | A conversation compaction began |
+| `agentCompactionComplete` | `{ error?, summaries?, requestId? }` | Compaction finished. On success `summaries` carries `[{ name, text, recent?, startedAt }]` for the frontend's checkpoint card; the spliced checkpoint message itself arrives on the next full history load |
 
 ### Processes
 

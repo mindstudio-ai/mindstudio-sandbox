@@ -84,7 +84,10 @@ export class DraftSnapshotManager {
    * clean. Anchors the SNAPSHOT_MAX_AGE_MS clamp so a steady change stream
    * can't defer the snapshot indefinitely. */
   private debounceSinceMs: number | null = null;
-  private inProgress = false;
+  /** In-flight snapshot run, or null. Same single-flight drop semantics as a
+   * boolean flag for snapshot() callers, but awaitable — flushNow() needs to
+   * ride out a run that staged pre-quiesce state and then run one more. */
+  private inFlight: Promise<boolean> | null = null;
   private lastTreeSha: string | null = null;
   private lastAttemptAt: number | null = null;
   private lastSuccessAt: number | null = null;
@@ -186,7 +189,7 @@ export class DraftSnapshotManager {
   /** Return snapshot health info for the /status endpoint. */
   getSnapshotStatus() {
     return {
-      inProgress: this.inProgress,
+      inProgress: this.inFlight !== null,
       lastAttemptAt: this.lastAttemptAt,
       lastSuccessAt: this.lastSuccessAt,
       lastDurationMs: this.lastDurationMs,
@@ -199,17 +202,38 @@ export class DraftSnapshotManager {
 
   /** Take a snapshot: commit workspace to _draft and force-push. */
   async snapshot(): Promise<boolean> {
-    if (this.inProgress) {
+    if (this.inFlight) {
       log.debug('Snapshot already in progress, skipping');
       return false;
     }
-    // Temporary: trace who is calling snapshot
-    this.inProgress = true;
-    try {
-      return await this.doSnapshot();
-    } finally {
-      this.inProgress = false;
+    this.inFlight = this.doSnapshot().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  /**
+   * Pre-destroy flush: guarantee one full snapshot runs to completion from
+   * this moment. Unlike snapshot() (which drops when a run is in flight — and
+   * a run that started earlier may have staged state from before the caller's
+   * quiesce), this awaits any in-flight run and then runs one more. Absorbs a
+   * pending debounce and clears the push backoff — a local-only commit is
+   * worthless when the container is about to be destroyed, so the push must
+   * be attempted now.
+   */
+  async flushNow(): Promise<boolean> {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
     }
+    this.debounceSinceMs = null;
+    if (this.inFlight) {
+      await this.inFlight.catch(() => false);
+    }
+    this.pushBackoffUntil = null;
+    // Coalesce with a racing starter: a run that began during our await
+    // started after the caller's quiesce, so its state is current — ride it.
+    return this.inFlight ?? this.snapshot();
   }
 
   /**

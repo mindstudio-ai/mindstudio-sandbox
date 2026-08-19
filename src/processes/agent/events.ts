@@ -261,7 +261,21 @@ export type AgentDataEvent =
       /** True if the user's next turn is paused until compaction finishes. */
       blocking: boolean;
     }
-  | { event: 'compaction_complete'; requestId?: string; error?: string };
+  | {
+      event: 'compaction_complete';
+      requestId?: string;
+      error?: string;
+      /** Generated summaries — present on success when anything was
+       * summarized. Rendered by the frontend as the checkpoint card; the
+       * spliced checkpoint message itself only arrives on the next full
+       * history load. */
+      summaries?: Array<{
+        name: string;
+        text: string;
+        recent?: string;
+        startedAt: number;
+      }>;
+    };
 
 /**
  * Terminal event — exactly one per command. When remy merges contiguous
