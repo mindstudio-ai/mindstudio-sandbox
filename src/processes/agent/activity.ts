@@ -67,17 +67,26 @@ const serverHandledToolIds = new Set<string>();
 // The current pending-queue snapshot, reconciled from remy's queue_changed
 // events. Drives the queue dimension of derived busy (see getAgentActivity).
 let currentQueue: QueuedMessage[] = [];
+// Compaction-in-flight, tracked from remy's compaction_started/complete
+// events (cleared on ready/session_restored — compaction never survives a
+// remy restart). Drives the third dimension of derived busy: messages sent
+// during a compaction queue remy-side, so the sandbox must report busy for
+// agentMessage to return {queued:true} and the FE to suppress its optimistic
+// bubble.
+let compacting = false;
 
 // ---------------------------------------------------------------------------
 // Activity
 // ---------------------------------------------------------------------------
 
 export function getAgentActivity(): AgentActivity {
-  // Busy is derived: a foreground turn is running OR work is queued. Keeping it
-  // true while the queue is non-empty stops the FE (and the HMR flush wired to
-  // this signal) from going idle between chained/queued turns.
+  // Busy is derived: a foreground turn is running OR work is queued OR a
+  // compaction is in flight. Keeping it true while the queue is non-empty
+  // stops the FE (and the HMR flush wired to this signal) from going idle
+  // between chained/queued turns; compaction counts because remy queues
+  // messages behind it exactly like a running turn.
   return {
-    busy: activity.busy || currentQueue.length > 0,
+    busy: activity.busy || currentQueue.length > 0 || compacting,
     fileOps: [...activity.fileOps],
   };
 }
@@ -107,6 +116,22 @@ export function setQueuedMessages(
 ): void {
   const wasBusy = getAgentActivity().busy;
   currentQueue = snapshot;
+  if (getAgentActivity().busy !== wasBusy) {
+    broadcastActivity(broadcast);
+  }
+}
+
+/**
+ * Flip the compaction-in-flight flag. Broadcasts agentActivityChanged only
+ * when the derived busy state actually changes (same pattern as
+ * setQueuedMessages).
+ */
+export function setCompacting(
+  value: boolean,
+  broadcast: (event: string, data: Record<string, any>) => void,
+): void {
+  const wasBusy = getAgentActivity().busy;
+  compacting = value;
   if (getAgentActivity().busy !== wasBusy) {
     broadcastActivity(broadcast);
   }

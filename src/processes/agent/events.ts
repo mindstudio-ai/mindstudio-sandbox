@@ -13,7 +13,9 @@ import { parseJsonEvent } from '../parseJsonEvent.js';
  */
 export interface QueuedMessage {
   command: {
-    action: 'message';
+    // Usually 'message'; a mid-turn /compact queues as action 'compact'
+    // with an @@automated::compact@@ display text.
+    action: string;
     text: string;
     onboardingState?: string;
     requestId?: string;

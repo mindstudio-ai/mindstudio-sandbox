@@ -14,6 +14,7 @@ import {
   broadcastActivity,
   getQueuedMessages,
   setQueuedMessages,
+  setCompacting,
   startTurn,
   getActiveTurnId,
   endTurn,
@@ -296,6 +297,9 @@ function handleStdout(
       const { event: _evt, ...data } = event;
       cb.broadcast('agentSessionRestored', data);
     }
+    // Compaction never survives a remy restart — clear the flag so busy
+    // can't latch on a compaction that died with the old process.
+    setCompacting(false, cb.broadcast);
     void seedQueueAndMaybeResume(pm, cb.broadcast);
     return;
   }
@@ -492,10 +496,20 @@ function handleStdout(
     return; // internal, don't broadcast
   }
 
-  // compaction_started / compaction_complete fall through to the generic
-  // EVENT_MAP broadcast at the bottom of this function. The gate path
-  // emits these standalone (no wrapping `completed` event), so we forward
-  // each one verbatim to the frontend.
+  // compaction_started / compaction_complete: track the in-flight flag (it
+  // drives derived busy — remy queues messages behind a compaction exactly
+  // like a running turn, so agentMessage must return {queued:true} and the
+  // FE must suppress its optimistic bubble), then fall through to the
+  // generic EVENT_MAP broadcast at the bottom of this function. The gate
+  // path emits these standalone (no wrapping `completed` event), so each is
+  // forwarded verbatim to the frontend (compaction_complete may carry
+  // `summaries` for the checkpoint card).
+  if (event.event === 'compaction_started') {
+    setCompacting(true, cb.broadcast);
+  }
+  if (event.event === 'compaction_complete') {
+    setCompacting(false, cb.broadcast);
+  }
 
   // --- editsFinished tool — internal, not broadcast ---
 

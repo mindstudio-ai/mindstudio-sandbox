@@ -5,6 +5,7 @@ import type httpProxy from 'http-proxy';
 import { ctx } from './context.js';
 import { getVersions } from './versionCache.js';
 import { getAgentActivity } from '../processes/agent/activity.js';
+import { quiesceAgent } from '../processes/agent/actions.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 
@@ -130,6 +131,35 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
+    // Pre-destroy flush: quiesce the agent and push a final _draft snapshot.
+    // Called by the platform right before it stops the sandbox (Vercel's
+    // stop is an abrupt kill — SIGTERM never arrives). Must sit ABOVE the
+    // proxy fallthrough or it would route to the dev server.
+    if (req.url === '/flush' || req.url?.startsWith('/flush?')) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, {
+          'Content-Type': 'application/json',
+          ...CORS_HEADERS,
+        });
+        res.end(JSON.stringify({ error: 'POST required' }));
+        return;
+      }
+      // Single-flight: concurrent flush requests share one run.
+      const run =
+        flushInFlight ??
+        (flushInFlight = runFlush().finally(() => {
+          flushInFlight = null;
+        }));
+      run.then((result) => {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          ...CORS_HEADERS,
+        });
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
     const proxy = getProxy();
     if (!proxy) {
       res.writeHead(503, { 'Content-Type': 'text/html' });
@@ -144,6 +174,58 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       }
     });
   };
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Pre-destroy flush
+//////////////////////////////////////////////////////////////////////////////
+
+// Budgets sum to ~18s worst case (quiesce + settle + snapshot), comfortably
+// inside the platform's 20s client timeout — the route always responds.
+const FLUSH_QUIESCE_BUDGET_MS = 8_000;
+// remy emits its cancel terminal BEFORE the (sync) session-file write — give
+// the write a beat to land once the agent reports idle.
+const FLUSH_SETTLE_MS = 750;
+const FLUSH_SNAPSHOT_BUDGET_MS = 9_000;
+
+interface FlushResult {
+  flushed: boolean;
+  quiesced: boolean;
+  durationMs: number;
+  reason?: string;
+}
+
+let flushInFlight: Promise<FlushResult> | null = null;
+
+async function runFlush(): Promise<FlushResult> {
+  const start = Date.now();
+  // Only flush a fully-booted sandbox. 'bootstrapping': the restore may not
+  // have run yet, so a snapshot could push scaffold/partial state over the
+  // real draft. 'error': the restore was unresolvable — pushing would
+  // overwrite good work.
+  if (ctx.status !== 'ready' || !ctx.snapshotManager) {
+    return {
+      flushed: false,
+      quiesced: false,
+      durationMs: Date.now() - start,
+      reason: `not_ready (${ctx.status})`,
+    };
+  }
+  const quiesced = ctx.processManager
+    ? await quiesceAgent(ctx.processManager, FLUSH_QUIESCE_BUDGET_MS)
+    : true;
+  if (quiesced) {
+    await new Promise((r) => setTimeout(r, FLUSH_SETTLE_MS));
+  }
+  // Bounded: respond even if a slow git push overruns — the snapshot keeps
+  // running in the background and may still land before the container dies.
+  const flushed = await Promise.race([
+    ctx.snapshotManager.flushNow().catch(() => false),
+    new Promise<boolean>((r) =>
+      setTimeout(() => r(false), FLUSH_SNAPSHOT_BUDGET_MS),
+    ),
+  ]);
+  return { flushed, quiesced, durationMs: Date.now() - start };
 }
 
 function redactCommand(command: string): string {
