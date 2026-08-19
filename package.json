@@ -17,7 +17,7 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@mindstudio-ai/agent": "^0.1.91",
+    "@mindstudio-ai/agent": "^0.1.92",
     "chokidar": "^5.0.0",
     "http-proxy": "^1.18.1",
     "json5": "^2.2.3",
