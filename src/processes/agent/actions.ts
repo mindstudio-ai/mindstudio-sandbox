@@ -152,6 +152,25 @@ export function createAgentActions(
       );
       return await response;
     },
+    // Promote a queued user message to ASAP delivery (remy injects it into
+    // the running turn at its next tool boundary) or demote it back to
+    // after-turn. `id` is the queued item's command.requestId. Only plain
+    // user messages qualify — remy rejects automated/chain/background items
+    // (and items already consumed) with success:false. The updated snapshot
+    // arrives via agentQueueChanged.
+    agentSetQueuedDelivery: async (p) => {
+      const { id, delivery } = p as {
+        id: string;
+        delivery: 'asap' | 'afterTurn';
+      };
+      const { response } = sendAgentCommand(
+        pm,
+        'setQueuedDelivery',
+        { id, delivery },
+        5_000,
+      );
+      return await response;
+    },
     // Paginated history fetch — frontend uses this for scroll-up to load
     // older messages without reconnecting. `before` and `limit` map to
     // remy's `get_history` pagination contract. The initial page is

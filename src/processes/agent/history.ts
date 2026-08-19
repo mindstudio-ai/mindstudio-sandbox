@@ -44,6 +44,16 @@ export function transformHistory(
     }
 
     if (m.role === 'user') {
+      // Hidden passive background sweeps are internal plumbing — never shown.
+      // Targeted on the background_results sentinel: hidden user messages in
+      // general still pass through (legacy runCommand pills render off them).
+      if (
+        m.hidden &&
+        typeof m.content === 'string' &&
+        m.content.startsWith('@@automated::background_results@@')
+      ) {
+        continue;
+      }
       const userMsg: Record<string, unknown> = {
         role: 'user',
         content: m.content,

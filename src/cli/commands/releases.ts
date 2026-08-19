@@ -46,6 +46,26 @@ function gitHeadSha(): string | null {
     return null;
   }
 }
+/**
+ * Best-effort expansion of an abbreviated SHA to the full 40-hex via the
+ * workspace repo. Falls back to the input untouched — the object may live
+ * only on the server (e.g. a SHA copied from another clone's push output),
+ * and the API accepts short SHAs by prefix, so this is an optimization for
+ * exactness, not a requirement.
+ */
+function expandCommitSha(sha: string): string {
+  if (sha.length === 40) {
+    return sha;
+  }
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', `${sha}^{commit}`], {
+      cwd: WORKSPACE_DIR,
+      encoding: 'utf-8',
+    }).trim();
+  } catch {
+    return sha;
+  }
+}
 /** Print the final wait result and set the process exit code (no truncation). */
 function finishWait(data: unknown, code: number): void {
   out(data);
@@ -169,12 +189,20 @@ async function releasesStatus(appId: string, a: Args) {
  * each get their own exit code.
  */
 async function releasesWait(appId: string, a: Args) {
-  const commit = a.str('commit') ?? gitHeadSha();
-  if (!commit) {
+  const rawCommit = a.str('commit') ?? gitHeadSha();
+  if (!rawCommit) {
     fatal(
       'Could not determine commit SHA — pass --commit <sha> or run inside the app git repo',
     );
   }
+  // Fail fast on a non-SHA instead of burning the 30s resolve window on a
+  // value the API would never match (it 400s on non-hex anyway).
+  if (!/^[0-9a-f]{7,40}$/i.test(rawCommit)) {
+    fatal(
+      `--commit must be a 7-40 character hex commit SHA (got ${JSON.stringify(rawCommit)})`,
+    );
+  }
+  const commit = expandCommitSha(rawCommit);
   const timeoutMs = (a.num('timeout') ?? 300) * 1000;
   const POLL_MS = 3000;
   // A push returns before the receive-pack hook necessarily finishes inserting
@@ -202,7 +230,7 @@ async function releasesWait(appId: string, a: Args) {
         {
           status: 'not_found',
           commitSha: commit,
-          error: `No release created for commit ${shortSha} within ${RESOLVE_GRACE_MS / 1000}s`,
+          error: `No release created for commit ${commit} within ${RESOLVE_GRACE_MS / 1000}s — either the push hasn't registered yet or this SHA never produced a build`,
         },
         EXIT.notFound,
       );
@@ -276,7 +304,8 @@ Usage:
 
 'releases wait' is the "publish and wait until live" primitive. After a
 'git push', run it to block until the pushed commit's release is terminal.
---commit defaults to the workspace HEAD. It prints one JSON object and sets
+--commit defaults to the workspace HEAD; abbreviated SHAs (7+ hex chars,
+e.g. from push output) are accepted. It prints one JSON object and sets
 the exit code so you can branch on $? without parsing:
   0  live (deployed)        2  timed out (still building)   4  superseded
   1  build failed           3  no release found for commit
