@@ -21,6 +21,11 @@ export interface QueuedMessage {
   };
   source: 'user' | 'chain' | 'background';
   enqueuedAt: number;
+  /** Delivery semantics. 'asap' — promoted via agentSetQueuedDelivery — is
+   * injected into the running turn at its next tool boundary; 'afterTurn'
+   * (default, also when absent) waits for the turn to end. Ignored while
+   * remy is idle (normal FIFO drain). Only plain user items are promotable. */
+  delivery?: 'asap' | 'afterTurn';
 }
 
 /**
@@ -128,8 +133,13 @@ export interface AgentUserMessageEvent {
   attachments?: unknown[];
   /** True when the message was delivered from remy's queue rather than sent
    * while the agent was idle. The frontend renders queued echoes (idle sends
-   * are rendered optimistically at send time instead). */
+   * are rendered optimistically at send time instead). ASAP-promoted messages
+   * injected mid-turn also arrive with `queued: true`. */
   queued?: boolean;
+  /** True for internal entries the frontend must not render — e.g. the
+   * hidden background_results sweep that delivers passive background tool
+   * outcomes (specSync) at the start of a turn. */
+  hidden?: boolean;
 }
 
 /** Streaming events during a command — carry requestId. */
