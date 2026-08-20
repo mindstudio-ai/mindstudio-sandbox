@@ -232,7 +232,9 @@ export class ProcessRegistry {
         return;
       }
       // Read just the tail, align to the next newline so we don't start
-      // mid-record, and atomically replace the file.
+      // mid-record, and atomically replace the file (tmp + rename — a plain
+      // writeFileSync would let a concurrent /logs read observe a truncated
+      // file).
       const fd = fs.openSync(fullPath, 'r');
       try {
         const buf = Buffer.alloc(ROTATION_TAIL_SIZE);
@@ -241,7 +243,9 @@ export class ProcessRegistry {
         const nlIdx = buf.indexOf(0x0a);
         const tail =
           nlIdx >= 0 && nlIdx + 1 < buf.length ? buf.subarray(nlIdx + 1) : buf;
-        fs.writeFileSync(fullPath, tail);
+        const tmp = `${fullPath}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, tail);
+        fs.renameSync(tmp, fullPath);
       } finally {
         fs.closeSync(fd);
       }

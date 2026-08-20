@@ -717,7 +717,7 @@ Search options:
   --max-per-document <n>   Cap hits per document; backfills from others
   --rerank <true|false>    Override reranking for this query
   --hybrid <true|false>    Same as --mode semantic when false
-  --highlight              Include per-hit match offsets
+  --highlight              Offsets of the query's most distinctive terms per hit
   --candidate              Search the candidate version instead of the live one
 
 Tuning a corpus:
