@@ -118,8 +118,14 @@ export function setupFileWatcher(
       if (changeType === 'deleted') {
         broadcast('agentStatsChanged', { stats: null });
       } else {
+        // readAgentStats swallows read errors and resolves null — don't
+        // broadcast that as an affirmative "no stats"; only a delete clears.
         readAgentStats(config.workspaceDir)
-          .then((stats) => broadcast('agentStatsChanged', { stats }))
+          .then((stats) => {
+            if (stats) {
+              broadcast('agentStatsChanged', { stats });
+            }
+          })
           .catch(() => {});
       }
     }
@@ -130,8 +136,15 @@ export function setupFileWatcher(
       if (changeType === 'deleted') {
         broadcast('appBrandChanged', { brand: null });
       } else {
+        // Same as stats: readAppBrand resolves null on any read error, and
+        // the brand is rewritten rarely — a null broadcast here would strip
+        // the UI's brand until refresh. Only a delete clears.
         readAppBrand(config.workspaceDir)
-          .then((brand) => broadcast('appBrandChanged', { brand }))
+          .then((brand) => {
+            if (brand) {
+              broadcast('appBrandChanged', { brand });
+            }
+          })
           .catch(() => {});
       }
     }
