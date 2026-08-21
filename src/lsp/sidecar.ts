@@ -237,6 +237,30 @@ export class LspSidecar {
                   )
                 : { url: '', width: 0, height: 0, duration: 0 };
               break;
+            case '/render-html':
+              // Render an agent-authored HTML document in a fresh browser tab
+              // and capture it as a PNG at exact dimensions (deterministic
+              // brand graphics: share cards, wordmarks, flat icon tiles).
+              // Viewport-class timeout — no navigation, no pre-roll.
+              result = this.pm
+                ? await sendTunnelCommand(
+                    this.pm,
+                    'renderHtml',
+                    {
+                      ...(params.html ? { html: params.html } : {}),
+                      ...(params.width != null ? { width: params.width } : {}),
+                      ...(params.height != null
+                        ? { height: params.height }
+                        : {}),
+                      ...(params.transparent != null
+                        ? { transparent: params.transparent }
+                        : {}),
+                      ...(params.scale != null ? { scale: params.scale } : {}),
+                    },
+                    SCREENSHOT_VIEWPORT_TIMEOUT_MS,
+                  )
+                : { success: false, error: 'tunnel not available' };
+              break;
             case '/set-viewport':
               // Reuse the `browser` command with a single setViewport step so
               // there's no separate tunnel handler. `mode` is 'desktop' |
