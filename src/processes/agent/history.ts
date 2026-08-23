@@ -16,7 +16,7 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *   1. Drop user tool-result messages (results are already on the tool blocks)
  *   2. Pass through hidden user messages (@@automated prefixed — frontend matches by sentinel)
  *   3. Drop hidden assistant messages (internal prompts)
- *   4. Filter out server-handled tools (editsFinished, setProjectOnboardingState, etc.)
+ *   4. Filter out server-handled tools (editsFinished, markBuildComplete, etc.)
  *   5. Recurse into subAgentMessages on tool blocks
  *   6. Preserve per-message model attribution (`model`, `modelOverride`)
  *
