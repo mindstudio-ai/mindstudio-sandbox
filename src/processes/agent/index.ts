@@ -133,6 +133,7 @@ export const SERVER_HANDLED_TOOLS = new Set([
 export const SERVER_VISIBLE_TOOLS = new Set([
   'runScenario',
   'runMethod',
+  'testJewel',
   'browserCommand',
   'queryDatabase',
 ]);
