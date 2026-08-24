@@ -1,5 +1,6 @@
 import { ctx } from '../context.js';
 import { createLogger } from '../../logger.js';
+import { sendCommand as sendTunnelCommand } from '../../processes/tunnel/index.js';
 import type { ActionHandler } from './index.js';
 
 const log = createLogger('handlers');
@@ -18,13 +19,35 @@ export const processHandlers: Record<string, ActionHandler> = {
     }
     log.info(`Restarting process: ${name}`);
 
+    // The methods worker is forked inside the tunnel, not a ProcessManager
+    // process — relay to the tunnel (mirrors the LSP sidecar's mapping).
+    if (name === 'methodsWorker') {
+      const result = await sendTunnelCommand(
+        ctx.processManager,
+        'restart-worker',
+        {},
+        10_000,
+      );
+      if (result.success === false) {
+        throw new Error(
+          `Failed to restart methods worker: ${result.error ?? 'unknown error'}`,
+        );
+      }
+      return {};
+    }
+
     // Treat dev server restart as an implicit mindstudio.json change —
     // file watchers don't always pick up changes reliably.
     if (name === 'devServer') {
       ctx.onFileChanged?.('mindstudio.json', 'modified');
     }
 
-    await ctx.processManager.restart(name);
+    const restarted = await ctx.processManager.restart(name);
+    if (!restarted) {
+      throw new Error(
+        `Unknown process "${name}" — known: devServer, methodsWorker`,
+      );
+    }
     return {};
   },
 };

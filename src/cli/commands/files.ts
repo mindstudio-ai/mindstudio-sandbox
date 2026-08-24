@@ -14,7 +14,7 @@ const DEFAULT_STORE = 'assets';
 export const filesSpecs = {
   'files put': {
     usage:
-      'Usage: mindstudio-prod files put [--public|--private] [--store <name>] [--key <key>] [--content-type <mime>] <file>',
+      'Usage: mindstudio-prod files put [--public|--private] [--store <name>] [--key <key>] [--content-type <mime>] [--cache-control <value>] <file>',
     positionals: [{ name: 'file', required: true }],
     flags: {
       public: { type: 'boolean' },
@@ -22,6 +22,7 @@ export const filesSpecs = {
       store: { type: 'string' },
       key: { type: 'string' },
       'content-type': { type: 'string' },
+      'cache-control': { type: 'string' },
     },
   },
   'files list': {
@@ -64,6 +65,14 @@ async function filesPut(appId: string, a: Args) {
     a.str('key') ||
     `${createHash('sha256').update(bytes).digest('hex')}${path.extname(file)}`;
   const contentType = a.str('content-type');
+  // Content-addressed keys are never reused → cache forever. A --key'd
+  // (overwritable) object falls through to the server default (public,
+  // max-age=300) unless --cache-control overrides it.
+  const cacheControl =
+    a.str('cache-control') ||
+    (!a.str('key') && access === 'public'
+      ? 'public, max-age=31536000, immutable'
+      : undefined);
 
   out(
     await api('POST', `/_internal/v2/apps/${appId}/file-storage`, {
@@ -71,6 +80,7 @@ async function filesPut(appId: string, a: Args) {
       access,
       key,
       ...(contentType ? { contentType } : {}),
+      ...(cacheControl ? { cacheControl } : {}),
       body: bytes.toString('base64'),
     }),
   );
@@ -112,7 +122,7 @@ Subcommands:
   rm     Delete an object from a store
 
 Usage:
-  mindstudio-prod files put [--public|--private] [--store <name>] [--key <key>] <file>
+  mindstudio-prod files put [--public|--private] [--store <name>] [--key <key>] [--cache-control <value>] <file>
   mindstudio-prod files list
   mindstudio-prod files rm --store <name> --key <key> [--private]
 
@@ -127,4 +137,7 @@ Notes:
   - The key defaults to a content hash (sha256) of the bytes, so re-uploading
     the same file is idempotent and its URL is safe to bake into source. Pass
     --key for a stable, overwritable name (e.g. a config JSON the frontend fetches).
+  - CDN caching follows the object's Cache-Control: content-hash keys default to
+    immutable (cache-forever); --key'd objects default to public, max-age=300 so
+    an overwrite propagates within ~5 minutes. Pass --cache-control to override.
   - Public image URLs accept transform params, e.g. ?w=400&fit=cover.`;
