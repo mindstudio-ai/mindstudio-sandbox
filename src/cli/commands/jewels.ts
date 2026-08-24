@@ -2,6 +2,7 @@ import { WINDOW, type Args, type CommandSpec } from '../args.js';
 import { api, apiRaw, seg } from '../api.js';
 import { fatal } from '../errors.js';
 import { out } from '../output.js';
+import { sleep } from '../sleep.js';
 import type { Handler } from '../types.js';
 
 /**
@@ -79,6 +80,24 @@ export const jewelsSpecs = {
       file: { type: 'string', param: 'file' },
       ...WINDOW,
     },
+  },
+  'jewels train': {
+    usage: 'Usage: mindstudio-prod jewels train <methodId> [--wait]',
+    positionals: [{ name: 'methodId', required: true }],
+    flags: {
+      wait: { type: 'boolean' },
+    },
+  },
+  'jewels runs': {
+    usage: 'Usage: mindstudio-prod jewels runs [--method-id <id>] [--limit 20]',
+    flags: {
+      'method-id': { type: 'string', param: 'methodId' },
+      limit: { type: 'number', param: 'limit', min: 0 },
+    },
+  },
+  'jewels run': {
+    usage: 'Usage: mindstudio-prod jewels run <runId>',
+    positionals: [{ name: 'runId', required: true }],
   },
 } satisfies Record<string, CommandSpec>;
 
@@ -170,6 +189,61 @@ async function jewelsDryrun(appId: string, a: Args) {
   );
 }
 
+const TRAIN_POLL_MS = 15_000;
+const TRAIN_WAIT_LIMIT_MS = 45 * 60_000;
+
+async function jewelsTrain(appId: string, a: Args) {
+  const started = await api(
+    'POST',
+    `/_internal/v2/apps/${appId}/jewels/train`,
+    { methodId: a.req('methodId') },
+    JEWEL_RUN_TIMEOUT_MS,
+  );
+  if (!a.bool('wait')) {
+    out(started);
+    return;
+  }
+  // Dataset report first so the wait has context, then poll to terminal.
+  out({ runId: started.run?.id, summary: started.summary });
+  const runId = started.run?.id;
+  const deadline = Date.now() + TRAIN_WAIT_LIMIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(TRAIN_POLL_MS);
+    const { run } = await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(runId)}`,
+    );
+    if (run.status === 'complete' || run.status === 'failed') {
+      out(run);
+      if (run.status === 'failed') {
+        process.exitCode = 1;
+      }
+      return;
+    }
+  }
+  fatal(
+    `Timed out waiting for run ${runId} (still in flight; check 'jewels run ${runId}').`,
+  );
+}
+
+async function jewelsRuns(appId: string, a: Args) {
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/jewels/training-runs${a.query()}`,
+    ),
+  );
+}
+
+async function jewelsRunGet(appId: string, a: Args) {
+  out(
+    await api(
+      'GET',
+      `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(a.req('runId'))}`,
+    ),
+  );
+}
+
 export const jewelsHandlers = {
   'jewels overview': jewelsOverview,
   'jewels pairs': jewelsPairs,
@@ -179,6 +253,9 @@ export const jewelsHandlers = {
   'jewels resolve': jewelsResolve,
   'jewels dryrun': jewelsDryrun,
   'jewels export': jewelsExport,
+  'jewels train': jewelsTrain,
+  'jewels runs': jewelsRuns,
+  'jewels run': jewelsRunGet,
 } satisfies Record<keyof typeof jewelsSpecs, Handler>;
 
 export const jewelsHelp = `mindstudio-prod jewels — Monitor jewel shadowing; review + approve the proposal queue.
@@ -203,6 +280,10 @@ Subcommands:
                propose without recording or committing anything
   export       The pair ledger as training data: a dataset report (counts,
                exclusions, trace coverage), or one file streamed as JSONL
+  train        Train a private model on the method's graded pairs: exports the
+               dataset, runs LoRA fine-tuning on platform GPUs, returns an
+               adapter + a held-out agreement report
+  runs         List training runs; run <id> shows one run + its report
 
 Usage:
   mindstudio-prod jewels overview [--start <ISO date>] [--end <ISO date>]
@@ -213,6 +294,9 @@ Usage:
   mindstudio-prod jewels resolve <itemId> (--approve [--input '<json>'] | --dismiss)
   mindstudio-prod jewels dryrun <methodId> --subject '<json>'
   mindstudio-prod jewels export <methodId> [--file sft-train|sft-eval|preference|eval-disagreements]
+  mindstudio-prod jewels train <methodId> [--wait]
+  mindstudio-prod jewels runs [--method-id <id>]
+  mindstudio-prod jewels run <runId>
 
 Examples:
   mindstudio-prod jewels overview
@@ -225,6 +309,8 @@ Examples:
   mindstudio-prod jewels dryrun triage-issue --subject '{"issueId":"abc"}'
   mindstudio-prod jewels export triage-issue
   mindstudio-prod jewels export triage-issue --file sft-train > train.jsonl
+  mindstudio-prod jewels train triage-issue --wait
+  mindstudio-prod jewels run 6f1e...
 
 Notes:
   - 'resolve --approve' APPLIES the method as you (the reviewer): the proposal's
@@ -235,4 +321,10 @@ Notes:
     so it is guaranteed side-effect-free on the app database. It is the prod
     twin of the dev testJewel tool (which runs draft code against the dev DB).
   - approve/dryrun hold the request for a full jewel/method run — allow minutes.
+  - 'train' uses the method's manifest tuning dial from the LIVE release and
+    trains on graded pairs with attached traces (the dataset report names what
+    was excluded and why). The report's agreement is against the held-out
+    ledger split — real decisions the model never saw. One run per method at a
+    time. The trained model is an artifact + report for now; serving it is a
+    later phase.
   - Time window defaults to the last 30 days when --start/--end are omitted.`;
