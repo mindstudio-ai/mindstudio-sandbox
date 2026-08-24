@@ -280,13 +280,15 @@ export class ProcessManager {
     proc.child.stdin.write(safe + '\n');
   }
 
+  /** Returns false when no process is registered under `name`. */
   async restart(
     name: string,
     opts?: { onBeforeRespawn?: () => void },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const proc = this.processes.get(name);
     if (!proc) {
-      return;
+      log.warn(`restart: unknown process "${name}"`);
+      return false;
     }
 
     log.info(`Restarting "${name}"...`);
@@ -297,6 +299,7 @@ export class ProcessManager {
     opts?.onBeforeRespawn?.();
     proc.stopped = false;
     this.spawn(proc);
+    return true;
   }
 
   async stop(name: string): Promise<void> {
