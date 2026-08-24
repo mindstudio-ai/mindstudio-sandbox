@@ -20,7 +20,6 @@ export interface TunnelSessionState {
   branch: string;
   proxyPort: number | null;
   proxyUrl: string | null;
-  webInterfaceUrl: string;
 }
 
 export interface SandboxBrowserState {
@@ -194,14 +193,7 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       });
       break;
     case 'session-started': {
-      const {
-        sessionId,
-        releaseId,
-        branch,
-        proxyPort,
-        proxyUrl,
-        webInterfaceUrl,
-      } = tunnelEvent;
+      const { sessionId, releaseId, branch, proxyPort, proxyUrl } = tunnelEvent;
       log.info('Session started', { proxyPort, sessionId });
       cb.onSessionStarted({
         sessionId,
@@ -209,7 +201,6 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
         branch,
         proxyPort,
         proxyUrl,
-        webInterfaceUrl,
       });
       break;
     }

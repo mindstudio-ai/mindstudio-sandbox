@@ -27,7 +27,6 @@ export type TunnelEvent =
       branch: string;
       proxyPort: number | null;
       proxyUrl: string | null;
-      webInterfaceUrl: string;
       roles: TunnelRole[];
       scenarios: TunnelScenario[];
     }
