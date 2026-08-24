@@ -319,6 +319,11 @@ Subcommands:
                dataset, runs LoRA fine-tuning on platform GPUs, returns an
                adapter + a held-out agreement report
   runs         List training runs; run <id> shows one run + its report
+  grade <id>   Re-grade a run's predictions with the jewel's own grader
+
+The latest complete run per method is auto-served on the platform's GPU pool
+as an ordinary model id (tuned/{appId}/{methodId}) — test it with a normal
+generate-text call, not a jewels subcommand.
 
 Usage:
   mindstudio-prod jewels overview [--start <ISO date>] [--end <ISO date>]
