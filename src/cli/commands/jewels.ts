@@ -173,7 +173,8 @@ Subcommands:
   overview     Per-method rollup: autonomy, sampleRate, pair counts by verdict,
                agreement rate, human-invocation coverage, queue depth
   pairs        List pairs (slim rows; cursor-paginated)
-  pair <id>    Full pair record: proposed vs actual, reasoning, grade notes
+  pair <id>    Full pair record: proposed vs actual, reasoning, grade notes,
+               plus hydrated model transcripts when the jewel attached traces
   queue        Pending approve-mode proposals awaiting review
   timeseries   Verdict counts over time (agreement trend)
   resolve      Approve or dismiss one queue item AS the calling user
