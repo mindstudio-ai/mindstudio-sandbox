@@ -3,7 +3,7 @@
  *
  * Fired exactly once, when a project's genuine first build finishes (the
  * forward-only transition into the `buildComplete` onboarding state — see
- * ProjectStatusManager + the setProjectOnboardingState tool handler). It POSTs
+ * ProjectStatusManager + the markBuildComplete tool handler). It POSTs
  * to youai-api's `dev/manage/initial-build-complete`, which emails the app
  * creator a "your first build is ready" nudge.
  *

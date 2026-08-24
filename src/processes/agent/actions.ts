@@ -88,8 +88,9 @@ export function createAgentActions(
       setLastAbortedTrigger(null, broadcast);
 
       // Advance onboarding to 'building' when the user approves the initial
-      // plan. Remy also calls setProjectOnboardingState('building') at the
-      // start of its pipeline — the forward-only gate makes that a no-op.
+      // plan. This is the ONLY path into 'building': the agent has no tool
+      // for it (markBuildComplete only ever sets buildComplete, and is
+      // refused during intake).
       if (text.startsWith('@@automated::approveInitialPlan@@')) {
         if (setOnboardingState('building')) {
           onProjectStatusChanged?.();

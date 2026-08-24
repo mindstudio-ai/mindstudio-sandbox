@@ -119,8 +119,11 @@ const INTERNAL_TOOLS = new Set([
  */
 export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
-  'setProjectOnboardingState',
+  'markBuildComplete',
   'setProjectMetadata',
+  // Legacy name of markBuildComplete — never called anymore, kept only so
+  // the history filter keeps hiding the blocks persisted in older sessions.
+  'setProjectOnboardingState',
 ]);
 
 /**
@@ -130,6 +133,7 @@ export const SERVER_HANDLED_TOOLS = new Set([
 export const SERVER_VISIBLE_TOOLS = new Set([
   'runScenario',
   'runMethod',
+  'testJewel',
   'browserCommand',
   'queryDatabase',
 ]);
@@ -579,7 +583,7 @@ function handleStdout(
   // --- Broadcast to frontend ---
 
   // Suppress tool_start/tool_done/tool_input_delta for server-handled tools
-  // (e.g., setProjectOnboardingState) — frontend doesn't need to see these.
+  // (e.g., markBuildComplete) — frontend doesn't need to see these.
   if (
     (event.event === 'tool_start' ||
       event.event === 'tool_done' ||
