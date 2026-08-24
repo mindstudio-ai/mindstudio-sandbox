@@ -82,7 +82,12 @@ export const jewelsSpecs = {
     },
   },
   'jewels train': {
-    usage: 'Usage: mindstudio-prod jewels train <methodId> [--wait]',
+    usage:
+      'Usage: mindstudio-prod jewels train <methodId> [--wait]\n' +
+      'Returns immediately with a run id + dataset report; poll with ' +
+      "'jewels run <runId>' (live progress on the row). --wait blocks " +
+      'until terminal (minutes to tens of minutes) — for humans at a ' +
+      'terminal, not agents.',
     positionals: [{ name: 'methodId', required: true }],
     flags: {
       wait: { type: 'boolean' },
@@ -97,6 +102,15 @@ export const jewelsSpecs = {
   },
   'jewels run': {
     usage: 'Usage: mindstudio-prod jewels run <runId>',
+    positionals: [{ name: 'runId', required: true }],
+  },
+  'jewels grade': {
+    usage:
+      'Usage: mindstudio-prod jewels grade <runId>\n' +
+      "Re-grades a completed run's held-out predictions with the jewel's " +
+      'own grade function (the same grader as the pairs dashboard) and ' +
+      'writes report.grading. Runs automatically on completion; this is ' +
+      'the manual retry/backfill. Idempotent.',
     positionals: [{ name: 'runId', required: true }],
   },
 } satisfies Record<string, CommandSpec>;
@@ -207,6 +221,9 @@ async function jewelsTrain(appId: string, a: Args) {
   out({ runId: started.run?.id, summary: started.summary });
   const runId = started.run?.id;
   const deadline = Date.now() + TRAIN_WAIT_LIMIT_MS;
+  // Streaming feel from a poll: the trainer heartbeats a latest-wins
+  // `progress` object onto the run; print it whenever it moves.
+  let lastProgress = '';
   while (Date.now() < deadline) {
     await sleep(TRAIN_POLL_MS);
     const { run } = await api(
@@ -219,6 +236,12 @@ async function jewelsTrain(appId: string, a: Args) {
         process.exitCode = 1;
       }
       return;
+    }
+    const p = run.progress;
+    const signature = p ? `${p.phase}|${p.step ?? ''}` : '';
+    if (signature && signature !== lastProgress) {
+      lastProgress = signature;
+      out({ status: run.status, progress: p });
     }
   }
   fatal(
@@ -244,6 +267,17 @@ async function jewelsRunGet(appId: string, a: Args) {
   );
 }
 
+async function jewelsGrade(appId: string, a: Args) {
+  out(
+    await api(
+      'POST',
+      `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(a.req('runId'))}/grade`,
+      undefined,
+      JEWEL_RUN_TIMEOUT_MS,
+    ),
+  );
+}
+
 export const jewelsHandlers = {
   'jewels overview': jewelsOverview,
   'jewels pairs': jewelsPairs,
@@ -256,6 +290,7 @@ export const jewelsHandlers = {
   'jewels train': jewelsTrain,
   'jewels runs': jewelsRuns,
   'jewels run': jewelsRunGet,
+  'jewels grade': jewelsGrade,
 } satisfies Record<keyof typeof jewelsSpecs, Handler>;
 
 export const jewelsHelp = `mindstudio-prod jewels — Monitor jewel shadowing; review + approve the proposal queue.
