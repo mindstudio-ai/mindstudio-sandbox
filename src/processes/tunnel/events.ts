@@ -41,15 +41,6 @@ export type TunnelEvent =
       duration: number;
       error?: string;
     }
-  | { event: 'scenario-started'; id: string; name: string }
-  | {
-      event: 'scenario-completed';
-      id: string;
-      success: boolean;
-      duration: number;
-      roles: string[];
-      error?: string;
-    }
   | { event: 'schema-sync-started' }
   | {
       event: 'schema-sync-completed';
@@ -57,7 +48,6 @@ export type TunnelEvent =
       altered: string[];
       errors: string[];
     }
-  | { event: 'impersonation-changed'; roles: string[] | null }
   | { event: 'connection-lost'; message: string }
   | { event: 'connection-restored' }
   | { event: 'config-changed' }

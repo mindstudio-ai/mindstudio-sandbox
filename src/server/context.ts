@@ -57,7 +57,6 @@ export interface ServerContext {
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
-  activeImpersonation: string[] | null;
   onProjectStatusChanged: (() => void) | null;
   /**
    * Set if `npm install` failed for one or more app package directories
@@ -82,7 +81,6 @@ export const ctx: ServerContext = {
   specFileTreeManager: null,
   lspClient: null,
   snapshotManager: null,
-  activeImpersonation: null,
   onFileChanged: null,
   onProjectStatusChanged: null,
   installFailures: null,
@@ -142,7 +140,6 @@ export async function buildInitFrame(
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
     tunnelSession: ctx.tunnelSession,
-    activeImpersonation: ctx.activeImpersonation,
     fileTree: ctx.fileTreeManager?.getTree() ?? [],
     chatHistory: historyResult.messages,
     chatHistoryStartIndex:
@@ -223,7 +220,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     previewAvailable: proxyAvailable,
     app: ctx.appConfig,
     tunnelSession: ctx.tunnelSession,
-    activeImpersonation: ctx.activeImpersonation,
     fileTree: [],
     chatHistory: [],
     chatHistoryStartIndex: null,

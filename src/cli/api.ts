@@ -100,6 +100,41 @@ export async function api(
 }
 
 /**
+ * Raw body passthrough to stdout — for endpoints that stream NDJSON (e.g.
+ * `jewels export --file`), where each server line is already one JSON value
+ * and re-parsing the whole body would buffer it for no reason.
+ */
+export async function apiRaw(
+  method: string,
+  apiPath: string,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<void> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}${apiPath}`,
+    { method, headers: authHeaders() },
+    timeoutMs,
+    `API ${method} ${apiPath}`,
+  );
+  if (!res.ok) {
+    fatal(
+      `API ${method} ${apiPath} returned ${res.status}: ${JSON.stringify(await readBody(res))}`,
+    );
+  }
+  if (!res.body) {
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    process.stdout.write(decoder.decode(value, { stream: true }));
+  }
+}
+
+/**
  * Like `api`, but never throws on an HTTP status — returns a structured result
  * so a caller can react to one (e.g. tolerate a 404 while a release row is still
  * being created after a push).

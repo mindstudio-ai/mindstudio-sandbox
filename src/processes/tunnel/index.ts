@@ -74,7 +74,6 @@ export function getSandboxBrowserState(): SandboxBrowserState {
 export interface TunnelCallbacks {
   onSessionStarted: (session: TunnelSessionState) => void;
   onSessionEnded: () => void;
-  onImpersonationChanged: (roles: string[] | null) => void;
   /** Called whenever the sandbox-browser PID should be added/removed from resource monitoring. */
   onSandboxBrowserPid: (pid: number | null) => void;
   broadcast: (event: string, data: Record<string, any>) => void;
@@ -235,25 +234,6 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
         });
       }
       break;
-    case 'scenario-started':
-      log.info('Scenario started', {
-        name: tunnelEvent.name,
-        id: tunnelEvent.id,
-      });
-      break;
-    case 'scenario-completed':
-      if (tunnelEvent.success) {
-        log.info('Scenario completed', {
-          id: tunnelEvent.id,
-          duration: tunnelEvent.duration,
-        });
-      } else {
-        log.warn('Scenario failed', {
-          id: tunnelEvent.id,
-          error: tunnelEvent.error ?? 'unknown error',
-        });
-      }
-      break;
     case 'schema-sync-started':
       log.info('Schema sync started');
       break;
@@ -263,12 +243,6 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
         altered: tunnelEvent.altered.length,
         errors: tunnelEvent.errors.length,
       });
-      break;
-    case 'impersonation-changed':
-      log.info('Impersonation changed', {
-        roles: tunnelEvent.roles ?? null,
-      });
-      cb.onImpersonationChanged(tunnelEvent.roles);
       break;
     case 'connection-lost':
       log.warn('Connection lost', { message: tunnelEvent.message });
@@ -386,11 +360,14 @@ export function createTunnelActions(
         throw new Error('Missing "scenarioId" parameter');
       }
       log.info(`Running scenario: ${scenarioId}`);
+      // Matches the agent-tool path's bound — seeds routinely outlive 30s,
+      // and a shorter timeout reports failure while the tunnel finishes the
+      // run (and its role assignment) anyway.
       return await sendCommand(
         pm,
         'run-scenario',
         { scenarioId, ...(skipTruncate ? { skipTruncate } : {}) },
-        30_000,
+        300_000,
       );
     },
     tunnelRunMethod: async (p) => {
@@ -432,17 +409,20 @@ export function createTunnelActions(
         120_000,
       );
     },
-    tunnelImpersonate: async (p) => {
+    // Set the dev test user's roles — a real write to the user's row via the
+    // platform (upsert + role update + users-table sync), hence a timeout
+    // sized for a platform round-trip.
+    tunnelSetTestUserRoles: async (p) => {
       const { roles } = p as { roles: string[] };
       if (!Array.isArray(roles)) {
         throw new Error('Missing "roles" parameter (array of role IDs)');
       }
-      log.info(`Impersonating roles: ${roles.join(', ')}`);
-      return await sendCommand(pm, 'impersonate', { roles }, 5_000);
+      log.info(`Setting test user roles: ${roles.join(', ') || '(none)'}`);
+      return await sendCommand(pm, 'set-test-user-roles', { roles }, 15_000);
     },
-    tunnelClearImpersonation: async () => {
-      log.info('Clearing role impersonation');
-      return await sendCommand(pm, 'clear-impersonation', {}, 5_000);
+    // Find-or-create the dev test user and return it with its current roles.
+    tunnelGetTestUser: async () => {
+      return await sendCommand(pm, 'get-test-user', {}, 15_000);
     },
     listDatabases: async () => {
       return await sendCommand(pm, 'list-databases', {}, 30_000);

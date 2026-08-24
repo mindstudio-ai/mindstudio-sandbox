@@ -1,5 +1,5 @@
 import { WINDOW, type Args, type CommandSpec } from '../args.js';
-import { api, seg } from '../api.js';
+import { api, apiRaw, seg } from '../api.js';
 import { fatal } from '../errors.js';
 import { out } from '../output.js';
 import type { Handler } from '../types.js';
@@ -71,6 +71,15 @@ export const jewelsSpecs = {
       message: '--subject is required.',
     },
   },
+  'jewels export': {
+    usage:
+      'Usage: mindstudio-prod jewels export <methodId> [--file sft-train|sft-eval|preference|eval-disagreements] [--start <ISO date>] [--end <ISO date>]',
+    positionals: [{ name: 'methodId', required: true }],
+    flags: {
+      file: { type: 'string', param: 'file' },
+      ...WINDOW,
+    },
+  },
 } satisfies Record<string, CommandSpec>;
 
 function parseJsonFlag(a: Args, flag: string): Record<string, unknown> {
@@ -139,6 +148,17 @@ async function jewelsResolve(appId: string, a: Args) {
     ),
   );
 }
+async function jewelsExport(appId: string, a: Args) {
+  const qs = a.queryWith({ methodId: a.req('methodId') });
+  const apiPath = `/_internal/v2/apps/${appId}/jewels/export${qs}`;
+  if (a.str('file')) {
+    // Raw JSONL passthrough: each dataset row goes to stdout as its own line.
+    await apiRaw('GET', apiPath, JEWEL_RUN_TIMEOUT_MS);
+    return;
+  }
+  out(await api('GET', apiPath, undefined, JEWEL_RUN_TIMEOUT_MS));
+}
+
 async function jewelsDryrun(appId: string, a: Args) {
   out(
     await api(
@@ -158,6 +178,7 @@ export const jewelsHandlers = {
   'jewels timeseries': jewelsTimeseries,
   'jewels resolve': jewelsResolve,
   'jewels dryrun': jewelsDryrun,
+  'jewels export': jewelsExport,
 } satisfies Record<keyof typeof jewelsSpecs, Handler>;
 
 export const jewelsHelp = `mindstudio-prod jewels — Monitor jewel shadowing; review + approve the proposal queue.
@@ -180,6 +201,8 @@ Subcommands:
   resolve      Approve or dismiss one queue item AS the calling user
   dryrun       Run the LIVE jewel against a subject; report what it would
                propose without recording or committing anything
+  export       The pair ledger as training data: a dataset report (counts,
+               exclusions, trace coverage), or one file streamed as JSONL
 
 Usage:
   mindstudio-prod jewels overview [--start <ISO date>] [--end <ISO date>]
@@ -189,6 +212,7 @@ Usage:
   mindstudio-prod jewels timeseries [--method-id <id>] [--buckets 24]
   mindstudio-prod jewels resolve <itemId> (--approve [--input '<json>'] | --dismiss)
   mindstudio-prod jewels dryrun <methodId> --subject '<json>'
+  mindstudio-prod jewels export <methodId> [--file sft-train|sft-eval|preference|eval-disagreements]
 
 Examples:
   mindstudio-prod jewels overview
@@ -199,6 +223,8 @@ Examples:
   mindstudio-prod jewels resolve 6f1e... --approve --input '{"issueId":"abc","severity":"high"}'
   mindstudio-prod jewels resolve 6f1e... --dismiss
   mindstudio-prod jewels dryrun triage-issue --subject '{"issueId":"abc"}'
+  mindstudio-prod jewels export triage-issue
+  mindstudio-prod jewels export triage-issue --file sft-train > train.jsonl
 
 Notes:
   - 'resolve --approve' APPLIES the method as you (the reviewer): the proposal's
