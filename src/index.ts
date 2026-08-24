@@ -252,10 +252,6 @@ async function startServices(
       },
       onSessionEnded: () => {
         ctx.tunnelSession = null;
-        ctx.activeImpersonation = null;
-      },
-      onImpersonationChanged: (roles) => {
-        ctx.activeImpersonation = roles;
       },
       onSandboxBrowserPid: (pid) => {
         if (pid === null) {
