@@ -22,7 +22,9 @@ export const testJewelTool: ExternalToolHandler = {
     }
     log.info('Agent testing jewel', { toolCallId: id, method });
     ctx
-      .sendTunnelCommand('test-jewel', params, 300_000)
+      // 30 min — the tunnel executor's own per-execution cap (matching the
+      // prod sandbox worker's HANDLER_TIMEOUT): jewels are task loops.
+      .sendTunnelCommand('test-jewel', params, 1_800_000)
       .then((result) => ctx.sendToolResult(id, JSON.stringify(result)));
     return true;
   },

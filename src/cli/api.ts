@@ -75,6 +75,9 @@ export async function api(
   method: string,
   apiPath: string,
   body?: Record<string, unknown>,
+  // Commands that hold the request for a full method/jewel run (jewels
+  // resolve --approve, jewels dryrun) pass their own bound.
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<any> {
   const res = await fetchWithTimeout(
     `${API_BASE}${apiPath}`,
@@ -83,7 +86,7 @@ export async function api(
       headers: authHeaders(),
       ...(body ? { body: JSON.stringify(body) } : {}),
     },
-    REQUEST_TIMEOUT_MS,
+    timeoutMs,
     `API ${method} ${apiPath}`,
   );
 

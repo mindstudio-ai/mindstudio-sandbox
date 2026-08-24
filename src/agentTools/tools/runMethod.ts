@@ -23,7 +23,9 @@ export const runMethodTool: ExternalToolHandler = {
     }
     log.info('Agent running method', { toolCallId: id, method });
     ctx
-      .sendTunnelCommand('run-method', params, 300_000)
+      // 30 min — the tunnel executor's own per-execution cap (matching the
+      // prod sandbox worker's HANDLER_TIMEOUT): methods can be task loops.
+      .sendTunnelCommand('run-method', params, 1_800_000)
       .then((result) => ctx.sendToolResult(id, JSON.stringify(result)));
     return true;
   },
