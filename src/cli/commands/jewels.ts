@@ -221,32 +221,70 @@ async function jewelsTrain(appId: string, a: Args) {
   out({ runId: started.run?.id, summary: started.summary });
   const runId = started.run?.id;
   const deadline = Date.now() + TRAIN_WAIT_LIMIT_MS;
-  // Streaming feel from a poll: the trainer heartbeats a latest-wins
-  // `progress` object onto the run; print it whenever it moves.
-  let lastProgress = '';
+  // Streaming feel from a poll: the run carries an append-only event log
+  // (status narration + loss points); print only what's new each poll,
+  // cursored by log length.
+  let lastLogLen = 0;
   while (Date.now() < deadline) {
     await sleep(TRAIN_POLL_MS);
     const { run } = await api(
       'GET',
       `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(runId)}`,
     );
+    const log: any[] = Array.isArray(run.log) ? run.log : [];
+    const fresh = log.slice(lastLogLen);
+    lastLogLen = log.length;
+    for (const e of fresh.filter((x) => x?.kind === 'status')) {
+      out({ status: run.status, at: e.ts, message: e.message });
+    }
+    const losses = fresh.filter((x) => x?.kind === 'loss');
+    if (losses.length) {
+      const last = losses[losses.length - 1];
+      const p = run.progress;
+      out({
+        status: run.status,
+        step: `${last.step}/${p?.totalSteps ?? '?'}`,
+        loss: last.loss,
+      });
+    }
     if (run.status === 'complete' || run.status === 'failed') {
-      out(run);
+      out(compactRunLog(run));
       if (run.status === 'failed') {
         process.exitCode = 1;
       }
       return;
     }
-    const p = run.progress;
-    const signature = p ? `${p.phase}|${p.step ?? ''}` : '';
-    if (signature && signature !== lastProgress) {
-      lastProgress = signature;
-      out({ status: run.status, progress: p });
-    }
   }
   fatal(
     `Timed out waiting for run ${runId} (still in flight; check 'jewels run ${runId}').`,
   );
+}
+
+// The event log's loss points are chart data, not terminal reading — compact
+// them to a count and keep the human-readable status narration. Candidate
+// checkpoints' prediction arrays get the same treatment (their grading
+// summaries stay; the full rows live in the report on S3 and the dashboard).
+function compactRunLog(run: any) {
+  let out = run;
+  if (Array.isArray(run?.log)) {
+    const statusEntries = run.log.filter((e: any) => e?.kind === 'status');
+    const lossPoints = run.log.length - statusEntries.length;
+    out = { ...out, log: { statusEntries, lossPoints } };
+  }
+  if (Array.isArray(run?.report?.candidates)) {
+    out = {
+      ...out,
+      report: {
+        ...run.report,
+        candidates: run.report.candidates.map((c: any) =>
+          Array.isArray(c?.predictions)
+            ? { ...c, predictions: c.predictions.length }
+            : c,
+        ),
+      },
+    };
+  }
+  return out;
 }
 
 async function jewelsRuns(appId: string, a: Args) {
@@ -259,12 +297,11 @@ async function jewelsRuns(appId: string, a: Args) {
 }
 
 async function jewelsRunGet(appId: string, a: Args) {
-  out(
-    await api(
-      'GET',
-      `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(a.req('runId'))}`,
-    ),
+  const { run } = await api(
+    'GET',
+    `/_internal/v2/apps/${appId}/jewels/training-runs/${seg(a.req('runId'))}`,
   );
+  out({ run: compactRunLog(run) });
 }
 
 async function jewelsGrade(appId: string, a: Args) {
