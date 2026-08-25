@@ -134,7 +134,7 @@ export class Args {
   /**
    * Like `query()`, with extra params appended after the spec-declared ones —
    * for the handful of commands that promote a positional into a query param
-   * (e.g. `analytics events <name>`). Undefined values are skipped.
+   * (e.g. `jewels queue <methodId>`). Undefined values are skipped.
    */
   queryWith(extra: Record<string, string | undefined>): string {
     const params = new URLSearchParams();

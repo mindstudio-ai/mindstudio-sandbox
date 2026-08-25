@@ -1,31 +1,17 @@
 import { WINDOW, type Args, type CommandSpec, type FlagSpec } from '../args.js';
 import { api, seg } from '../api.js';
+import { UsageError } from '../errors.js';
 import { out } from '../output.js';
 import type { Handler } from '../types.js';
-
-const TOP_DIMENSIONS = [
-  'pages',
-  'referrers',
-  'countries',
-  'devices',
-  'browsers',
-  'os',
-  'languages',
-  'source-categories',
-  'utms',
-  'sources',
-] as const;
 
 const CRAWLERS_SUBS = ['overview', 'timeseries', 'recent'] as const;
 
 /**
- * Shared analytics flags. Any filter flag switches the API read from the rollup
- * to the per-event table (30-day retention) — see HELP_ANALYTICS.
+ * The 11 click-filter flags shared by the reads that honor them (sources,
+ * map). Equality-only; richer filtering (is_not/contains, multi-value) lives
+ * in the `query` JSON grammar.
  */
-const ANALYTICS = {
-  release: { type: 'string', param: 'releaseId' },
-  ...WINDOW,
-  limit: { type: 'number', param: 'limit', min: 0 },
+const FILTERS = {
   path: { type: 'string', param: 'path' },
   referrer: { type: 'string', param: 'referrerHost' },
   country: { type: 'string', param: 'country' },
@@ -39,50 +25,46 @@ const ANALYTICS = {
   'utm-campaign': { type: 'string', param: 'utmCampaign' },
 } as const satisfies Record<string, FlagSpec>;
 
+const SCOPE = {
+  release: { type: 'string', param: 'releaseId' },
+  ...WINDOW,
+} as const satisfies Record<string, FlagSpec>;
+
 export const analyticsSpecs = {
-  'analytics summary': {
-    usage:
-      'Usage: mindstudio-prod analytics summary [--release ...] [--start ...] [--end ...] [filters]',
-    flags: ANALYTICS,
+  'analytics query': {
+    usage: `Usage: mindstudio-prod analytics query '<json>'`,
+    positionals: [{ name: 'body', required: true }],
   },
-  'analytics timeseries': {
-    // `buckets` is declared last: the old code appended it after the shared query.
+  'analytics sources': {
     usage:
-      'Usage: mindstudio-prod analytics timeseries [--buckets 24] [shared flags]',
+      'Usage: mindstudio-prod analytics sources [--limit 25] [--offset 0] [scope + filters]',
     flags: {
-      ...ANALYTICS,
-      buckets: { type: 'number', param: 'buckets', min: 1 },
+      ...SCOPE,
+      limit: { type: 'number', param: 'limit', min: 0 },
+      offset: { type: 'number', param: 'offset', min: 0 },
+      ...FILTERS,
     },
   },
-  'analytics top': {
-    usage: `Usage: mindstudio-prod analytics top <dimension>. Dimensions: ${TOP_DIMENSIONS.join('|')}`,
-    positionals: [
-      {
-        name: 'dimension',
-        required: true,
-        choices: TOP_DIMENSIONS,
-        choiceLabel: 'Unknown dimension',
-      },
-    ],
-    flags: ANALYTICS,
-  },
-  'analytics events': {
-    // Dual-mode: no positional lists event names, one gets stats for that event.
-    usage: 'Usage: mindstudio-prod analytics events [<name>] [shared flags]',
-    positionals: [{ name: 'name' }],
-    flags: ANALYTICS,
-  },
   'analytics map': {
-    usage: 'Usage: mindstudio-prod analytics map [--limit 500] [shared flags]',
-    flags: ANALYTICS,
+    usage:
+      'Usage: mindstudio-prod analytics map [--limit 500] [--offset 0] [scope + filters]',
+    flags: {
+      ...SCOPE,
+      limit: { type: 'number', param: 'limit', min: 0 },
+      offset: { type: 'number', param: 'offset', min: 0 },
+      ...FILTERS,
+    },
   },
   'analytics live': {
     usage: 'Usage: mindstudio-prod analytics live',
   },
   'analytics ai-sources': {
     usage:
-      'Usage: mindstudio-prod analytics ai-sources [--limit 25] [shared flags]',
-    flags: ANALYTICS,
+      'Usage: mindstudio-prod analytics ai-sources [--limit 50] [--start ...] [--end ...] [--release ...]',
+    flags: {
+      ...SCOPE,
+      limit: { type: 'number', param: 'limit', min: 0 },
+    },
   },
   'analytics crawlers': {
     usage: `Usage: mindstudio-prod analytics crawlers <sub>. Subs: ${CRAWLERS_SUBS.join('|')}`,
@@ -94,39 +76,42 @@ export const analyticsSpecs = {
         choiceLabel: 'Unknown crawlers sub',
       },
     ],
-    flags: ANALYTICS,
+    // Union of the three subs' flags; the API ignores what a sub doesn't use.
+    flags: {
+      ...SCOPE,
+      limit: { type: 'number', param: 'limit', min: 0 },
+      buckets: { type: 'number', param: 'buckets', min: 1 },
+      'top-pages-limit': { type: 'number', param: 'topPagesLimit', min: 1 },
+    },
   },
 } satisfies Record<string, CommandSpec>;
 
-async function analyticsSummary(appId: string, a: Args) {
+async function analyticsQuery(appId: string, a: Args) {
+  const raw = a.req('body');
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch (err: any) {
+    throw new UsageError(
+      `analytics query body is not valid JSON (${err.message}). Run 'mindstudio-prod analytics --help' for the grammar.`,
+      analyticsSpecs['analytics query'].usage,
+    );
+  }
   out(
     await api(
-      'GET',
-      `/_internal/v2/apps/${appId}/insights/summary${a.query()}`,
+      'POST',
+      `/_internal/v2/apps/${appId}/insights/query`,
+      body as Record<string, unknown>,
     ),
   );
 }
-async function analyticsTimeseries(appId: string, a: Args) {
+async function analyticsSources(appId: string, a: Args) {
   out(
     await api(
       'GET',
-      `/_internal/v2/apps/${appId}/insights/timeseries${a.query()}`,
+      `/_internal/v2/apps/${appId}/insights/sources${a.query()}`,
     ),
   );
-}
-async function analyticsTop(appId: string, a: Args) {
-  out(
-    await api(
-      'GET',
-      `/_internal/v2/apps/${appId}/insights/top/${seg(a.req('dimension'))}${a.query()}`,
-    ),
-  );
-}
-async function analyticsEvents(appId: string, a: Args) {
-  // Dual-mode: the optional positional becomes a `name` filter, appended after
-  // the shared analytics params so the query string order is unchanged.
-  const query = a.queryWith({ name: a.opt('name') });
-  out(await api('GET', `/_internal/v2/apps/${appId}/insights/events${query}`));
 }
 async function analyticsMap(appId: string, a: Args) {
   out(await api('GET', `/_internal/v2/apps/${appId}/insights/map${a.query()}`));
@@ -152,10 +137,8 @@ async function analyticsCrawlers(appId: string, a: Args) {
 }
 
 export const analyticsHandlers = {
-  'analytics summary': analyticsSummary,
-  'analytics timeseries': analyticsTimeseries,
-  'analytics top': analyticsTop,
-  'analytics events': analyticsEvents,
+  'analytics query': analyticsQuery,
+  'analytics sources': analyticsSources,
   'analytics map': analyticsMap,
   'analytics live': analyticsLive,
   'analytics ai-sources': analyticsAiSources,
@@ -165,52 +148,66 @@ export const analyticsHandlers = {
 export const analyticsHelp = `mindstudio-prod analytics — Traffic, top-N, geo, and AI-referral insights.
 
 Subcommands:
-  summary                        7-KPI snapshot + liveCount
-  timeseries                     Pageviews / visits / uniques per bucket
-  top <dimension>                Top-N by dimension (see list below)
-  events [<name>]                Event-name list (no arg) or stats for one event
+  query '<json>'                 The general read: metrics x dimensions x
+                                 filters x time (summary KPIs, timeseries,
+                                 top-N, and event stats are all query shapes)
+  sources                        Ranked traffic sources (per-session first
+                                 source: UTM > referrer > direct, classified)
   map                            City lat/lon points for geo rendering
   live                           One-shot live counter (count + countries + sparkline)
   ai-sources                     Per-vendor AI-referral breakdown
   crawlers <overview|timeseries|recent>
-                                 AI-crawler ingestion views
+                                 AI-crawler / bot ingestion views
 
-Top dimensions: pages | referrers | countries | devices | browsers | os |
-                languages | source-categories | utms | sources
+The query JSON body:
+  metrics      required: ["pageviews" | "visitors" | "visits" | "events", ...]
+  dimensions   at most ONE entity dimension OR "time" (not both):
+               path referrerHost sourceCategory country city deviceType
+               browser os language visitorType utmSource utmMedium
+               utmCampaign utmTerm utmContent eventName
+  granularity  required with "time": "5m" | "hour" | "day" | "week" | "month"
+  timezone     IANA zone for day/week/month boundaries (default UTC)
+  filters      [[op, dimension, [values...]], ...]
+               ops: "is" (any of) | "is_not" (none of; missing still matches)
+                    | "contains" (case-insensitive substring)
+  dateRange    "1h" | "24h" | "7d" | "30d" | "90d" | "all"
+               or ["<startISO>", "<endISO>"]   (default "24h")
+               with "all", granularity is a minimum (server coarsens as
+               history grows); city filter values are plain city names
+  orderBy      grouped only: [["pageviews" | "events", "asc" | "desc"]]
+  limit        grouped only, default 25, max 1000; offset for paging
+  releaseId    optional release scope
 
-Shared flags (all optional):
-  --release <id>                 Scope to one release
-  --start <ISO date>             Window start
-  --end <ISO date>               Window end
-  --limit <n>                    Cap result count (where applicable)
-  --buckets <n>                  Bucket count (timeseries only)
-  Filter flags (any filter switches the read to per-event, 30-day retention):
-    --path, --referrer, --country, --city, --device, --browser, --os,
-    --language, --utm-source, --utm-medium, --utm-campaign
+How far back a query can look depends on its shape: all-"is" filters touching
+at most ONE dimension read a rollup kept forever (full lifetime history);
+cross-dimension, "is_not", and "contains" queries scan raw events retained 90
+days — the server clamps the window. The response meta says what happened:
+source ("rollup" | "events"), window.served, clamped, metricsOmitted (metrics
+this shape can't carry — e.g. visits on grouped reads), total (group count).
 
-Usage:
-  mindstudio-prod analytics summary [--release ...] [--start ...] [--end ...] [filters]
-  mindstudio-prod analytics timeseries [--buckets 24] [shared flags]
-  mindstudio-prod analytics top <dimension> [--limit 25] [shared flags]
-  mindstudio-prod analytics events [<name>] [shared flags]
-  mindstudio-prod analytics map [--limit 500] [shared flags]
-  mindstudio-prod analytics live
-  mindstudio-prod analytics ai-sources [--limit 25] [shared flags]
-  mindstudio-prod analytics crawlers <overview|timeseries|recent> [shared flags]
+Shared flags on sources/map/ai-sources/crawlers:
+  --release <id>, --start <ISO>, --end <ISO>, --limit <n>
+  sources/map also take --offset and the click-filters: --path, --referrer,
+  --country, --city, --device, --browser, --os, --language, --utm-source,
+  --utm-medium, --utm-campaign (equality; per-event backed, 90-day retention)
+  crawlers: --buckets (timeseries), --top-pages-limit (overview)
 
 Examples:
-  mindstudio-prod analytics summary
-  mindstudio-prod analytics summary --country US --device mobile
-  mindstudio-prod analytics timeseries --buckets 24
-  mindstudio-prod analytics top pages --limit 10
-  mindstudio-prod analytics top sources --utm-source google
-  mindstudio-prod analytics events
-  mindstudio-prod analytics events checkout_clicked
-  mindstudio-prod analytics crawlers recent
+  # Summary KPIs for the last 24h
+  mindstudio-prod analytics query '{"metrics":["pageviews","visits","visitors"]}'
 
-Notes:
-  - Unfiltered queries hit the rollup (full history). Any filter flag switches
-    to the per-event table, which has 30-day retention — older windows return
-    empty for filtered reads.
-  - 'events' is dual-mode: omit the positional to list event names; pass one
-    to get stats for that single event.`;
+  # Top pages, all time
+  mindstudio-prod analytics query '{"metrics":["pageviews","visitors"],"dimensions":["path"],"dateRange":"all","limit":10}'
+
+  # Daily views for one post, full history
+  mindstudio-prod analytics query '{"metrics":["pageviews"],"dimensions":["time"],"granularity":"day","filters":[["is","path",["/post/hello"]]],"dateRange":"all"}'
+
+  # Custom-event breakdown over 30 days
+  mindstudio-prod analytics query '{"metrics":["events","visitors"],"dimensions":["eventName"],"dateRange":"30d"}'
+
+  # Mobile traffic by country (cross-dimension -> 90-day window)
+  mindstudio-prod analytics query '{"metrics":["pageviews"],"dimensions":["country"],"filters":[["is","deviceType",["mobile"]]],"dateRange":"30d"}'
+
+  mindstudio-prod analytics sources --limit 10
+  mindstudio-prod analytics live
+  mindstudio-prod analytics crawlers recent`;
