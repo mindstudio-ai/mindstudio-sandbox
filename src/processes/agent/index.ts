@@ -406,6 +406,20 @@ function handleStdout(
       return;
     }
 
+    // Only the active turn's terminal is a turn-done signal. Every remy
+    // command acks with its own `completed` (setQueuedDelivery, cancelQueued,
+    // cancel, stop_tool, ...) — broadcasting those as agentCompleted mid-turn
+    // made the frontend end the turn early (composer flipped to idle, the
+    // streaming turn committed to history), ran a spurious snapshot
+    // checkpoint via onTurnDone, and a failing ack could even arm the
+    // abort-trigger. The pending command above is already resolved — there is
+    // nothing else a control ack should drive. Unknown ids (a completed
+    // without a requestId, or no tracked turn) fall through as before.
+    const activeTurnId = getActiveTurnId();
+    if (event.requestId && activeTurnId && event.requestId !== activeTurnId) {
+      return;
+    }
+
     // More queued work means remy is about to fire turn_started for the next
     // item. Don't flip busy to idle in the gap — the frontend shouldn't
     // flicker between pipeline steps. The queue snapshot is tracked from
