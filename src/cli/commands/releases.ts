@@ -87,7 +87,14 @@ function buildFailureReason(release: any): string | null {
   );
   return errors.length ? errors[errors.length - 1].message : null;
 }
-/** Compact, stable projection of a release for the wait result. */
+/**
+ * Compact, stable projection of a release for the wait result.
+ *
+ * `previewUrl` is present for a feature-branch build (status 'preview') and is
+ * where that build is actually reachable — gated to anyone who can open the app
+ * in Remy. Reported as data rather than taught as a URL shape, so the caller
+ * never has to construct one.
+ */
 function summarizeRelease(release: any) {
   const summary = {
     releaseId: release.id,
@@ -96,6 +103,7 @@ function summarizeRelease(release: any) {
     status: release.status,
     buildDurationMs: release.buildDurationMs ?? null,
     publishedAt: release.publishedAt ?? null,
+    ...(release.previewUrl ? { previewUrl: release.previewUrl } : {}),
   };
   if (release.status !== 'failed') {
     return summary;
@@ -304,6 +312,8 @@ Usage:
 
 'releases wait' is the "publish and wait until live" primitive. After a
 'git push', run it to block until the pushed commit's release is terminal.
+A push to a non-default branch resolves to status 'preview' and the result
+carries 'previewUrl' — the gated URL that build is reachable at.
 --commit defaults to the workspace HEAD; abbreviated SHAs (7+ hex chars,
 e.g. from push output) are accepted. It prints one JSON object and sets
 the exit code so you can branch on $? without parsing:
