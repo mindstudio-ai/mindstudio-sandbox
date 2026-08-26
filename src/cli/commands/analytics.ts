@@ -35,6 +35,10 @@ export const analyticsSpecs = {
     usage: `Usage: mindstudio-prod analytics query '<json>'`,
     positionals: [{ name: 'body', required: true }],
   },
+  'analytics batch': {
+    usage: `Usage: mindstudio-prod analytics batch '<json array of query bodies>'`,
+    positionals: [{ name: 'body', required: true }],
+  },
   'analytics sources': {
     usage:
       'Usage: mindstudio-prod analytics sources [--limit 25] [--offset 0] [scope + filters]',
@@ -105,6 +109,25 @@ async function analyticsQuery(appId: string, a: Args) {
     ),
   );
 }
+async function analyticsBatch(appId: string, a: Args) {
+  const raw = a.req('body');
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch (err: any) {
+    throw new UsageError(
+      `analytics batch body is not valid JSON (${err.message}). Pass an array of query bodies.`,
+      analyticsSpecs['analytics batch'].usage,
+    );
+  }
+  // Accept a bare array or the wire shape {queries: [...]}.
+  const queries = Array.isArray(body) ? body : (body as any)?.queries;
+  out(
+    await api('POST', `/_internal/v2/apps/${appId}/insights/query-batch`, {
+      queries,
+    }),
+  );
+}
 async function analyticsSources(appId: string, a: Args) {
   out(
     await api(
@@ -138,6 +161,7 @@ async function analyticsCrawlers(appId: string, a: Args) {
 
 export const analyticsHandlers = {
   'analytics query': analyticsQuery,
+  'analytics batch': analyticsBatch,
   'analytics sources': analyticsSources,
   'analytics map': analyticsMap,
   'analytics live': analyticsLive,
@@ -151,6 +175,8 @@ Subcommands:
   query '<json>'                 The general read: metrics x dimensions x
                                  filters x time (summary KPIs, timeseries,
                                  top-N, and event stats are all query shapes)
+  batch '<json array>'           Up to 10 query bodies in one round trip;
+                                 results in request order
   sources                        Ranked traffic sources (per-session first
                                  source: UTM > referrer > direct, classified)
   map                            City lat/lon points for geo rendering
@@ -201,6 +227,9 @@ Examples:
 
   # Daily views for one post, full history
   mindstudio-prod analytics query '{"metrics":["pageviews"],"dimensions":["time"],"granularity":"day","filters":[["is","path",["/post/hello"]]],"dateRange":"all"}'
+
+  # Summary KPIs + top pages in one round trip
+  mindstudio-prod analytics batch '[{"metrics":["pageviews","visits","visitors"]},{"metrics":["pageviews"],"dimensions":["path"],"limit":10}]'
 
   # Custom-event breakdown over 30 days
   mindstudio-prod analytics query '{"metrics":["events","visitors"],"dimensions":["eventName"],"dateRange":"30d"}'
