@@ -25,9 +25,20 @@ export interface QueuedMessage {
   enqueuedAt: number;
   /** Delivery semantics. 'asap' — promoted via agentSetQueuedDelivery — is
    * injected into the running turn at its next tool boundary; 'afterTurn'
-   * (default, also when absent) waits for the turn to end. Ignored while
-   * remy is idle (normal FIFO drain). Only plain user items are promotable. */
+   * (default, also when absent) waits for the turn to end. While remy is idle,
+   * promoting moves the item to the head and runs it. Only plain user items
+   * are promotable. */
   delivery?: 'asap' | 'afterTurn';
+  /**
+   * Waiting on the user, not on the agent — remy will not deliver this on its
+   * own. Set on the user messages that survive a cancel, and on user messages
+   * restored from disk after a remy restart. Sending a new message or promoting
+   * the item releases it; the X discards it.
+   *
+   * Held items are deliberately excluded from derived busy and from
+   * resume-on-restart: they are pending user intent, not pipeline work.
+   */
+  held?: boolean;
 }
 
 /**

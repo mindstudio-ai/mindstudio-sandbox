@@ -13,6 +13,7 @@ import {
   clearPendingExternalTools,
   startTurn,
   getAgentActivity,
+  willQueueMessage,
 } from './activity.js';
 import {
   getOnboardingState,
@@ -97,12 +98,15 @@ export function createAgentActions(
         }
       }
 
-      // Snapshot busy now — after any pending-external-tool cancel above has
-      // settled — to decide queue vs run. While busy, remy queues the message
-      // and its terminal completed won't arrive until it drains and runs, so we
-      // don't await it; we ack immediately and let the FE confirm via the next
+      // Snapshot now — after any pending-external-tool cancel above has
+      // settled — to decide queue vs run. When remy will queue the message, its
+      // terminal completed won't arrive until it drains and runs, so we don't
+      // await it; we ack immediately and let the FE confirm via the next
       // agentQueueChanged (match requestId) and the eventual agentCompleted.
-      const busy = getAgentActivity().busy;
+      // This asks the broader question, not "is the agent busy": a queue
+      // holding only held items reports idle, but this send still folds in
+      // behind them.
+      const busy = willQueueMessage();
 
       const { requestId, response } = sendAgentCommand(pm, 'message', {
         text,
