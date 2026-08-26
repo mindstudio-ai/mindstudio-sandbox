@@ -80,15 +80,32 @@ let compacting = false;
 // ---------------------------------------------------------------------------
 
 export function getAgentActivity(): AgentActivity {
-  // Busy is derived: a foreground turn is running OR work is queued OR a
-  // compaction is in flight. Keeping it true while the queue is non-empty
-  // stops the FE (and the HMR flush wired to this signal) from going idle
-  // between chained/queued turns; compaction counts because remy queues
-  // messages behind it exactly like a running turn.
+  // Busy is derived: a foreground turn is running OR work that will run on its
+  // own is queued OR a compaction is in flight. Keeping it true while the queue
+  // has pending work stops the FE (and the HMR flush wired to this signal) from
+  // going idle between chained/queued turns; compaction counts because remy
+  // queues messages behind it exactly like a running turn.
+  //
+  // `held` items are excluded — they wait on the user (left behind by a Stop,
+  // or restored after a remy restart), so counting them latched the working
+  // state on with nothing to stop, which is a large part of why Stop looked
+  // broken.
   return {
-    busy: activity.busy || currentQueue.length > 0 || compacting,
+    busy:
+      activity.busy || currentQueue.some((item) => !item.held) || compacting,
     fileOps: [...activity.fileOps],
   };
+}
+
+/**
+ * Whether a new user message will be QUEUED by remy rather than run at once.
+ *
+ * Broader than derived busy: held items don't make the agent busy, but a new
+ * send folds in with them (remy releases the hold and merges them into one
+ * turn), so it comes back as a queued echo rather than an immediate turn.
+ */
+export function willQueueMessage(): boolean {
+  return activity.busy || currentQueue.length > 0 || compacting;
 }
 
 export function broadcastActivity(

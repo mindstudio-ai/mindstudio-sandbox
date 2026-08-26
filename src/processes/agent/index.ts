@@ -425,7 +425,11 @@ function handleStdout(
     // flicker between pipeline steps. The queue snapshot is tracked from
     // queue_changed (queuedMessages no longer rides on completed). Still fire
     // onTurnDone so a snapshot checkpoint runs between items.
-    const hasMoreQueuedWork = getQueuedMessages().length > 0;
+    //
+    // Held items don't count: after a cancel, remy holds the user's queued
+    // messages instead of draining them, so nothing follows this terminal.
+    // Counting them kept the turn open and the working state latched on.
+    const hasMoreQueuedWork = getQueuedMessages().some((item) => !item.held);
 
     if (hasMoreQueuedWork) {
       cb.onTurnDone?.();
@@ -485,6 +489,18 @@ function handleStdout(
         ...(event.modelSurfaces ? { modelSurfaces: event.modelSurfaces } : {}),
         ...(event.allowedModelsByType
           ? { allowedModelsByType: event.allowedModelsByType }
+          : {}),
+        // The queue snapshot rides the history event (remy always includes it,
+        // possibly empty) and MUST be carried onto the resolved value: the
+        // `completed` this promise resolves on is just {success:true}, so
+        // dropping it here left getAgentHistory().queuedMessages permanently
+        // undefined. That silently disabled resume-on-restart — a persisted
+        // queue read as empty, so no `resume` was ever sent and a restored
+        // message sat dormant until it fired at the end of some later,
+        // unrelated turn — and made the seed broadcast an empty queue to the
+        // frontend, hiding the very item the user was trying to cancel.
+        ...(Array.isArray(event.queuedMessages)
+          ? { queuedMessages: event.queuedMessages }
           : {}),
       };
     }
@@ -741,6 +757,12 @@ export async function getAgentHistory(
  * tracked view, and — since remy persists but does NOT auto-drain — send
  * `resume` if there's pending work. Fire-and-forget; best-effort.
  *
+ * "Pending work" excludes held items. Remy marks restored USER messages held,
+ * because a message someone typed before the process died must not run itself
+ * at the end of whatever they do next; it shows in the queue card to send or
+ * discard. Remy's own chain/background steps still resume — surviving a restart
+ * is why the queue is persisted at all.
+ *
  * Uses a tiny page (`limit: 1`): queuedMessages is the queue snapshot, returned
  * independently of the messages page. If a future remy gates it on a full page,
  * drop the limit.
@@ -761,10 +783,16 @@ async function seedQueueAndMaybeResume(
     // and, on the FE, re-seeds its queued-message tracking so dequeued messages
     // still render as chat bubbles.
     broadcast('agentQueueChanged', { queuedMessages: snapshot });
+    const pending = snapshot.filter((item) => !item.held);
     if (snapshot.length > 0) {
       log.info(
-        `Queue non-empty on (re)start (${snapshot.length} items) — sending resume`,
+        `Queue on (re)start: ${snapshot.length} item(s), ${pending.length} pending, ${
+          snapshot.length - pending.length
+        } held`,
       );
+    }
+    if (pending.length > 0) {
+      log.info(`Sending resume for ${pending.length} pending item(s)`);
       // Remy's contract: resume completes immediately; per-turn events follow
       // as the queue drains.
       sendAgentCommand(pm, 'resume', {}, 30_000);
