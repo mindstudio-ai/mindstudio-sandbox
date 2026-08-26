@@ -39,6 +39,7 @@ import {
 } from './dataSources.js';
 import { voiceHandlers, voiceHelp, voiceSpecs } from './voice.js';
 import { jewelsHandlers, jewelsHelp, jewelsSpecs } from './jewels.js';
+import { settingsHandlers, settingsHelp, settingsSpecs } from './settings.js';
 
 export const SPECS = {
   ...requestsSpecs,
@@ -58,6 +59,7 @@ export const SPECS = {
   ...dataSourcesSpecs,
   ...voiceSpecs,
   ...jewelsSpecs,
+  ...settingsSpecs,
 };
 
 export type CommandKey = keyof typeof SPECS;
@@ -80,6 +82,7 @@ export const HANDLERS = {
   ...dataSourcesHandlers,
   ...voiceHandlers,
   ...jewelsHandlers,
+  ...settingsHandlers,
 };
 
 /**
@@ -109,4 +112,5 @@ export const GROUP_HELP: Record<string, string> = {
   datasources: dataSourcesHelp,
   voice: voiceHelp,
   jewels: jewelsHelp,
+  settings: settingsHelp,
 };

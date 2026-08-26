@@ -31,6 +31,7 @@ Commands:
   datasources Build and query searchable document corpora (RAG)
   voice       Phone numbers, voice call log + transcripts, voice policy settings
   jewels      Monitor jewel shadowing; review + approve the proposal queue
+  settings    App settings — signup allowlist, test accounts, embed origins, toggles
 
 Run 'mindstudio-prod <command> --help' for details on each command.
 
@@ -59,6 +60,7 @@ const GROUPS = [
   'datasources',
   'voice',
   'jewels',
+  'settings',
 ] as const;
 
 type Route = { key: CommandKey; argv: string[] };
@@ -94,6 +96,16 @@ export function resolveRoute(argv: string[]): Route | { error: string } {
   if (group === 'domains' && sub === 'custom') {
     return {
       error: `Unknown subcommand: domains custom ${action ?? ''}. Run 'mindstudio-prod domains --help'`,
+    };
+  }
+
+  // Same for the nested settings groups: name the bad action, not the group.
+  if (
+    group === 'settings' &&
+    ['allowlist', 'test-accounts', 'frame-ancestors'].includes(sub ?? '')
+  ) {
+    return {
+      error: `Unknown subcommand: settings ${sub} ${action ?? ''}. Run 'mindstudio-prod settings --help'`,
     };
   }
 
