@@ -40,6 +40,7 @@ import {
 import { voiceHandlers, voiceHelp, voiceSpecs } from './voice.js';
 import { jewelsHandlers, jewelsHelp, jewelsSpecs } from './jewels.js';
 import { settingsHandlers, settingsHelp, settingsSpecs } from './settings.js';
+import { emailHandlers, emailHelp, emailSpecs } from './email.js';
 
 export const SPECS = {
   ...requestsSpecs,
@@ -60,6 +61,7 @@ export const SPECS = {
   ...voiceSpecs,
   ...jewelsSpecs,
   ...settingsSpecs,
+  ...emailSpecs,
 };
 
 export type CommandKey = keyof typeof SPECS;
@@ -83,6 +85,7 @@ export const HANDLERS = {
   ...voiceHandlers,
   ...jewelsHandlers,
   ...settingsHandlers,
+  ...emailHandlers,
 };
 
 /**
@@ -113,4 +116,5 @@ export const GROUP_HELP: Record<string, string> = {
   voice: voiceHelp,
   jewels: jewelsHelp,
   settings: settingsHelp,
+  email: emailHelp,
 };
