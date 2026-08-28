@@ -34,13 +34,17 @@ interface DiagnosticItem {
 //   tunnel                          this file            remy
 //   viewport capture       20s   <  30s              <  45s
 //   full-page capture      90s   <  120s             <  135s
+//   setup-browser          15s   <  25s              <  30s
 //   whole browser command  100s  <  120s                 (no timer; owned here)
 //
 // See mindstudio-local-model-tunnel/src/dev/browser/screenshot.ts and
-// src/dev/stdin-commands/browser.ts for the inner values.
+// src/dev/stdin-commands/browser.ts for the inner values. The setup-browser
+// handler's inner rung is its 15s page.goto (setup-browser.ts) — this rung
+// used to match it at 15s, so the caller saw a bare "timeout (15s)" instead
+// of the navigation error that names the path and the cause.
 const SCREENSHOT_VIEWPORT_TIMEOUT_MS = 30_000;
 const SCREENSHOT_FULLPAGE_TIMEOUT_MS = 120_000;
-const SETUP_BROWSER_TIMEOUT_MS = 15_000;
+const SETUP_BROWSER_TIMEOUT_MS = 25_000;
 // Exceeds the 15s page.reload inside the supervisor's setPreviewMode.
 const SET_VIEWPORT_TIMEOUT_MS = 20_000;
 
