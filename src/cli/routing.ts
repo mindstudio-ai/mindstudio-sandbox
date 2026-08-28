@@ -27,7 +27,7 @@ Commands:
   data        Sync databases between dev and live (lift-from-dev / lift-from-live)
   issues      File and manage issues (bugs, ideas, tasks)
   prerender   Manage + verify prerendered snapshots served to bots/crawlers
-  files       Upload + manage files on the app's CDN (build-time)
+  files       Store, retrieve, share (signed links) + manage files in the app's stores
   datasources Build and query searchable document corpora (RAG)
   voice       Phone numbers, voice call log + transcripts, voice policy settings
   jewels      Monitor jewel shadowing; review + approve the proposal queue

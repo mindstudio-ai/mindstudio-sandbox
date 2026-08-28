@@ -9,6 +9,7 @@ import { EXIT, fatal } from '../errors.js';
 import { out, progress } from '../output.js';
 import { sleep } from '../sleep.js';
 import type { Handler } from '../types.js';
+import { uploadDirect } from '../upload.js';
 
 const DEFAULT_SOURCE = 'default';
 const POLL_MS = 3000;
@@ -199,29 +200,6 @@ async function dataSourcesAdd(appId: string, a: Args) {
   }
 
   out({ dataSource: slug, documents: results });
-}
-
-/** Submit the presigned POST. Bytes go to storage, never through the API. */
-async function uploadDirect(
-  upload: { uploadUrl: string; uploadFields: Record<string, string> },
-  bytes: Buffer,
-  filename: string,
-): Promise<void> {
-  const form = new FormData();
-  for (const [key, value] of Object.entries(upload.uploadFields)) {
-    form.append(key, value);
-  }
-  form.append('file', new Blob([new Uint8Array(bytes)]), filename);
-
-  const res = await fetch(upload.uploadUrl, { method: 'POST', body: form });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    fatal(
-      `Upload of "${filename}" failed: ${res.status} ${res.statusText}${
-        detail ? ` — ${detail.slice(0, 300)}` : ''
-      }`,
-    );
-  }
 }
 
 /**
