@@ -9,7 +9,7 @@
  * returned null, the web interface became undiscoverable, and the dev server
  * never started. Tolerating the slop WITHOUT rewriting would be worse than
  * failing — we aren't the only strict parser of these files (the
- * `mindstudio-prod` CLI and the server-side deploy pipeline both are), so a
+ * admin CLI and the server-side deploy pipeline both are), so a
  * lenient-only read just relocates the failure to publish time, far from the
  * edit that caused it. Repairing on disk fixes it for every consumer at once,
  * and the repaired file rides the next `_draft` snapshot.
