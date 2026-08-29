@@ -9,12 +9,11 @@
  * steady state is unaffected; the JSON5 path only engages for a file that would
  * otherwise have failed outright.
  *
- * Kept in its own leaf module, importing nothing but JSON5, because the
- * `mindstudio-prod` CLI needs exactly this function and nothing else. Its
- * sibling `jsonConfig.ts` adds read-and-repair-on-disk on top, which drags in
- * the file lock, the logger, and the file watcher — a graph a short-lived CLI
- * has no business loading to parse one string. See `jsonConfig.ts` for why
- * repairing on disk matters for the callers that DO write.
+ * Kept as its own leaf module, importing nothing but JSON5: the pure-parse
+ * layer under `jsonConfig.ts`, which adds read-and-repair-on-disk on top. See
+ * `jsonConfig.ts` for why repairing on disk matters for callers that write.
+ * (The admin CLI — @madewithremy/admin — carries its own copy of this
+ * parser.)
  */
 
 import JSON5 from 'json5';
@@ -33,7 +32,7 @@ export function msg(err: unknown): string {
 
 /**
  * Parse a config string. Pure — no I/O, no repair. Use this when the caller
- * already holds the file contents, or must not write (e.g. the CLI).
+ * already holds the file contents, or must not write.
  */
 export function parseJsonConfig<T>(raw: string): ParseResult<T> {
   let strictError: string;

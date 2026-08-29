@@ -355,25 +355,27 @@ export function configureGit(workspaceDir: string): void {
 // CLI tools
 // ---------------------------------------------------------------------------
 
-export function linkProdCli(): void {
-  const cliSource = '/vercel/sandbox/dist/cli/prod.js';
-  const binDir = path.join(os.homedir(), '.local', 'bin');
-  const cliTarget = path.join(binDir, 'mindstudio-prod');
-
+/**
+ * Ensure the remy-admin CLI (@madewithremy/admin) is on PATH.
+ *
+ * Snapshot builds install it (scripts/prepare-snapshot.ts, section 4), so a
+ * snapshot boot skips straight through; this is the self-heal for a boot that
+ * didn't come from a prepared snapshot. Best-effort: a registry blip degrades
+ * to a warning rather than failing the boot, matching the old symlink
+ * self-heal — the CLI is the agent's tooling, not a boot dependency.
+ */
+export function ensureProdCli(): void {
+  if (isInstalled('remy-admin')) {
+    log.info('remy-admin already installed, skipping');
+    return;
+  }
   try {
-    // tsc outputs 644 — make executable so the shebang works
-    fsSync.chmodSync(cliSource, 0o755);
-    fsSync.mkdirSync(binDir, { recursive: true });
-    // Remove stale symlink if present (e.g., pointing to old path)
-    try {
-      fsSync.unlinkSync(cliTarget);
-    } catch {
-      // doesn't exist yet
-    }
-    fsSync.symlinkSync(cliSource, cliTarget);
-    log.info('Linked mindstudio-prod CLI');
+    run('npm install -g @madewithremy/admin', {
+      label: 'npm install -g @madewithremy/admin',
+    });
+    verifyInstalled('remy-admin');
   } catch (err) {
-    log.warn(`Failed to link mindstudio-prod CLI: ${err}`);
+    log.warn(`Failed to install remy-admin CLI: ${err}`);
   }
 }
 

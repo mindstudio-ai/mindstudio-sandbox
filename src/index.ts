@@ -13,7 +13,7 @@ import {
   unshallowAsync,
   readAppConfig,
   installDependencies,
-  linkProdCli,
+  ensureProdCli,
   setBootstrapRegistry,
 } from './bootstrap/index.js';
 import { ProcessRegistry } from './processes/ProcessRegistry.js';
@@ -429,7 +429,7 @@ async function main(): Promise<void> {
     await writeTunnelConfig(config);
     await cloneAppRepo(config, progress);
     configureGit(config.workspaceDir);
-    linkProdCli();
+    ensureProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
     const restoreOutcome = await snapshotManager.restore();
     // Drop any cached log WriteStream FDs — `git restore` does atomic

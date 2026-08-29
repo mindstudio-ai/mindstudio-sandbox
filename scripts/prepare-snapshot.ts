@@ -15,7 +15,6 @@
 
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 const SCAFFOLD_REPO =
@@ -105,22 +104,16 @@ if (allDeps.size > 0) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Symlink mindstudio-prod CLI onto PATH
+// 4. Install the remy-admin CLI (@madewithremy/admin) onto PATH
 // ---------------------------------------------------------------------------
 
-const cliSource = '/vercel/sandbox/dist/cli/prod.js';
-const binDir = path.join(os.homedir(), '.local', 'bin');
-const cliTarget = path.join(binDir, 'mindstudio-prod');
-
-try {
-  fs.chmodSync(cliSource, 0o755);
-  fs.mkdirSync(binDir, { recursive: true });
-  if (fs.existsSync(cliTarget)) fs.unlinkSync(cliTarget);
-  fs.symlinkSync(cliSource, cliTarget);
-  console.log(`\nSymlinked ${cliTarget} → ${cliSource}`);
-} catch (err) {
-  console.warn(`Warning: could not symlink CLI: ${err}`);
-}
+// The admin CLI lives in its own package now. Plain global install, same as
+// the other boot-installed tools (remy, mindstudio-local, agent SDK) — their
+// bins are proven to be on the sandbox PATH. Always the latest published
+// version: the CLI on the image is the agent's tooling, deliberately
+// independent of anything the app repo pins. Boot self-heals if this step
+// (or the snapshot) is missing — see ensureProdCli in src/bootstrap/index.ts.
+run('npm install -g @madewithremy/admin');
 
 // ---------------------------------------------------------------------------
 // Done
