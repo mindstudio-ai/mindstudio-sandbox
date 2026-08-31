@@ -154,34 +154,6 @@ interface PendingCommand {
 
 const pending = new Map<string, PendingCommand>();
 
-// ---------------------------------------------------------------------------
-// Aborted-trigger tracking (Continue button after cancel mid-chain)
-// ---------------------------------------------------------------------------
-
-/** Text of the currently-running automated turn, captured from user_message. */
-let currentAutomatedTurnText: string | null = null;
-/** Last automated trigger that was cancelled — drives the Continue button. */
-let lastAbortedTrigger: string | null = null;
-
-export function getLastAbortedTrigger(): string | null {
-  return lastAbortedTrigger;
-}
-
-/**
- * Set the last aborted trigger. Broadcasts `lastAbortedTriggerChanged` only
- * when the value actually changes so repeated clears don't spam clients.
- */
-export function setLastAbortedTrigger(
-  value: string | null,
-  broadcast: AgentCallbacks['broadcast'],
-): void {
-  if (lastAbortedTrigger === value) {
-    return;
-  }
-  lastAbortedTrigger = value;
-  broadcast('lastAbortedTriggerChanged', { lastAbortedTrigger: value });
-}
-
 /**
  * Send a command to the agent and wait for the correlated `completed` event.
  * Returns `{ requestId, response }` so callers can track the requestId
@@ -320,9 +292,6 @@ function handleStdout(
   // --- Turn started — track remy-initiated turns ---
 
   if (event.event === 'turn_started') {
-    // Fresh turn — drop any trigger text captured from a previous turn's
-    // user_message so a plain turn can't inherit a stale automated trigger.
-    currentAutomatedTurnText = null;
     const turnId = event.requestId;
     if (!turnId) {
       // Legacy path (pre-uniform-user_message contract): remy didn't emit a
@@ -362,19 +331,6 @@ function handleStdout(
   // Rendering is driven by the @@automated::X@@ prefix in `text`. ---
 
   if (event.event === 'user_message') {
-    // Snapshot the trigger text for potential cancel → Continue-button
-    // re-trigger. Only action-sentinel turns (sandbox- or chain-initiated)
-    // get tracked; user-typed messages and background_results deliveries
-    // don't surface a resume affordance — and, since a merged turn emits one
-    // user_message per absorbed message, a plain text must never null a
-    // trigger armed earlier in the same turn (the reset lives in
-    // turn_started).
-    if (
-      event.text.startsWith('@@automated::') &&
-      !event.text.startsWith('@@automated::background_results@@')
-    ) {
-      currentAutomatedTurnText = event.text;
-    }
     const { event: _evt, ...data } = event;
     cb.broadcast('agentUserMessage', data);
     return;
@@ -439,17 +395,10 @@ function handleStdout(
     }
 
     // Always broadcast to frontend as the turn-done signal. Spread carries
-    // cancelledMessages / cancelledQueued through to the frontend opaquely.
+    // heldMessages / pausedPipeline / cancelledQueued through to the frontend
+    // opaquely.
     const { event: _evt, ...data } = event;
     cb.broadcast('agentCompleted', data);
-
-    // If an automated turn was cancelled (success: false), snapshot its
-    // trigger text so the frontend can offer a Continue button. Clear the
-    // per-turn captured text regardless so the next turn starts fresh.
-    if (!event.success && currentAutomatedTurnText) {
-      setLastAbortedTrigger(currentAutomatedTurnText, cb.broadcast);
-    }
-    currentAutomatedTurnText = null;
     return;
   }
 

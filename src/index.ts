@@ -531,7 +531,6 @@ async function main(): Promise<void> {
         onProjectStatusChanged: () => {
           broadcast('projectStatusChanged', getProjectStatus());
         },
-        broadcast,
       }),
     );
 

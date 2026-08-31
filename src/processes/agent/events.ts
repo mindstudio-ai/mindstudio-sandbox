@@ -8,8 +8,11 @@ import { parseJsonEvent } from '../parseJsonEvent.js';
  * A message sitting in remy's FIFO queue. `source:'user'` is an intentional
  * mid-turn user send — the sandbox now forwards user messages while remy is
  * busy and they queue instead of being rejected (see actions.ts). `chain` and
- * `background` are system items remy enqueues internally. Only `user` items are
- * cancellable (via cancelQueued); they carry `command.requestId`.
+ * `background` are system items remy enqueues internally.
+ *
+ * Cancellable via cancelQueued: `user` items, and `chain` items that are `held`
+ * — a build pipeline paused by a Stop. Both carry `command.requestId`; a held
+ * chain item can only be removed by passing that id explicitly.
  */
 export interface QueuedMessage {
   command: {
@@ -31,12 +34,14 @@ export interface QueuedMessage {
   delivery?: 'asap' | 'afterTurn';
   /**
    * Waiting on the user, not on the agent — remy will not deliver this on its
-   * own. Set on the user messages that survive a cancel, and on user messages
-   * restored from disk after a remy restart. Sending a new message or promoting
-   * the item releases it; the X discards it.
+   * own. Set on the user messages that survive a cancel, on user messages
+   * restored from disk after a remy restart, and on the `chain` steps of a build
+   * pipeline a Stop paused. Sending a new message releases all of it (the
+   * pipeline goes behind that message); promoting releases one user item; the X
+   * discards.
    *
    * Held items are deliberately excluded from derived busy and from
-   * resume-on-restart: they are pending user intent, not pipeline work.
+   * resume-on-restart: nothing here runs until the user acts.
    */
   held?: boolean;
 }
@@ -292,10 +297,25 @@ export interface AgentCompletedEvent {
   /** True for a merged-away requestId's synthetic terminal (see above). */
   absorbed?: boolean;
   /**
-   * On a `cancel` command's completed, the items drained from the queue by the
-   * hard stop (all sources). Typed for completeness; not surfaced in any UI.
+   * On a `cancel` command's completed, the background follow-ups dropped by the
+   * stop (they were context for the turn being killed). Typed for completeness;
+   * not surfaced in any UI.
    */
   cancelledMessages?: QueuedMessage[];
+  /**
+   * On a `cancel` command's completed, the items the stop left in the queue
+   * held. Typed for completeness; the queue card renders the authoritative
+   * snapshot from queue_changed instead.
+   */
+  heldMessages?: QueuedMessage[];
+  /**
+   * On a `cancel` command's completed: this stop paused a build pipeline — the
+   * interrupted step plus the remaining steps are held in remy's queue and
+   * resume on the user's next send. Absent on an older remy, which destroyed the
+   * remainder instead; that absence is exactly what agentCancel branches on to
+   * decide whether to drop the project out of onboarding.
+   */
+  pausedPipeline?: boolean;
   /**
    * On a `cancelQueued` command's completed, the pending user messages removed
    * (the matched items; [] if nothing matched).

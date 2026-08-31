@@ -3,11 +3,7 @@
  */
 
 import type { ProcessManager } from '../ProcessManager.js';
-import {
-  sendAgentCommand,
-  setLastAbortedTrigger,
-  getAgentHistory,
-} from './index.js';
+import { sendAgentCommand, getAgentHistory } from './index.js';
 import {
   hasPendingUserBlockingTool,
   clearPendingExternalTools,
@@ -30,11 +26,9 @@ export function createAgentActions(
   pm: ProcessManager,
   callbacks: {
     onProjectStatusChanged?: () => void;
-    broadcast: (event: string, data: Record<string, unknown>) => void;
   },
 ): Record<string, ActionHandler> {
   const onProjectStatusChanged = callbacks.onProjectStatusChanged;
-  const broadcast = callbacks.broadcast;
 
   return {
     // User sends a message to the agent
@@ -83,11 +77,6 @@ export function createAgentActions(
 
       const isAutomated = text.startsWith('@@automated::');
 
-      // Any new user message ends the Continue-button window — clear the
-      // stored aborted trigger. If the user clicked Continue (re-sending
-      // the stored trigger), the re-run will re-populate on its next cancel.
-      setLastAbortedTrigger(null, broadcast);
-
       // Advance onboarding to 'building' when the user approves the initial
       // plan. This is the ONLY path into 'building': the agent has no tool
       // for it (markBuildComplete only ever sets buildComplete, and is
@@ -130,23 +119,36 @@ export function createAgentActions(
     // User cancel in-progress agent message
     agentCancel: async () => {
       const { response } = sendAgentCommand(pm, 'cancel', {}, 5_000);
-      const result = await response;
-      // If the user cancels while the build pipeline is mid-flight, drop
-      // them out of onboarding entirely so the IDE reverts to normal dev
-      // mode rather than getting stuck on a "Building..." screen. Skips
-      // the buildComplete reveal — the cancel implies they don't want it.
-      if (getOnboardingState() === 'building') {
+      const result = (await response) as { pausedPipeline?: boolean };
+      // A Stop that PAUSED a build pipeline stays in 'building': the remaining
+      // steps are still in remy's queue, held, and the user's next message
+      // resumes them. Unlocking the editor here would reveal a half-built app
+      // and strand the real reveal — postBuildPolish's markBuildComplete —
+      // behind an onboarding that had already ended.
+      //
+      // When nothing was paused, the old escape hatch stands: a cancel during a
+      // build that can't be resumed (a one-off action, or an older remy that
+      // still destroys the chain) would otherwise strand 'building' with no
+      // affordance at all. The user's other exits are unaffected — the queue
+      // card's Discard, /finish, and the locked-tab dialog's Unlock Editor.
+      if (
+        result?.pausedPipeline !== true &&
+        getOnboardingState() === 'building'
+      ) {
         if (setOnboardingState('onboardingFinished')) {
           onProjectStatusChanged?.();
         }
       }
       return result;
     },
-    // Cancel pending QUEUED user messages only — never touches the in-flight
-    // turn (use agentCancel for a hard stop). No `id` cancels all pending user
-    // messages; `id` cancels the one whose command.requestId === id. remy
-    // protects chain/background items. Response carries cancelledQueued (the
-    // removed items); remy also fires queue_changed with the new snapshot.
+    // Cancel pending QUEUED messages — never touches the in-flight turn (use
+    // agentCancel for a hard stop). No `id` cancels all pending user messages;
+    // `id` cancels the one whose command.requestId === id, which is also the
+    // only way to discard a held chain step (a build pipeline a Stop paused —
+    // that's the queue card's Discard). remy protects live pipeline work:
+    // deliverable chain items and background results are never removable.
+    // Response carries cancelledQueued (the removed items); remy also fires
+    // queue_changed with the new snapshot.
     agentCancelQueued: async (p) => {
       const { id } = p as { id?: string };
       const { response } = sendAgentCommand(
@@ -187,10 +189,11 @@ export function createAgentActions(
         ...(typeof limit === 'number' ? { limit } : {}),
       });
     },
-    // Clear conversation — the only "start fresh / new session" path. To
-    // start fresh on a specific model, the frontend composes agentClear +
-    // agentChangeModels (newSession is gone; clear no longer touches model
-    // config, so picks persist across a clear unless changeModels follows).
+    // Clear conversation — the only "start fresh / new session" path.
+    // Clear does not touch model config: the user's picks persist across a
+    // clear, and the session_cleared payload echoes them back. Starting
+    // fresh on a *different* model means composing agentClear +
+    // agentChangeModels.
     agentClear: async () => {
       const { response } = sendAgentCommand(pm, 'clear', {}, 5_000);
       return await response;
