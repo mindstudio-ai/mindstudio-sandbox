@@ -27,11 +27,7 @@ import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
 import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager.js';
-import {
-  getAgentHistory,
-  getAgentActivity,
-  getLastAbortedTrigger,
-} from '../processes/agent/index.js';
+import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import {
   readAgentStats,
   type AgentStats,
@@ -181,10 +177,17 @@ export async function buildInitFrame(
         : null,
     // Pending message queue snapshot — seed on connect/reconnect, then
     // reconcile to the agentQueueChanged broadcast for live updates.
+    //
+    // `null` means "no snapshot to report" (remy not running, get_history
+    // failed), which is NOT the same as `[]` ("remy says the queue is empty").
+    // The frontend keeps what it holds on null: a paused build pipeline is idle,
+    // so an empty frame on a reconnect blip would otherwise wipe it off screen
+    // and nothing re-broadcasts until the queue next mutates — which for a
+    // parked pipeline may be never.
     queuedMessages:
       'queuedMessages' in historyResult && historyResult.queuedMessages
         ? historyResult.queuedMessages
-        : [],
+        : null,
     ...(historyResult.running ? { agentRunning: true } : {}),
     ...(historyResult.currentRequestId
       ? { agentCurrentRequestId: historyResult.currentRequestId }
@@ -206,7 +209,6 @@ export async function buildInitFrame(
     plan,
     agentStats,
     appBrand,
-    lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,
   };
@@ -228,7 +230,8 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     agentModels: null,
     agentModelSurfaces: null,
     agentAllowedModelsByType: null,
-    queuedMessages: [],
+    // See buildInitFrame — null is "unknown", not "empty".
+    queuedMessages: null,
     processes: [],
     agentActivity: getAgentActivity(),
     ptySessionIds: [],
@@ -238,7 +241,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     projectStatus: getProjectStatus(),
     agentStats: null,
     appBrand: null,
-    lastAbortedTrigger: getLastAbortedTrigger(),
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,
   };
