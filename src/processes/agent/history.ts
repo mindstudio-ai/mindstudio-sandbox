@@ -7,7 +7,7 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *   { role: "user", content: "hi" }
  *   { role: "assistant", content: [
  *       { type: "thinking", thinking: "...", signature: "..." },
- *       { type: "text", text: "hello" },
+ *       { type: "text", text: "hello", displayText?: "...", suggestions?: [...] },
  *       { type: "tool", id: "tc_1", name: "readFile", input: {...}, result: "...", isError: false }
  *   ]}
  *   { role: "user", content: "result", toolCallId: "tc_1", isToolError: false }
@@ -22,7 +22,10 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *
  * Note the assistant envelope is rebuilt field-by-field rather than spread, to
  * keep remy's internal fields out of the frontend payload. Anything new that
- * needs to reach the frontend has to be added here explicitly.
+ * needs to reach the frontend has to be added here explicitly. Content blocks
+ * are the exception — they pass through whole, which is how a text block's
+ * `displayText` (the copy to render, with `[label](suggest:…)` chip links
+ * removed) and `suggestions` reach the editor without a change here.
  */
 export function transformHistory(
   raw: unknown[],

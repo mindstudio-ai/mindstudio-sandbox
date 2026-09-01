@@ -160,9 +160,36 @@ export interface AgentUserMessageEvent {
   hidden?: boolean;
 }
 
+/** One suggestion chip Remy is offering: the words on the chip, and the message
+ * a tap sends as the user. Remy writes these as `[label](suggest:message)` in
+ * its own markdown and parses them out itself — the wire carries the parsed
+ * form, and no consumer should re-scan prose for the syntax. */
+export interface Suggestion {
+  label: string;
+  message: string;
+}
+
 /** Streaming events during a command — carry requestId. */
 export type AgentStreamEvent =
   | { event: 'text'; text: string; requestId?: string; parentToolId?: string }
+  | {
+      /**
+       * Replacement for the open assistant text block, once that block offers
+       * suggestion chips. `text` is the block's full display copy with the
+       * chip links removed — reconcile the accumulated `text` deltas for that
+       * block to it, don't append. Fires when a new chip completes mid-stream
+       * and once more as the block closes, so the final snapshot matches the
+       * `displayText` that `history` will serve for the same block.
+       *
+       * Only ever describes top-level assistant prose; sub-agent text is never
+       * scanned. Absent on an older remy, which streamed the chip syntax
+       * inline and left parsing to the client.
+       */
+      event: 'text_block';
+      text: string;
+      suggestions: Suggestion[];
+      requestId?: string;
+    }
   | {
       event: 'thinking';
       text: string;

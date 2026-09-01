@@ -69,6 +69,7 @@ const EVENT_MAP: Record<string, string> = {
   turn_started: 'agentTurnStarted',
   completed: 'agentCompleted',
   text: 'agentText',
+  text_block: 'agentTextBlock',
   thinking: 'agentThinking',
   tool_start: 'agentToolStart',
   tool_input_delta: 'agentToolInputDelta',
