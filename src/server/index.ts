@@ -60,6 +60,27 @@ export function setProxyTarget(port: number): void {
   proxy.on('error', () => {
     // Handled per-request in httpRoutes
   });
+  // Server-Sent Events need their headers on the wire immediately. http-proxy
+  // writeHead()s and pipes, and Node holds staged headers until the first body
+  // byte — which for an idle stream is the platform's keepalive 15s later, so
+  // the subscriber's fetch() promise doesn't settle until then.
+  //
+  // This CANNOT flush synchronously: http-proxy emits 'proxyRes' BEFORE the
+  // outgoing passes that call res.writeHead(), and that loop is guarded by
+  // `if (!res.headersSent)`. Flushing here would put a bare 200 on the wire
+  // with none of the upstream headers and skip the passes that set the real
+  // ones. The passes run synchronously right after this emit, so defer a tick.
+  proxy.on('proxyRes', (proxyRes, _req, res) => {
+    const contentType = String(proxyRes.headers['content-type'] ?? '');
+    if (!contentType.includes('text/event-stream')) {
+      return;
+    }
+    setImmediate(() => {
+      if (!res.writableEnded) {
+        res.flushHeaders();
+      }
+    });
+  });
   log.info(`Preview proxy target set to localhost:${port}`);
 }
 
