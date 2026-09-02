@@ -12,6 +12,11 @@ export interface Config {
   workspaceDir: string;
   port: number;
   sandboxToken: string;
+  /** Platform sandbox-session id, stamped on `_draft` snapshot commits so a
+   * superseded instance can detect a newer session's tip and stop pushing.
+   * Null on platform versions that don't send it — fencing degrades to
+   * lease-only. */
+  sessionId: string | null;
   logLevel: LogLevel;
 }
 
@@ -65,6 +70,7 @@ export function loadConfig(): Config {
     workspaceDir: '/home/vercel-sandbox/workspace',
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken,
+    sessionId: process.env['MINDSTUDIO_SESSION_ID'] || null,
     logLevel,
   };
 

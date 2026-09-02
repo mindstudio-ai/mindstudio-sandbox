@@ -211,6 +211,10 @@ export async function buildInitFrame(
     appBrand,
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,
+    // Snapshot health at connect time, so an editor that (re)connects during
+    // push rot or after a fence sees it immediately — transitions afterwards
+    // arrive as `snapshotStatusChanged` broadcasts.
+    snapshot: ctx.snapshotManager?.getSnapshotStatus() ?? null,
   };
 }
 
@@ -243,5 +247,6 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     appBrand: null,
     sandboxBrowser: getSandboxBrowserState(),
     installFailures: ctx.installFailures,
+    snapshot: ctx.snapshotManager?.getSnapshotStatus() ?? null,
   };
 }

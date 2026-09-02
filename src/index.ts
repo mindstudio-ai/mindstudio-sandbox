@@ -351,7 +351,16 @@ async function main(): Promise<void> {
 
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
-  const snapshotManager = new DraftSnapshotManager(config.workspaceDir);
+  const snapshotManager = new DraftSnapshotManager(config.workspaceDir, {
+    sessionId: config.sessionId,
+    // Health transitions (pushes failing / recovered / fenced) go straight to
+    // editor clients so "your work isn't backed up" is visible, not a counter
+    // nobody polls.
+    onStatusChange: () =>
+      broadcast('snapshotStatusChanged', {
+        snapshot: snapshotManager.getSnapshotStatus(),
+      }),
+  });
   ctx.snapshotManager = snapshotManager;
   let shuttingDown = false;
   let bootstrapComplete = false;
@@ -367,7 +376,10 @@ async function main(): Promise<void> {
     stopAutoSave();
     await saveState();
     if (bootstrapComplete) {
-      await snapshotManager.snapshot();
+      // flushNow, not snapshot(): the plain call drops when a run is already
+      // in flight and honors push backoff — either way the final state never
+      // ships. This is the last chance before the container dies.
+      await snapshotManager.flushNow();
     }
     snapshotManager.stop();
     closeAllPty();
