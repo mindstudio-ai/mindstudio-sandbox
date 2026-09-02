@@ -2,7 +2,11 @@
  * Git snapshot manager for the `_draft` branch.
  *
  * Commits all workspace state (files + session state) to a `_draft` branch and
- * force-pushes to the remote. On boot, restores from the draft if one exists.
+ * pushes it with `--force-with-lease`: forced because the branch is re-rooted
+ * on every boot (history is never read), leased so a superseded instance can
+ * never clobber a newer one's snapshots — a tip stamped by a different
+ * platform session fences this instance permanently (see
+ * resolveLeaseRejection). On boot, restores from the draft if one exists.
  * Provides durability against unclean container deaths. Uses git plumbing
  * commands with a temporary index file so snapshots are completely isolated
  * from remy's working tree and any in-progress git ops.
@@ -117,9 +121,32 @@ export class DraftSnapshotManager {
    * remote's unbounded history chain; the git server's gc then reclaims it.
    * Consumed once the re-root commit is created locally. See restore(). */
   private rerootPending = false;
+  /** What we believe the remote `_draft` tip is: seeded from the tip fetched
+   * at restore (null = ref absent / no_draft), updated on every successful
+   * push. This is the `--force-with-lease` expectation — the compare-and-swap
+   * that stops two live sandboxes from silently clobbering each other. */
+  private expectedRemoteSha: string | null = null;
+  /** Permanently disabled: a lease rejection revealed a tip stamped by a
+   * DIFFERENT platform session, meaning this instance has been superseded by
+   * a newer sandbox. A fenced instance must never push again — not even the
+   * platform's pre-stop /flush — or it would overwrite the successor's work
+   * (RPT-1204: an idle zombie's backstop erased hours of a user's work). */
+  private fenced = false;
+  /** The platform sandbox-session id this instance runs as (from
+   * MINDSTUDIO_SESSION_ID). Stamped on snapshot commits; absent on older
+   * platform versions, in which case fencing degrades to lease-only. */
+  private readonly sessionId: string | null;
+  /** Fired on snapshot-health transitions (push failing/recovered/fenced) so
+   * the C&C server can broadcast fresh status to editor clients. */
+  private readonly onStatusChange: (() => void) | null;
 
-  constructor(workspaceDir: string) {
+  constructor(
+    workspaceDir: string,
+    opts?: { sessionId?: string | null; onStatusChange?: () => void },
+  ) {
     this.workspaceDir = workspaceDir;
+    this.sessionId = opts?.sessionId ?? null;
+    this.onStatusChange = opts?.onStatusChange ?? null;
   }
 
   /** Start the backstop timer — the safety net that snapshots any changes the
@@ -161,6 +188,9 @@ export class DraftSnapshotManager {
    * DraftSyncStore.scheduleFlush. The backstop covers anything not routed here.
    */
   scheduleSnapshot(): void {
+    if (this.fenced) {
+      return;
+    }
     if (this.debounceSinceMs === null) {
       this.debounceSinceMs = Date.now();
     }
@@ -197,11 +227,16 @@ export class DraftSnapshotManager {
       lastRestoreOutcome: this.lastRestoreOutcome,
       consecutivePushFailures: this.consecutivePushFailures,
       pushBackoffUntil: this.pushBackoffUntil,
+      fenced: this.fenced,
     };
   }
 
   /** Take a snapshot: commit workspace to _draft and force-push. */
   async snapshot(): Promise<boolean> {
+    if (this.fenced) {
+      log.debug('Fenced by a newer session; refusing to snapshot');
+      return false;
+    }
     if (this.inFlight) {
       log.debug('Snapshot already in progress, skipping');
       return false;
@@ -222,6 +257,10 @@ export class DraftSnapshotManager {
    * be attempted now.
    */
   async flushNow(): Promise<boolean> {
+    if (this.fenced) {
+      log.warn('Fenced by a newer session; refusing to flush');
+      return false;
+    }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -362,6 +401,10 @@ export class DraftSnapshotManager {
     // NB: intentionally do NOT record draftSha as lastPushedSha — the re-root
     // must push even when the tree is unchanged, to drop the remote history.
     this.rerootPending = true;
+
+    // The restored tip is our lease base: the first push succeeds only if the
+    // remote still points here, i.e. no other instance has pushed since.
+    this.expectedRemoteSha = draftSha;
 
     log.info('Workspace restored from draft snapshot');
     this.lastError = null;
@@ -526,7 +569,11 @@ export class DraftSnapshotManager {
         const parent = parentResult.ok ? parentResult.stdout.trim() : '';
         parentFlag = parent ? `-p ${parent}` : '';
       }
-      const msg = `snapshot ${new Date().toISOString()}`;
+      // Stamp the platform session id so any instance inspecting the remote
+      // tip (see resolveLeaseRejection) can tell whose snapshot it is.
+      const msg = this.sessionId
+        ? `snapshot ${new Date().toISOString()} session=${this.sessionId}`
+        : `snapshot ${new Date().toISOString()}`;
       const commitResult = await this.exec(
         `git commit-tree ${treeSha} ${parentFlag} -m "${msg}"`,
       );
@@ -581,14 +628,26 @@ export class DraftSnapshotManager {
       return false;
     }
 
-    // One push attempt per cycle — deliberately no immediate retry. A failed
-    // push still makes the server do work, so back-to-back retries against a
-    // struggling endpoint only amplify and prolong the outage. The `+` forces
-    // the update and never deletes the remote ref, so a failed push can't
-    // destroy the last good snapshot; spacing is handled by the backoff below.
-    const pushed = await this.exec(
-      `git push origin +${DRAFT_REF}:${DRAFT_REF}`,
-    );
+    // One push attempt per cycle — deliberately no immediate retry (except the
+    // single lease-resolution retry below). A failed push still makes the
+    // server do work, so back-to-back retries against a struggling endpoint
+    // only amplify and prolong the outage. `--force-with-lease` forces the
+    // (deliberately non-fast-forward, re-rooted) update ONLY if the remote tip
+    // is still what we believe it is — the compare-and-swap that keeps a stale
+    // instance from clobbering a newer one's snapshots. It never deletes the
+    // remote ref, so a failed push can't destroy the last good snapshot.
+    let pushed = await this.exec(this.pushCommand());
+    if (!pushed.ok && isLeaseRejection(pushed.stderr)) {
+      // The remote moved under us: someone else pushed. Find out who.
+      const verdict = await this.resolveLeaseRejection();
+      if (verdict === 'fenced') {
+        return false;
+      }
+      if (verdict === 'retry') {
+        pushed = await this.exec(this.pushCommand());
+      }
+      // 'error': fall through to the normal failure/backoff path.
+    }
     if (!pushed.ok) {
       this.consecutivePushFailures++;
       this.pushBackoffUntil = Date.now() + this.computePushBackoffMs();
@@ -599,21 +658,93 @@ export class DraftSnapshotManager {
           `next attempt in ~${Math.round((this.pushBackoffUntil - Date.now()) / 1000)}s)`,
       );
       this.scheduleRetryAfterBackoff();
+      this.onStatusChange?.();
       return false;
     }
 
     // Success — clear the backoff and record what we pushed.
+    const recovered = this.consecutivePushFailures > 0;
     this.consecutivePushFailures = 0;
     this.pushBackoffUntil = null;
     this.clearRetryTimer();
     this.lastPushedSha = draftSha;
+    this.expectedRemoteSha = draftSha;
 
     const elapsed = Date.now() - startTime;
     this.lastSuccessAt = Date.now();
     this.lastDurationMs = elapsed;
     this.lastError = null;
     log.info(`Snapshot completed in ${elapsed}ms (${draftSha.slice(0, 8)})`);
+    if (recovered) {
+      this.onStatusChange?.();
+    }
     return true;
+  }
+
+  /** The lease-guarded push. An empty expectation means "the ref must not
+   * exist yet" (fresh app, no_draft restore) — still a compare-and-swap. */
+  private pushCommand(): string {
+    return `git push origin ${DRAFT_REF}:${DRAFT_REF} --force-with-lease=${DRAFT_REF}:${this.expectedRemoteSha ?? ''}`;
+  }
+
+  /**
+   * A lease rejection means another instance has pushed `_draft` since we
+   * last saw it. Fetch the remote tip and read its session stamp:
+   *
+   * - Stamped by a DIFFERENT platform session → this instance has been
+   *   superseded (the platform only ever intends one live sandbox per app).
+   *   Fence permanently: the newer session's state must win.
+   * - Stamped by our own session, unstamped (legacy writer), or we have no
+   *   session identity → reclaim: adopt the tip as the new lease base and let
+   *   the caller retry once. Uncooperative legacy writers are fenced
+   *   platform-side by git-token revocation.
+   * - Can't determine (fetch failed) → 'error'; normal backoff handles it.
+   */
+  private async resolveLeaseRejection(): Promise<'fenced' | 'retry' | 'error'> {
+    const fetched = await this.exec(
+      `git fetch --no-tags --depth=1 origin +${DRAFT_BRANCH}:${REMOTE_DRAFT_REF}`,
+      { timeout: 60_000 },
+    );
+    if (!fetched.ok) {
+      if (
+        this.classifyFetchError(fetched.stderr, fetched.timedOut) === 'no_draft'
+      ) {
+        // Remote ref vanished (e.g. server-side reset) — expect-absent and retry.
+        this.expectedRemoteSha = null;
+        return 'retry';
+      }
+      return 'error';
+    }
+
+    const revParse = await this.exec(`git rev-parse ${REMOTE_DRAFT_REF}`);
+    const remoteTip = revParse.ok ? revParse.stdout.trim() : '';
+    if (!remoteTip) {
+      return 'error';
+    }
+
+    const logResult = await this.exec(
+      `git log -1 --format=%s ${REMOTE_DRAFT_REF}`,
+    );
+    const subject = logResult.ok ? logResult.stdout.trim() : '';
+    const stamp = /(?:^|\s)session=(\S+)/.exec(subject)?.[1] ?? null;
+
+    if (stamp && this.sessionId && stamp !== this.sessionId) {
+      log.error(
+        `Remote _draft tip ${remoteTip.slice(0, 8)} belongs to session ${stamp} ` +
+          `(we are ${this.sessionId}) — superseded; fencing all future pushes`,
+      );
+      this.fenced = true;
+      this.lastError = 'superseded by a newer sandbox session';
+      this.stop();
+      this.onStatusChange?.();
+      return 'fenced';
+    }
+
+    log.warn(
+      `Remote _draft moved to ${remoteTip.slice(0, 8)} (${subject ? `"${subject}"` : 'no subject'}); reclaiming`,
+    );
+    this.expectedRemoteSha = remoteTip;
+    return 'retry';
   }
 
   /** Remove the temp index file (best-effort; absence is fine). */
@@ -712,6 +843,13 @@ export class DraftSnapshotManager {
       );
     });
   }
+}
+
+/** Whether a failed push was a `--force-with-lease` rejection (remote tip no
+ * longer matches our expectation) rather than a network/auth/server failure.
+ * Git words it `! [rejected] ... (stale info)`. */
+function isLeaseRejection(stderr: string): boolean {
+  return stderr.toLowerCase().includes('stale info');
 }
 
 /** Collapse multi-line stderr to a single line for log readability. */
