@@ -16,6 +16,9 @@ export interface AgentStats {
   lastContextSize: number;
   compactionInProgress: boolean;
   updatedAt: number;
+  /** The active parent model's /compact suggestion threshold (remy
+   * models/surfaces). Absent on stats written by older remy versions. */
+  suggestCompactAt?: number;
 }
 
 export async function readAgentStats(
