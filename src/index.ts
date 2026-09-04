@@ -39,6 +39,7 @@ import {
   setStatus,
   setProxyTarget,
   flushHmr,
+  closeLspClients,
 } from './server/index.js';
 import { ctx } from './server/context.js';
 import { handlers } from './server/wsHandlers/index.js';
@@ -192,6 +193,10 @@ async function startServices(
   // state, and carry on. Mirrors the non-fatal npm-install path above.
   log.info('Starting LSP...');
   const lspClient = new LspClient();
+  // A relaunched server has no documents open; bounce the Monaco clients so
+  // they reconnect and re-announce theirs.
+  lspClient.onRelaunched = () =>
+    closeLspClients(1012, 'Language server restarted');
   try {
     await lspClient.start(config.workspaceDir, registry);
   } catch (err) {

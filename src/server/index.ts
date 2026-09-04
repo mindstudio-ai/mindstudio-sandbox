@@ -46,6 +46,25 @@ export function setStatus(s: ServerStatus): void {
   ctx.status = s;
 }
 
+/**
+ * Close every Monaco LSP bridge socket. Used after the language server is
+ * relaunched: the new server has empty document state, and a 1012 tells the
+ * editor to reconnect and re-announce its open files (it never learns any
+ * other way — the bridge hides the server's lifecycle from its clients).
+ */
+export function closeLspClients(code: number, reason: string): void {
+  if (!lspWss) {
+    return;
+  }
+  for (const client of lspWss.clients) {
+    try {
+      client.close(code, reason);
+    } catch {
+      // already closing
+    }
+  }
+}
+
 /** Set the tunnel proxy port for reverse proxying preview/HMR traffic. */
 export function setProxyTarget(port: number): void {
   proxyTarget = port;
