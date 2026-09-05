@@ -50,11 +50,6 @@ export function createLspConnectionHandler(): (ws: WebSocket) => void {
     }
 
     ws.on('message', async (data) => {
-      // The highest-frequency signal a person typing produces, and it never touches the C&C action
-      // map — completions and hovers ride this socket, so `ws` counts would miss an editing session
-      // entirely.
-      recordActivity('lsp');
-
       let msg: { id?: number | string; method?: string; params?: unknown };
       try {
         msg = JSON.parse(data.toString());
@@ -90,6 +85,13 @@ export function createLspConnectionHandler(): (ws: WebSocket) => void {
         }
         return;
       }
+
+      // Only messages that actually reach the language server count as use. Completions and hovers
+      // ride this socket and never touch the C&C action map, so `ws` counts alone would miss an
+      // editing session entirely — but the handshake handled above is client bookkeeping, and the
+      // editor's socket reconnects on its own schedule. That measured as `lsp: 3` every ~5 minutes
+      // of an idle box: exactly the reconnect's initialize/initialized/config triple.
+      recordActivity('lsp');
 
       if (isRequest) {
         try {

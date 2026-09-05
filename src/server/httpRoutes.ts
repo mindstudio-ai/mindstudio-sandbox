@@ -162,19 +162,24 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
     }
 
     //////////////////////////////////////////////////////////////////////////////
-    // Only PROXIED requests count as activity — everything above this line is machinery.
+    // Activity is requests a PERSON caused. Two exclusions, both measured on a real session:
     //
-    // Measured on a real session: counting all non-/health requests produced `http: 1` every single
-    // minute of an idle box, so it never once reported idle. Every route above is something POLLING
-    // this box, not somebody using it — /health from the platform, /status, /agent-stats,
-    // /agent-session and /agent-usage from editor panels on 4s timers, /logs and /flush from
-    // tooling. A forgotten browser tab produces all of them indefinitely, and a reaper that treats
-    // that as use will never reclaim anything.
+    // Everything above this line is machinery polling the box — /health from the platform, /status
+    // /agent-stats /agent-session /agent-usage from editor panels on timers, /logs and /flush from
+    // tooling. Counting them produced `http: 1` every single minute of an idle box.
     //
-    // What reaches the proxy is the app itself: preview page loads and the requests the running dev
-    // server serves. That is a person looking at their app.
+    // `/__mindstudio_dev__/*` is the same trap one level down: the platform's control channel
+    // injected into the app, so it is proxied but still machinery. The editor's Preview panel polls
+    // /__mindstudio_dev__/mirror-status every 3s for as long as it is mounted, which measured as a
+    // flat `http: 20` every minute of an idle box.
+    //
+    // A forgotten browser tab produces all of the above indefinitely, and a reaper that reads it as
+    // use will never reclaim anything. What is left is the app's own traffic — page loads and
+    // whatever the dev server serves — which is somebody actually looking at their app.
     //////////////////////////////////////////////////////////////////////////////
-    recordActivity('http');
+    if (!req.url?.startsWith('/__mindstudio_dev__/')) {
+      recordActivity('http');
+    }
 
     const proxy = getProxy();
     if (!proxy) {
