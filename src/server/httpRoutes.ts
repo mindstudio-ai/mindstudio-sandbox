@@ -48,13 +48,6 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    // AFTER the health and preflight returns, and that ordering is the whole point: /health is
-    // polled by the platform — every second while a session starts, and periodically by
-    // SandboxManager.verify — so counting it would make an abandoned box look permanently busy and
-    // make this signal useless for deciding idleness. What is left is real traffic: preview page
-    // loads, proxied app requests, the standalone log endpoints.
-    recordActivity('http');
-
     if (req.url === '/status' || req.url?.startsWith('/status?')) {
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -167,6 +160,21 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       });
       return;
     }
+
+    //////////////////////////////////////////////////////////////////////////////
+    // Only PROXIED requests count as activity — everything above this line is machinery.
+    //
+    // Measured on a real session: counting all non-/health requests produced `http: 1` every single
+    // minute of an idle box, so it never once reported idle. Every route above is something POLLING
+    // this box, not somebody using it — /health from the platform, /status, /agent-stats,
+    // /agent-session and /agent-usage from editor panels on 4s timers, /logs and /flush from
+    // tooling. A forgotten browser tab produces all of them indefinitely, and a reaper that treats
+    // that as use will never reclaim anything.
+    //
+    // What reaches the proxy is the app itself: preview page loads and the requests the running dev
+    // server serves. That is a person looking at their app.
+    //////////////////////////////////////////////////////////////////////////////
+    recordActivity('http');
 
     const proxy = getProxy();
     if (!proxy) {
