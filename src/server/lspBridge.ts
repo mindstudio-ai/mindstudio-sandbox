@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { ctx } from './context.js';
 import { createLogger } from '../logger.js';
+import { recordActivity } from '../activity.js';
 
 const log = createLogger('lsp/ws');
 
@@ -49,6 +50,11 @@ export function createLspConnectionHandler(): (ws: WebSocket) => void {
     }
 
     ws.on('message', async (data) => {
+      // The highest-frequency signal a person typing produces, and it never touches the C&C action
+      // map — completions and hovers ride this socket, so `ws` counts would miss an editing session
+      // entirely.
+      recordActivity('lsp');
+
       let msg: { id?: number | string; method?: string; params?: unknown };
       try {
         msg = JSON.parse(data.toString());

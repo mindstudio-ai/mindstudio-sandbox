@@ -12,6 +12,7 @@
 import WebSocket from 'ws';
 import type { IncomingHttpHeaders } from 'node:http';
 import { createLogger } from '../logger.js';
+import { recordActivity } from '../activity.js';
 
 const log = createLogger('hmr-relay');
 
@@ -93,6 +94,9 @@ export class HmrRelay {
       if (this.destroyed) {
         return;
       }
+      // Vite pushing an update to a live preview: someone has the preview open and the code just
+      // changed. Counted even while buffering, because a buffered turn is still a working session.
+      recordActivity('hmr');
       if (this.buffering) {
         this.agentBuffer.push({ data, isBinary });
         return;

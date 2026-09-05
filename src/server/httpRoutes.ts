@@ -8,6 +8,7 @@ import { getAgentActivity } from '../processes/agent/activity.js';
 import { quiesceAgent } from '../processes/agent/actions.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
+import { recordActivity } from '../activity.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -46,6 +47,13 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       );
       return;
     }
+
+    // AFTER the health and preflight returns, and that ordering is the whole point: /health is
+    // polled by the platform — every second while a session starts, and periodically by
+    // SandboxManager.verify — so counting it would make an abandoned box look permanently busy and
+    // make this signal useless for deciding idleness. What is left is real traffic: preview page
+    // loads, proxied app requests, the standalone log endpoints.
+    recordActivity('http');
 
     if (req.url === '/status' || req.url?.startsWith('/status?')) {
       res.writeHead(200, {
