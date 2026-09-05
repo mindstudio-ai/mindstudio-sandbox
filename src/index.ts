@@ -31,7 +31,6 @@ import {
 import { createAgentActions } from './processes/agent/actions.js';
 import { startDevServer } from './processes/devServer/index.js';
 import { ResourceMonitor } from './processes/ResourceMonitor.js';
-import { startActivityReporter } from './activity.js';
 import { BroadcastBatcher } from './server/BroadcastBatcher.js';
 import {
   startServer,
@@ -597,11 +596,6 @@ async function main(): Promise<void> {
     // 15. Start the snapshot backstop timer (real changes and agent turns
     // trigger snapshots sooner via the file watcher / onTurnDone).
     snapshotManager.start();
-
-    // 16. Session activity reporting. Started here, at the end of bootstrap, so the bootstrap's
-    // own file writes do not read as a user session — the first report should describe a person
-    // using the box, not the box building itself.
-    startActivityReporter();
 
     // Ready
     bootstrapComplete = true;

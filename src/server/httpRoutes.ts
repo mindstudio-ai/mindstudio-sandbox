@@ -8,7 +8,6 @@ import { getAgentActivity } from '../processes/agent/activity.js';
 import { quiesceAgent } from '../processes/agent/actions.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
-import { recordActivity } from '../activity.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -159,26 +158,6 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
         res.end(JSON.stringify(result));
       });
       return;
-    }
-
-    //////////////////////////////////////////////////////////////////////////////
-    // Activity is requests a PERSON caused. Two exclusions, both measured on a real session:
-    //
-    // Everything above this line is machinery polling the box — /health from the platform, /status
-    // /agent-stats /agent-session /agent-usage from editor panels on timers, /logs and /flush from
-    // tooling. Counting them produced `http: 1` every single minute of an idle box.
-    //
-    // `/__mindstudio_dev__/*` is the same trap one level down: the platform's control channel
-    // injected into the app, so it is proxied but still machinery. The editor's Preview panel polls
-    // /__mindstudio_dev__/mirror-status every 3s for as long as it is mounted, which measured as a
-    // flat `http: 20` every minute of an idle box.
-    //
-    // A forgotten browser tab produces all of the above indefinitely, and a reaper that reads it as
-    // use will never reclaim anything. What is left is the app's own traffic — page loads and
-    // whatever the dev server serves — which is somebody actually looking at their app.
-    //////////////////////////////////////////////////////////////////////////////
-    if (!req.url?.startsWith('/__mindstudio_dev__/')) {
-      recordActivity('http');
     }
 
     const proxy = getProxy();

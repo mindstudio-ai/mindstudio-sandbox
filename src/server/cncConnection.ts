@@ -7,7 +7,6 @@ import {
   getActiveTurnModel,
 } from '../processes/agent/activity.js';
 import { createLogger } from '../logger.js';
-import { recordActivity } from '../activity.js';
 
 const log = createLogger('ws-server');
 
@@ -104,11 +103,6 @@ export function createCncConnectionHandler(
         );
         return;
       }
-
-      // Every editor command — files, shell, pty, search, agent actions — dispatches through this
-      // one map, so a single call here covers all of them. Before the unknown-action check on
-      // purpose: a client asking for something we do not have is still a client that is present.
-      recordActivity('ws');
 
       const handler = handlers[request.action];
       if (!handler) {

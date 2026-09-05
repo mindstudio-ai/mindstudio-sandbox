@@ -1,7 +1,6 @@
 import { WebSocket } from 'ws';
 import { ctx } from './context.js';
 import { createLogger } from '../logger.js';
-import { recordActivity } from '../activity.js';
 
 const log = createLogger('lsp/ws');
 
@@ -85,13 +84,6 @@ export function createLspConnectionHandler(): (ws: WebSocket) => void {
         }
         return;
       }
-
-      // Only messages that actually reach the language server count as use. Completions and hovers
-      // ride this socket and never touch the C&C action map, so `ws` counts alone would miss an
-      // editing session entirely — but the handshake handled above is client bookkeeping, and the
-      // editor's socket reconnects on its own schedule. That measured as `lsp: 3` every ~5 minutes
-      // of an idle box: exactly the reconnect's initialize/initialized/config triple.
-      recordActivity('lsp');
 
       if (isRequest) {
         try {

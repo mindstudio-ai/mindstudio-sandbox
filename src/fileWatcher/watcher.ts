@@ -1,7 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import { createLogger } from '../logger.js';
-import { recordActivity } from '../activity.js';
 
 const log = createLogger('file-watcher');
 
@@ -59,22 +58,12 @@ function isSuppressed(filePath: string): boolean {
 
 export function startWatcher(
   dir: string,
-  rawOnChange: (
+  onChange: (
     filePath: string,
     changeType: 'created' | 'modified' | 'deleted',
   ) => void,
 ): void {
   workspaceDir = dir;
-
-  // All five watcher events funnel through here, so this is the one place that has to count them.
-  //
-  // File changes are activity with no inbound request behind them — an agent writing files, a git
-  // operation, a build emitting output. A reaper that only watched editor traffic would kill a box
-  // in the middle of an agent turn, which is precisely when nobody is typing.
-  const onChange: typeof rawOnChange = (filePath, changeType) => {
-    recordActivity('fs');
-    rawOnChange(filePath, changeType);
-  };
 
   // Periodically clean stale suppression entries
   cleanupTimer = setInterval(() => {
