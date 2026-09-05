@@ -34,5 +34,11 @@
   },
   "lint-staged": {
     "**/*": "prettier --write --ignore-unknown"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true,
+    "esbuild@0.27.7": true,
+    "@mindstudio-ai/agent@0.1.118": true,
+    "fsevents@2.3.3": true
   }
 }
