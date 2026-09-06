@@ -199,7 +199,9 @@ function serveLogs(
   res: http.ServerResponse,
   workspaceDir: string,
 ): void {
-  const name = decodeURIComponent(req.url!.slice('/logs/'.length));
+  // Pathname only: the sandbox proxy carries its credential as a query string.
+  const pathname = new URL(req.url!, 'http://localhost').pathname;
+  const name = decodeURIComponent(pathname.slice('/logs/'.length));
   const logPath = ctx.registry?.getLogPath(name) ?? STANDALONE_LOGS[name];
   if (!logPath) {
     res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
