@@ -89,8 +89,9 @@ const SHUTDOWN_QUIESCE_BUDGET_MS = 8_000;
 // remy emits its cancel terminal BEFORE the (sync) session-file write — give the write a beat to
 // land once the agent reports idle.
 const SHUTDOWN_SETTLE_MS = 750;
-// Tar + upload of a whole home directory; a multi-GB one on a busy box needs most of this.
-const SHUTDOWN_SNAPSHOT_BUDGET_MS = 60_000;
+// The whole quiesce-settle-tar-upload sequence. A multi-GB home on a busy box needs most of this,
+// and it must stay clear of the pod's terminationGracePeriodSeconds (90s).
+const SHUTDOWN_SNAPSHOT_BUDGET_MS = 75_000;
 
 // ---------------------------------------------------------------------------
 // State manager construction
@@ -390,6 +391,28 @@ async function main(): Promise<void> {
       }),
   });
   ctx.snapshotManager = snapshotManager;
+
+  // The one "settle and save" routine — see ctx.finalizeWorkspace. Quiesce so the tar isn't of a
+  // workspace the agent is halfway through writing, give remy's final (synchronous) session write
+  // a beat to land, then snapshot. Called by SIGTERM below and by the platform's `/flush`.
+  const finalizeWorkspace = async () => {
+    // 'bootstrapping': the restore may not have run, so a snapshot could upload scaffold state
+    // over the real one. 'error': the restore was unresolvable, so uploading would overwrite good
+    // work. Either way there is nothing of the user's here to save.
+    if (ctx.status !== 'ready') {
+      return 'not_ready' as const;
+    }
+    const quiesced = await quiesceAgent(
+      managers.processManager,
+      SHUTDOWN_QUIESCE_BUDGET_MS,
+    );
+    if (quiesced) {
+      await new Promise((r) => setTimeout(r, SHUTDOWN_SETTLE_MS));
+    }
+    return snapshotManager.flushNow();
+  };
+  ctx.finalizeWorkspace = finalizeWorkspace;
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) {
@@ -402,26 +425,21 @@ async function main(): Promise<void> {
     managers.batcher.stop();
     stopAutoSave();
     await saveState();
-    // Only a fully-booted box flushes. 'bootstrapping': the restore may not have run yet, so a
-    // snapshot could upload scaffold state over the real one. 'error': the restore was
-    // unresolvable, so uploading would overwrite good work.
-    if (ctx.status === 'ready') {
-      // Quiesce the agent first so the snapshot is of a settled workspace, not one mid-write.
-      const quiesced = await quiesceAgent(
-        managers.processManager,
-        SHUTDOWN_QUIESCE_BUDGET_MS,
-      );
-      if (quiesced) {
-        await new Promise((r) => setTimeout(r, SHUTDOWN_SETTLE_MS));
-      }
-      // flushNow, not snapshot(): the plain call drops when a run is already in flight and honors
-      // the upload backoff — either way the final state never ships. Bounded so a hung upload
-      // cannot hold the rest of the shutdown until SIGKILL.
-      await Promise.race([
-        snapshotManager.flushNow().catch(() => false),
-        new Promise((r) => setTimeout(r, SHUTDOWN_SNAPSHOT_BUDGET_MS)),
-      ]);
-    }
+    // The BACKSTOP save, for a stop the platform didn't initiate (node drain, eviction, the
+    // kubelet's deadline). A platform stop calls `/flush` first and waits for the answer, so it
+    // never has to trust that this ran — and if it did already run, `flushNow` finds nothing
+    // changed and returns in milliseconds. Bounded so a hung upload can't hold the rest of the
+    // shutdown until SIGKILL.
+    const outcome = await Promise.race([
+      finalizeWorkspace().catch((err) => {
+        log.error(`Shutdown snapshot threw: ${err}`);
+        return 'failed' as const;
+      }),
+      new Promise<'timeout'>((r) =>
+        setTimeout(() => r('timeout'), SHUTDOWN_SNAPSHOT_BUDGET_MS),
+      ),
+    ]);
+    log.info(`Shutdown snapshot: ${outcome}`);
     snapshotManager.stop();
     closeAllPty();
     stopWatcher();

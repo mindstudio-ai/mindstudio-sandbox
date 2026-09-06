@@ -73,6 +73,23 @@ export type RestoreResult =
   | 'no_snapshot'
   | 'unresolvable';
 
+/**
+ * What a snapshot run did.
+ *
+ * - `committed`: a new snapshot is durable in S3 and is now the app's current one.
+ * - `unchanged`: nothing under home changed since the last one, which is already current.
+ * - `failed`: the tar, the upload or the commit did not succeed. `lastError` says why.
+ * - `fenced`: a newer session has committed a snapshot, so this box must never write again.
+ *
+ * The first two are both success for a caller asking "is the user's work safe" —
+ * see `isSafe`.
+ */
+export type SnapshotOutcome = 'committed' | 'unchanged' | 'failed' | 'fenced';
+
+/** Whether an outcome means the user's work is durable in S3. */
+export const isSafe = (outcome: SnapshotOutcome): boolean =>
+  outcome === 'committed' || outcome === 'unchanged';
+
 export interface HomeSnapshotManagerOptions {
   homeDir: string;
   workspaceDir: string;
@@ -112,7 +129,7 @@ export class HomeSnapshotManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** In-flight run, or null. Awaitable so flushNow() can ride out a run that
    * started before the caller's quiesce and then run one more. */
-  private inFlight: Promise<boolean> | null = null;
+  private inFlight: Promise<SnapshotOutcome> | null = null;
   /** Upload even when the change walk finds nothing — set after a legacy
    * `_draft` restore so the first snapshot seeds S3 for this app. */
   private forceUpload = false;
@@ -198,7 +215,11 @@ export class HomeSnapshotManager {
   // Snapshot
   // ---------------------------------------------------------------------------
 
-  /** Snapshot if anything changed. Single-flight: drops when a run is live. */
+  /**
+   * Snapshot if anything changed — the interval timer's entry point.
+   * Single-flight: drops when a run is live, and honours the failure backoff.
+   * Returns whether the user's work is durable (see `isSafe`).
+   */
   async snapshot(): Promise<boolean> {
     if (this.fenced) {
       log.debug('Fenced by a newer session; refusing to snapshot');
@@ -216,43 +237,49 @@ export class HomeSnapshotManager {
       this.scheduleRetryAfterBackoff();
       return false;
     }
+    return isSafe(await this.runSnapshot());
+  }
+
+  /**
+   * Snapshot NOW and report what happened — what the platform calls before it
+   * deletes the pod, and what SIGTERM runs. Awaits any in-flight run (which may
+   * have staged state from before the caller's quiesce) and then runs one more,
+   * ignoring the failure backoff: a deferred upload is worthless when the box
+   * is about to go away.
+   *
+   * Unlike `snapshot()` this reports `unchanged` distinctly, so a caller can
+   * tell "nothing needed saving" from "saved it" — and, crucially, from
+   * `failed`, which is the answer the platform must not mistake for success.
+   */
+  async flushNow(): Promise<SnapshotOutcome> {
+    if (this.fenced) {
+      log.warn('Fenced by a newer session; refusing to flush');
+      return 'fenced';
+    }
+    if (this.inFlight) {
+      await this.inFlight.catch(() => 'failed' as SnapshotOutcome);
+    }
+    this.pushBackoffUntil = null;
+    // Coalesce with a racing starter: a run that began during our await
+    // started after the caller's quiesce, so its state is current — ride it.
+    return this.inFlight ?? this.runSnapshot();
+  }
+
+  /** Single-flight wrapper around `doSnapshot`. */
+  private runSnapshot(): Promise<SnapshotOutcome> {
     this.inFlight = this.doSnapshot().finally(() => {
       this.inFlight = null;
     });
     return this.inFlight;
   }
 
-  /**
-   * Pre-stop flush: guarantee one full snapshot runs to completion from this
-   * moment. Awaits any in-flight run (which may have started before the
-   * caller's quiesce) and then runs one more, ignoring the backoff — a
-   * deferred upload is worthless when the pod is about to go away. Always
-   * uploads, changed or not: the platform waits for this session's final
-   * commit before it starts a successor (Reset), so the goodbye snapshot has to
-   * exist even when the last interval already captured everything.
-   */
-  async flushNow(): Promise<boolean> {
-    if (this.fenced) {
-      log.warn('Fenced by a newer session; refusing to flush');
-      return false;
-    }
-    if (this.inFlight) {
-      await this.inFlight.catch(() => false);
-    }
-    this.forceUpload = true;
-    this.pushBackoffUntil = null;
-    // Coalesce with a racing starter: a run that began during our await
-    // started after the caller's quiesce, so its state is current — ride it.
-    return this.inFlight ?? this.snapshot();
-  }
-
-  private async doSnapshot(): Promise<boolean> {
+  private async doSnapshot(): Promise<SnapshotOutcome> {
     const startTime = Date.now();
     this.lastAttemptAt = startTime;
 
     if (!this.forceUpload && !(await this.changedSinceMarker())) {
       log.debug('Nothing changed under home; skipping snapshot');
-      return true;
+      return 'unchanged';
     }
     // Touch before tarring so writes that land mid-tar are caught next cycle.
     await this.touchMarker();
@@ -300,7 +327,7 @@ export class HomeSnapshotManager {
       if (recovered) {
         this.onStatusChange?.();
       }
-      return true;
+      return 'committed';
     } catch (err) {
       if (err instanceof SupersededError) {
         log.error(
@@ -310,7 +337,7 @@ export class HomeSnapshotManager {
         this.lastError = err.message;
         this.stop();
         this.onStatusChange?.();
-        return false;
+        return 'fenced';
       }
       // Something changed since the marker was touched (the failed upload's
       // state); make sure the next tick retries even if the tree is quiet.
@@ -324,7 +351,7 @@ export class HomeSnapshotManager {
       );
       this.scheduleRetryAfterBackoff();
       this.onStatusChange?.();
-      return false;
+      return 'failed';
     } finally {
       await fsp.unlink(SNAPSHOT_TAR).catch(() => {});
     }

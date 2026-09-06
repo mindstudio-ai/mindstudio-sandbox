@@ -13,6 +13,11 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
 };
 
+// How long `/flush` may take before it answers anyway. Above the snapshot's own
+// tar+upload for a large home, and below the platform's call timeout, so the
+// caller gets a verdict rather than an abort.
+const FLUSH_TIMEOUT_MS = 100_000;
+
 const STANDALONE_LOGS: Record<string, string> = {
   requests: '.logs/requests.ndjson',
   browser: '.logs/browser.ndjson',
@@ -22,10 +27,12 @@ interface HttpHandlerOpts {
   workspaceDir: string;
   getProxyTarget: () => number | null;
   getProxy: () => httpProxy | null;
+  /** Whether a request carries the box's own SANDBOX_TOKEN — see `/flush`. */
+  verifyToken: (url: string | undefined) => boolean;
 }
 
 export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
-  const { workspaceDir, getProxyTarget, getProxy } = opts;
+  const { workspaceDir, getProxyTarget, getProxy, verifyToken } = opts;
 
   return (req, res) => {
     // CORS preflight — allow everything
@@ -127,6 +134,71 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
 
     if (req.url?.startsWith('/logs/')) {
       serveLogs(req, res, workspaceDir);
+      return;
+    }
+
+    // POST /flush — snapshot home now and report the outcome.
+    //
+    // The platform calls this in-VPC immediately before it deletes the pod, and waits for the
+    // answer: a stop we initiate must not depend on SIGTERM arriving, on the kubelet's grace
+    // surviving whatever issued the delete, or on anyone inferring success from a health probe.
+    // SIGTERM stays the backstop for stops we DON'T initiate (node drain, eviction, deadline).
+    //
+    // Token-gated, unlike the read-only routes above: this is the one mutating platform
+    // operation on this port, and this port is also what the PUBLIC preview host reaches (the
+    // sandbox-proxy deliberately doesn't list `/flush` as a control path, so a request for it on
+    // a preview host arrives here as ordinary traffic). Without the check, anything running in a
+    // user's own preview could drive the platform's snapshot machinery.
+    if (
+      req.method === 'POST' &&
+      new URL(req.url ?? '/', 'http://localhost').pathname === '/flush'
+    ) {
+      if (!verifyToken(req.url)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      const finalize = ctx.finalizeWorkspace;
+      if (!finalize) {
+        // Pre-bootstrap: nothing is wired yet, so there is also nothing to lose.
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, outcome: 'not_ready' }));
+        return;
+      }
+      Promise.race([
+        finalize(),
+        new Promise<'timeout'>((r) =>
+          setTimeout(() => r('timeout'), FLUSH_TIMEOUT_MS),
+        ),
+      ])
+        .then((outcome) => {
+          // `not_ready` is a success for the caller's purpose: the box holds nothing of the
+          // user's, so stopping it loses nothing.
+          const ok =
+            outcome === 'committed' ||
+            outcome === 'unchanged' ||
+            outcome === 'not_ready';
+          res.writeHead(ok ? 200 : 500, {
+            'Content-Type': 'application/json',
+          });
+          res.end(
+            JSON.stringify({
+              ok,
+              outcome,
+              error: ctx.snapshotManager?.getSnapshotStatus().lastError ?? null,
+            }),
+          );
+        })
+        .catch((err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              outcome: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        });
       return;
     }
 

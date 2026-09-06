@@ -140,6 +140,7 @@ export function startServer(
         workspaceDir,
         getProxyTarget: () => proxyTarget,
         getProxy: () => proxy,
+        verifyToken,
       }),
     );
 

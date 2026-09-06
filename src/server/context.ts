@@ -29,7 +29,10 @@ import type { FileTreeManager } from './states/FileTreeManager.js';
 import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
-import type { HomeSnapshotManager } from '../projectStatus/HomeSnapshotManager.js';
+import type {
+  HomeSnapshotManager,
+  SnapshotOutcome,
+} from '../projectStatus/HomeSnapshotManager.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import {
   readAgentStats,
@@ -58,6 +61,16 @@ export interface ServerContext {
     | null;
   onProjectStatusChanged: (() => void) | null;
   /**
+   * "Settle and save": quiesce the agent so the snapshot isn't of a workspace
+   * mid-write, let its final write land, then snapshot home. Wired in index.ts,
+   * where the agent, the process manager and the snapshot manager all live.
+   *
+   * Both stop paths run THIS, so a stop the platform announces over `/flush`
+   * saves exactly as well as one we only learn about from SIGTERM.
+   * `not_ready` means the box never finished booting, so there is nothing to lose.
+   */
+  finalizeWorkspace: (() => Promise<SnapshotOutcome | 'not_ready'>) | null;
+  /**
    * Set if `npm install` failed for one or more app package directories
    * during bootstrap. Sandbox boots in degraded mode (no dev server) so
    * the user can recover from the terminal. Null on a clean install.
@@ -82,6 +95,7 @@ export const ctx: ServerContext = {
   snapshotManager: null,
   onFileChanged: null,
   onProjectStatusChanged: null,
+  finalizeWorkspace: null,
   installFailures: null,
 };
 
