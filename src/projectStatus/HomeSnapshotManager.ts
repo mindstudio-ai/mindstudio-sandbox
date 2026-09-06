@@ -226,7 +226,10 @@ export class HomeSnapshotManager {
    * Pre-stop flush: guarantee one full snapshot runs to completion from this
    * moment. Awaits any in-flight run (which may have started before the
    * caller's quiesce) and then runs one more, ignoring the backoff — a
-   * deferred upload is worthless when the pod is about to go away.
+   * deferred upload is worthless when the pod is about to go away. Always
+   * uploads, changed or not: the platform waits for this session's final
+   * commit before it starts a successor (Reset), so the goodbye snapshot has to
+   * exist even when the last interval already captured everything.
    */
   async flushNow(): Promise<boolean> {
     if (this.fenced) {
@@ -236,6 +239,7 @@ export class HomeSnapshotManager {
     if (this.inFlight) {
       await this.inFlight.catch(() => false);
     }
+    this.forceUpload = true;
     this.pushBackoffUntil = null;
     // Coalesce with a racing starter: a run that began during our await
     // started after the caller's quiesce, so its state is current — ride it.
