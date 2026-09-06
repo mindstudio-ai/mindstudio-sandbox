@@ -384,7 +384,20 @@ export class HomeSnapshotManager {
     await run(
       'tar',
       [
-        '--zstd',
+        // `zstd -T0` (every core) rather than tar's own `--zstd`, which is single-threaded.
+        //
+        // This is a DATA-LOSS budget, not a latency one. On the shutdown path the whole cycle has
+        // to finish inside SHUTDOWN_SNAPSHOT_BUDGET_MS (75s) before CFES's 90s pod grace turns
+        // into a SIGKILL, and single-threaded zstd measured ~29 MB/s: fine for the 392 MiB home
+        // we first saw, ~70s of tarring alone at 2 GB, and homes only grow — the boundary
+        // deliberately includes node_modules, .git, ~/.npm-global and every cache. Losing the
+        // race means the user loses the session's work, and it arrives as a function of how long
+        // they have been building. A dev box has 4 cores, so this is ~3-4x for free.
+        //
+        // Same compression level, so the tar is the same size and the restore is unaffected: the
+        // output is an ordinary zstd stream that `tar --zstd -xf` reads. Decompression is NOT
+        // sped up by this — a single frame decodes on one core either way.
+        '--use-compress-program=zstd -T0',
         '--warning=no-file-changed',
         '-cf',
         SNAPSHOT_TAR,
@@ -531,11 +544,22 @@ export class HomeSnapshotManager {
           `snapshot checksum mismatch (got ${sha256.slice(0, 12)}, expected ${fetched.sha256.slice(0, 12)})`,
         );
       }
+      // Split so the two phases can be told apart, because the fix for a slow restore differs
+      // entirely depending on which one dominates. `transfer` responds to overlapping the download
+      // with the extract (pipe the response into tar) or to a node-local cache of the tar.
+      // `extract` is a single-core zstd decode plus the creation of every inode in the tree, and
+      // responds to NEITHER — no amount of bandwidth or parallelism reconstructs node_modules
+      // faster. Measure before optimising: at 126 MiB / 6993ms we did not know the split.
+      const transferMs = Date.now() - start;
+      const extractStart = Date.now();
       await fsp.mkdir(this.homeDir, { recursive: true });
       await run('tar', ['--zstd', '-xf', RESTORE_TAR, '-C', this.homeDir], {
         timeoutMs: TRANSFER_TIMEOUT_MS,
       });
-      log.info(`Home restored in ${Date.now() - start}ms`);
+      const extractMs = Date.now() - extractStart;
+      log.info(
+        `Home restored in ${Date.now() - start}ms (transfer+verify ${transferMs}ms, extract ${extractMs}ms)`,
+      );
       this.lastError = null;
       this.lastRestoreOutcome = 'restored';
       return 'restored';
