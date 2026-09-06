@@ -502,11 +502,24 @@ export function createTunnelActions(
     // awaited here. Progress arrives as `recordingExportProgress`, the result
     // as `recordingExportCompleted`, and the init frame carries the status.
     tunnelExportRecording: async (p) => {
-      const { eventsUrl } = p as { eventsUrl?: string };
+      const { eventsUrl, stage } = p as {
+        eventsUrl?: string;
+        stage?: Record<string, unknown>;
+      };
       if (typeof eventsUrl !== 'string' || !eventsUrl.startsWith('https://')) {
         throw new Error(
           'Missing "eventsUrl" parameter (https URL of the recording)',
         );
+      }
+      // The stage (brand wallpaper + window styling the editor resolved) is
+      // opaque here; the tunnel validates its contents. Just bound its size.
+      if (
+        stage !== undefined &&
+        (typeof stage !== 'object' ||
+          stage === null ||
+          JSON.stringify(stage).length > 8192)
+      ) {
+        throw new Error('Invalid "stage" parameter');
       }
       // The render shares Chrome and CPU with everything else on the box, so
       // it never starts while the agent (or the QA browser it drives) works.
@@ -529,7 +542,7 @@ export function createTunnelActions(
       void sendCommand(
         pm,
         'export-recording',
-        { jobId, eventsUrl },
+        { jobId, eventsUrl, ...(stage ? { stage } : {}) },
         RECORDING_EXPORT_TIMEOUT_MS,
       ).then((res) => {
         if (recordingExport?.jobId !== jobId) {
