@@ -195,42 +195,20 @@ export async function writeTunnelConfig(config: Config): Promise<void> {
   );
 }
 
+/** Clone the app's repo into an empty workspace (an app with no snapshot yet). */
 export async function cloneAppRepo(
   config: Config,
   progress: ProgressFn,
 ): Promise<void> {
   const { workspaceDir, gitRepoUrl } = config;
-  const gitDir = path.join(workspaceDir, '.git');
 
-  // If the snapshot baked in the scaffold, the workspace already exists with
-  // a .git dir pointing at the GitHub scaffold repo. Switch to the user's
-  // repo via fetch+reset so node_modules (gitignored) survives intact.
-  const hasGit = fsSync.existsSync(gitDir);
-
-  if (hasGit) {
-    progress('cloneApp', 'Syncing workspace to app repo...');
-    log.info(`Workspace has .git, switching remote to ${gitRepoUrl}`);
-    run(`git remote set-url origin ${gitRepoUrl}`, {
-      cwd: workspaceDir,
-      label: 'git remote set-url',
-    });
-    run('git fetch --depth 1 origin main', {
-      cwd: workspaceDir,
-      label: 'git fetch origin main',
-    });
-    run('git reset --hard origin/main', {
-      cwd: workspaceDir,
-      label: 'git reset --hard origin/main',
-    });
-  } else {
-    progress('cloneApp', 'Cloning app repo...');
-    log.debug(`Creating workspace dir: ${workspaceDir}`);
-    await fs.mkdir(workspaceDir, { recursive: true });
-    log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
-    run(`git clone --depth 1 ${gitRepoUrl} ${workspaceDir}`, {
-      label: `git clone → ${workspaceDir}`,
-    });
-  }
+  progress('cloneApp', 'Cloning app repo...');
+  log.debug(`Creating workspace dir: ${workspaceDir}`);
+  await fs.mkdir(workspaceDir, { recursive: true });
+  log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
+  run(`git clone --depth 1 ${gitRepoUrl} ${workspaceDir}`, {
+    label: `git clone → ${workspaceDir}`,
+  });
 
   // Verify workspace has a manifest
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
@@ -253,16 +231,46 @@ export async function cloneAppRepo(
 // ---------------------------------------------------------------------------
 
 /**
- * Deepen the shallow clone in the background so remy can later see full
+ * Point a restored workspace's `origin` at this session's repo URL and refresh
+ * it in the background. The URL embeds a per-session git token and the platform
+ * revokes the previous one at each start, so the credential inside a restored
+ * `.git/config` is always dead. Best-effort: a workspace without `.git` (the
+ * user removed it) is left alone.
+ */
+export function refreshGitRemote(config: Config): void {
+  const { workspaceDir, gitRepoUrl } = config;
+  if (!fsSync.existsSync(path.join(workspaceDir, '.git'))) {
+    log.warn('Restored workspace has no .git; leaving git alone');
+    return;
+  }
+  run(`git remote set-url origin ${gitRepoUrl}`, {
+    cwd: workspaceDir,
+    label: 'git remote set-url',
+  });
+  const start = Date.now();
+  exec(
+    'git fetch origin',
+    { cwd: workspaceDir, encoding: 'utf-8', timeout: 120_000 },
+    (err) => {
+      const elapsed = Date.now() - start;
+      if (err) {
+        log.warn(`git fetch origin failed in ${elapsed}ms: ${err.message}`);
+      } else {
+        log.info(`git fetch origin completed in ${elapsed}ms`);
+      }
+    },
+  );
+}
+
+/**
+ * Deepen a fresh shallow clone in the background so remy can later see full
  * history for diffs and commits. Fire-and-forget — nothing in boot needs deep
  * history, and remy only needs it when the user first asks for a diff/commit.
  *
- * MUST be kicked off AFTER snapshot restore completes, not from configureGit:
- * `git fetch --unshallow` and restore()'s `git fetch --depth=1 origin +_draft`
- * both mutate `.git/shallow` and contend on `.git/shallow.lock`. Running them
- * concurrently makes whichever loses the race die with "Unable to create
- * '.git/shallow.lock': File exists." Deferring this keeps the two fetches
- * serialized without blocking boot.
+ * MUST be kicked off AFTER the legacy `_draft` fetch completes: `git fetch
+ * --unshallow` and that `git fetch --depth=1` both mutate `.git/shallow` and
+ * contend on `.git/shallow.lock`. Running them concurrently makes whichever
+ * loses the race die with "Unable to create '.git/shallow.lock': File exists."
  */
 export function unshallowAsync(workspaceDir: string): void {
   const start = Date.now();
@@ -326,10 +334,6 @@ export function configureGit(workspaceDir: string): void {
   run('git config --global safe.directory "*"', {
     label: 'git config safe.directory',
   });
-
-  // NOTE: the background unshallow is deliberately NOT kicked off here — it
-  // races restore()'s `git fetch --depth=1 origin +_draft` on `.git/shallow.lock`.
-  // The caller invokes unshallowAsync() after restore completes instead.
 
   // Install commit-msg hook to add Remy as coauthor on all commits
   const hooksDir = path.join(workspaceDir, '.git', 'hooks');

@@ -24,7 +24,7 @@ Inside the container, the C&C server manages:
 - **Remy agent** (`remy --headless`) — AI coding agent
 - **File watcher** — broadcasts filesystem changes to connected clients
 - **TypeScript language server** — shared between Monaco editor and remy
-- **Snapshot manager** — periodic git snapshots to a `_draft` branch for persistence across container restarts
+- **Snapshot manager** — periodic snapshots of the home directory to S3 for persistence across boxes
 
 ## Project Structure
 
@@ -37,7 +37,7 @@ src/
   state.ts                          — persistent state (survives hibernate/resume)
   projectStatus.ts                  — onboarding state + project status tracking
   bootstrap.ts                      — install/clone/build commands
-  snapshot.ts                       — git-based session snapshots (_draft branch)
+  projectStatus/HomeSnapshotManager.ts — home-directory snapshots (tar to S3 via youai-api)
 
   server/
     index.ts                        — HTTP/WS server, upgrade routing, broadcast
@@ -522,7 +522,7 @@ ws.onopen = () => {
 The language server uses `file://` URIs rooted at the workspace:
 
 ```typescript
-const WORKSPACE_DIR = '/home/vercel-sandbox/workspace';
+const WORKSPACE_DIR = '/home/remy/workspace';
 const uri = monaco.Uri.parse(`file://${WORKSPACE_DIR}/${relativePath}`);
 const model = monaco.editor.createModel(content, 'typescript', uri);
 ```
@@ -555,9 +555,7 @@ The tunnel's browser automation WebSocket (`/__mindstudio_dev__/ws`) is proxied 
 
 ## Snapshots
 
-The snapshot manager periodically commits all workspace state (including gitignored session files) to a `_draft` branch and force-pushes to the remote. On boot, it restores from the draft if one exists. This provides durability against unclean container deaths.
-
-Snapshots use git plumbing commands with a temporary index file, so they're completely isolated from remy's working tree and any in-progress git operations.
+The snapshot manager tars the whole home directory (`/home/remy`: workspace, `node_modules`, `.git`, global npm installs, dotfiles, caches) and uploads it to S3 through youai-api's `workspace-snapshot` routes — on SIGTERM and every five minutes while anything changed. On boot, it downloads and extracts the app's current snapshot; an app without one is cloned from git. Only the app's newest sandbox session may commit a snapshot, so a replaced box cannot overwrite its successor's work.
 
 ## Health Check
 

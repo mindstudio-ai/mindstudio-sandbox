@@ -59,12 +59,6 @@ export function setupFileWatcher(
   ): void {
     batcher.push('fileChanged', { path: filePath, changeType });
 
-    // Any real workspace change schedules a debounced `_draft` snapshot — the
-    // primary snapshot trigger. The watcher ignores `.logs`, so browser/tunnel
-    // log churn never reaches here; only the backstop persists that. See
-    // DraftSnapshotManager.scheduleSnapshot.
-    ctx.snapshotManager?.scheduleSnapshot();
-
     if (changeType === 'modified' || changeType === 'created') {
       lspSidecar.onFileChanged(filePath).catch(() => {});
 
@@ -103,7 +97,7 @@ export function setupFileWatcher(
     }
 
     // Project status — re-read on external writes (e.g. remy writing the
-    // file directly, or a draft snapshot restore overwriting it). In-process
+    // file directly, or a snapshot restore overwriting it). In-process
     // mutations via setOnboardingState already broadcast and flush, so the
     // subsequent watcher event is a no-op (reloadProjectStatus returns false).
     if (filePath === '.project-status.json' && changeType !== 'deleted') {

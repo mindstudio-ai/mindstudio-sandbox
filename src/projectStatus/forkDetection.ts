@@ -2,7 +2,7 @@
  * Forked-app detection.
  *
  * A v2-app fork is a main-only git copy of its source, so it never carries the
- * source's `_draft` branch — where `.project-status.json` lives. The backend
+ * source's workspace snapshot — where `.project-status.json` lives. The backend
  * can't reliably seed that file into the editor, so instead it leaves a durable
  * git marker: an `--allow-empty` stamp commit on `main` carrying the trailer
  *

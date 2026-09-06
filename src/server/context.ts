@@ -14,7 +14,10 @@ import path from 'node:path';
 import { createLogger } from '../logger.js';
 import type { AppConfig, ServerStatus } from '../types.js';
 import type { TunnelSessionState } from '../processes/tunnel/index.js';
-import { getSandboxBrowserState } from '../processes/tunnel/index.js';
+import {
+  getSandboxBrowserState,
+  getRecordingExportStatus,
+} from '../processes/tunnel/index.js';
 import type { InstallFailure } from '../bootstrap/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
@@ -26,7 +29,10 @@ import type { FileTreeManager } from './states/FileTreeManager.js';
 import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
-import type { DraftSnapshotManager } from '../projectStatus/DraftSnapshotManager.js';
+import type {
+  HomeSnapshotManager,
+  SnapshotOutcome,
+} from '../projectStatus/HomeSnapshotManager.js';
 import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
 import {
   readAgentStats,
@@ -49,11 +55,21 @@ export interface ServerContext {
   fileTreeManager: FileTreeManager | null;
   specFileTreeManager: SpecFileTreeManager | null;
   lspClient: LspClient | null;
-  snapshotManager: DraftSnapshotManager | null;
+  snapshotManager: HomeSnapshotManager | null;
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
   onProjectStatusChanged: (() => void) | null;
+  /**
+   * "Settle and save": quiesce the agent so the snapshot isn't of a workspace
+   * mid-write, let its final write land, then snapshot home. Wired in index.ts,
+   * where the agent, the process manager and the snapshot manager all live.
+   *
+   * Both stop paths run THIS, so a stop the platform announces over `/flush`
+   * saves exactly as well as one we only learn about from SIGTERM.
+   * `not_ready` means the box never finished booting, so there is nothing to lose.
+   */
+  finalizeWorkspace: (() => Promise<SnapshotOutcome | 'not_ready'>) | null;
   /**
    * Set if `npm install` failed for one or more app package directories
    * during bootstrap. Sandbox boots in degraded mode (no dev server) so
@@ -79,6 +95,7 @@ export const ctx: ServerContext = {
   snapshotManager: null,
   onFileChanged: null,
   onProjectStatusChanged: null,
+  finalizeWorkspace: null,
   installFailures: null,
 };
 
@@ -210,6 +227,9 @@ export async function buildInitFrame(
     agentStats,
     appBrand,
     sandboxBrowser: getSandboxBrowserState(),
+    // Replay video export (running or recently finished) so an editor that
+    // reloads mid-render can re-show its toast and pick up the result.
+    recordingExport: getRecordingExportStatus(),
     installFailures: ctx.installFailures,
     // Snapshot health at connect time, so an editor that (re)connects during
     // push rot or after a fence sees it immediately — transitions afterwards
@@ -246,6 +266,9 @@ export function buildFallbackInitFrame(proxyAvailable: boolean): InitFrame {
     agentStats: null,
     appBrand: null,
     sandboxBrowser: getSandboxBrowserState(),
+    // Replay video export (running or recently finished) so an editor that
+    // reloads mid-render can re-show its toast and pick up the result.
+    recordingExport: getRecordingExportStatus(),
     installFailures: ctx.installFailures,
     snapshot: ctx.snapshotManager?.getSnapshotStatus() ?? null,
   };

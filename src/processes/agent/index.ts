@@ -56,7 +56,6 @@ export interface AgentCallbacks {
     name: string,
     input: Record<string, unknown>,
   ) => boolean;
-  onTurnDone?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,9 +353,8 @@ function handleStdout(
 
     // Synthetic terminal for a requestId that was merged into another turn.
     // The primary requestId's completed (which always arrives first) already
-    // ran the turn lifecycle — endTurn, activity broadcast, onTurnDone,
-    // abort-trigger snapshot. This one only needed to resolve its pending
-    // command (above) and reach the frontend.
+    // ran the turn lifecycle — endTurn, activity broadcast. This one only
+    // needed to resolve its pending command (above) and reach the frontend.
     if (event.absorbed) {
       const { event: _evt, ...data } = event;
       cb.broadcast('agentCompleted', data);
@@ -367,10 +365,9 @@ function handleStdout(
     // command acks with its own `completed` (setQueuedDelivery, cancelQueued,
     // cancel, stop_tool, ...) — broadcasting those as agentCompleted mid-turn
     // made the frontend end the turn early (composer flipped to idle, the
-    // streaming turn committed to history), ran a spurious snapshot
-    // checkpoint via onTurnDone, and a failing ack could even arm the
-    // abort-trigger. The pending command above is already resolved — there is
-    // nothing else a control ack should drive. Unknown ids (a completed
+    // streaming turn committed to history), and a failing ack could even arm
+    // the abort-trigger. The pending command above is already resolved — there
+    // is nothing else a control ack should drive. Unknown ids (a completed
     // without a requestId, or no tracked turn) fall through as before.
     const activeTurnId = getActiveTurnId();
     if (event.requestId && activeTurnId && event.requestId !== activeTurnId) {
@@ -380,18 +377,14 @@ function handleStdout(
     // More queued work means remy is about to fire turn_started for the next
     // item. Don't flip busy to idle in the gap — the frontend shouldn't
     // flicker between pipeline steps. The queue snapshot is tracked from
-    // queue_changed (queuedMessages no longer rides on completed). Still fire
-    // onTurnDone so a snapshot checkpoint runs between items.
+    // queue_changed (queuedMessages no longer rides on completed).
     //
     // Held items don't count: after a cancel, remy holds the user's queued
     // messages instead of draining them, so nothing follows this terminal.
     // Counting them kept the turn open and the working state latched on.
     const hasMoreQueuedWork = getQueuedMessages().some((item) => !item.held);
 
-    if (hasMoreQueuedWork) {
-      cb.onTurnDone?.();
-    } else if (endTurn(event.requestId)) {
-      cb.onTurnDone?.();
+    if (!hasMoreQueuedWork && endTurn(event.requestId)) {
       broadcastActivity(cb.broadcast);
     }
 

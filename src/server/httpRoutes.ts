@@ -5,14 +5,19 @@ import type httpProxy from 'http-proxy';
 import { ctx } from './context.js';
 import { getVersions } from './versionCache.js';
 import { getAgentActivity } from '../processes/agent/activity.js';
-import { quiesceAgent } from '../processes/agent/actions.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
+import { sendPreviewPlaceholder } from './previewPlaceholder.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
 };
+
+// How long `/flush` may take before it answers anyway. Above the snapshot's own
+// tar+upload for a large home, and below the platform's call timeout, so the
+// caller gets a verdict rather than an abort.
+const FLUSH_TIMEOUT_MS = 100_000;
 
 const STANDALONE_LOGS: Record<string, string> = {
   requests: '.logs/requests.ndjson',
@@ -23,10 +28,12 @@ interface HttpHandlerOpts {
   workspaceDir: string;
   getProxyTarget: () => number | null;
   getProxy: () => httpProxy | null;
+  /** Whether a request carries the box's own SANDBOX_TOKEN — see `/flush`. */
+  verifyToken: (url: string | undefined) => boolean;
 }
 
 export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
-  const { workspaceDir, getProxyTarget, getProxy } = opts;
+  const { workspaceDir, getProxyTarget, getProxy, verifyToken } = opts;
 
   return (req, res) => {
     // CORS preflight — allow everything
@@ -131,101 +138,81 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    // Pre-destroy flush: quiesce the agent and push a final _draft snapshot.
-    // Called by the platform right before it stops the sandbox (Vercel's
-    // stop is an abrupt kill — SIGTERM never arrives). Must sit ABOVE the
-    // proxy fallthrough or it would route to the dev server.
-    if (req.url === '/flush' || req.url?.startsWith('/flush?')) {
-      if (req.method !== 'POST') {
-        res.writeHead(405, {
-          'Content-Type': 'application/json',
-          ...CORS_HEADERS,
-        });
-        res.end(JSON.stringify({ error: 'POST required' }));
+    // POST /flush — snapshot home now and report the outcome.
+    //
+    // The platform calls this in-VPC immediately before it deletes the pod, and waits for the
+    // answer: a stop we initiate must not depend on SIGTERM arriving, on the kubelet's grace
+    // surviving whatever issued the delete, or on anyone inferring success from a health probe.
+    // SIGTERM stays the backstop for stops we DON'T initiate (node drain, eviction, deadline).
+    //
+    // Token-gated, unlike the read-only routes above: this is the one mutating platform
+    // operation on this port, and this port is also what the PUBLIC preview host reaches (the
+    // sandbox-proxy deliberately doesn't list `/flush` as a control path, so a request for it on
+    // a preview host arrives here as ordinary traffic). Without the check, anything running in a
+    // user's own preview could drive the platform's snapshot machinery.
+    if (
+      req.method === 'POST' &&
+      new URL(req.url ?? '/', 'http://localhost').pathname === '/flush'
+    ) {
+      if (!verifyToken(req.url)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
-      // Single-flight: concurrent flush requests share one run.
-      const run =
-        flushInFlight ??
-        (flushInFlight = runFlush().finally(() => {
-          flushInFlight = null;
-        }));
-      run.then((result) => {
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          ...CORS_HEADERS,
+      const finalize = ctx.finalizeWorkspace;
+      if (!finalize) {
+        // Pre-bootstrap: nothing is wired yet, so there is also nothing to lose.
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, outcome: 'not_ready' }));
+        return;
+      }
+      Promise.race([
+        finalize(),
+        new Promise<'timeout'>((r) =>
+          setTimeout(() => r('timeout'), FLUSH_TIMEOUT_MS),
+        ),
+      ])
+        .then((outcome) => {
+          // `not_ready` is a success for the caller's purpose: the box holds nothing of the
+          // user's, so stopping it loses nothing.
+          const ok =
+            outcome === 'committed' ||
+            outcome === 'unchanged' ||
+            outcome === 'not_ready';
+          res.writeHead(ok ? 200 : 500, {
+            'Content-Type': 'application/json',
+          });
+          res.end(
+            JSON.stringify({
+              ok,
+              outcome,
+              error: ctx.snapshotManager?.getSnapshotStatus().lastError ?? null,
+            }),
+          );
+        })
+        .catch((err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              outcome: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
         });
-        res.end(JSON.stringify(result));
-      });
       return;
     }
 
     const proxy = getProxy();
     if (!proxy) {
-      res.writeHead(503, { 'Content-Type': 'text/html' });
-      res.end('<html><body><p>Preview starting...</p></body></html>');
+      sendPreviewPlaceholder(req, res, 'starting');
       return;
     }
 
     proxy.web(req, res, {}, () => {
-      if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/html' });
-        res.end('<html><body><p>Preview unavailable</p></body></html>');
-      }
+      sendPreviewPlaceholder(req, res, 'unavailable');
     });
   };
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// Pre-destroy flush
-//////////////////////////////////////////////////////////////////////////////
-
-// Budgets sum to ~18s worst case (quiesce + settle + snapshot), comfortably
-// inside the platform's 20s client timeout — the route always responds.
-const FLUSH_QUIESCE_BUDGET_MS = 8_000;
-// remy emits its cancel terminal BEFORE the (sync) session-file write — give
-// the write a beat to land once the agent reports idle.
-const FLUSH_SETTLE_MS = 750;
-const FLUSH_SNAPSHOT_BUDGET_MS = 9_000;
-
-interface FlushResult {
-  flushed: boolean;
-  quiesced: boolean;
-  durationMs: number;
-  reason?: string;
-}
-
-let flushInFlight: Promise<FlushResult> | null = null;
-
-async function runFlush(): Promise<FlushResult> {
-  const start = Date.now();
-  // Only flush a fully-booted sandbox. 'bootstrapping': the restore may not
-  // have run yet, so a snapshot could push scaffold/partial state over the
-  // real draft. 'error': the restore was unresolvable — pushing would
-  // overwrite good work.
-  if (ctx.status !== 'ready' || !ctx.snapshotManager) {
-    return {
-      flushed: false,
-      quiesced: false,
-      durationMs: Date.now() - start,
-      reason: `not_ready (${ctx.status})`,
-    };
-  }
-  const quiesced = ctx.processManager
-    ? await quiesceAgent(ctx.processManager, FLUSH_QUIESCE_BUDGET_MS)
-    : true;
-  if (quiesced) {
-    await new Promise((r) => setTimeout(r, FLUSH_SETTLE_MS));
-  }
-  // Bounded: respond even if a slow git push overruns — the snapshot keeps
-  // running in the background and may still land before the container dies.
-  const flushed = await Promise.race([
-    ctx.snapshotManager.flushNow().catch(() => false),
-    new Promise<boolean>((r) =>
-      setTimeout(() => r(false), FLUSH_SNAPSHOT_BUDGET_MS),
-    ),
-  ]);
-  return { flushed, quiesced, durationMs: Date.now() - start };
 }
 
 function redactCommand(command: string): string {
@@ -281,7 +268,9 @@ function serveLogs(
   res: http.ServerResponse,
   workspaceDir: string,
 ): void {
-  const name = decodeURIComponent(req.url!.slice('/logs/'.length));
+  // Pathname only: the sandbox proxy carries its credential as a query string.
+  const pathname = new URL(req.url!, 'http://localhost').pathname;
+  const name = decodeURIComponent(pathname.slice('/logs/'.length));
   const logPath = ctx.registry?.getLogPath(name) ?? STANDALONE_LOGS[name];
   if (!logPath) {
     res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });

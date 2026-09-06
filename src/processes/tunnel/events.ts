@@ -88,6 +88,12 @@ export type TunnelEvent =
       consecutiveFailures?: number;
     }
   | { event: 'sandbox-browser-state'; state: 'stopped' }
+  | {
+      event: 'recording-export-progress';
+      jobId: string;
+      phase: 'loading' | 'rendering' | 'encoding' | 'uploading';
+      percent: number;
+    }
   | { event: 'error'; message: string };
 
 // ---------------------------------------------------------------------------
