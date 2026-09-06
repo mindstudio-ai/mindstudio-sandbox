@@ -47,7 +47,11 @@ export async function ptyCreate(params: {
   const cols = params.cols ?? 80;
   const rows = params.rows ?? 24;
   const cwd = params.cwd ?? workspaceDir;
-  const shell = process.env.SHELL || 'sh';
+  // bash, not `process.env.SHELL || 'sh'`. A container does not set SHELL — login and PAM do that,
+  // and neither runs here — so the fallback always won, and `/bin/sh` is dash on Debian. dash does
+  // no prompt expansion whatsoever, which is why the prompt rendered as a literal
+  // `\[\e[38;5;117m\]remy@mindstudio…\w`. An agent at a prompt expects bash regardless.
+  const shell = '/bin/bash';
 
   log.info(`Creating PTY session ${sessionId} (${cols}x${rows}, cwd: ${cwd})`);
 
@@ -61,7 +65,10 @@ export async function ptyCreate(params: {
       TERM: 'xterm-256color',
       CLICOLOR: '1',
       FORCE_COLOR: '1',
-      PS1: '\\[\\e[38;5;117m\\]remy@mindstudio\\[\\e[0m\\]:\\[\\e[38;5;248m\\]\\w\\[\\e[0m\\]$ ',
+      // No PS1 here. An interactive bash reads ~/.bashrc, and Debian's skeleton copy sets PS1
+      // unconditionally — so a prompt passed through the environment is read and then overwritten.
+      // It lives in the image's .bashrc instead (worker/Dockerfile.devbox), which also gives
+      // `docker exec` and an agent's own shell-outs the same prompt.
     },
   });
 

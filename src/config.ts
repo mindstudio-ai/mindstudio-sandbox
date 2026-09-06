@@ -67,10 +67,15 @@ export function loadConfig(): Config {
     apiKey: required('MINDSTUDIO_API_KEY'),
     userId: required('USER_ID'),
     apiBaseUrl: optional('API_BASE_URL', 'https://api.mindstudio.ai'),
-    // The default is a VERCEL path and stays the default on purpose: Vercel is still the live
-    // provider and its boxes run as `vercel-sandbox`. The Kubernetes image sets WORKSPACE_DIR to
-    // its own user's home instead. This was the only hardcoded vendor path in src/.
-    workspaceDir: optional('WORKSPACE_DIR', '/home/vercel-sandbox/workspace'),
+    // Must agree with two places outside this repo, because the editor builds every Monaco model
+    // URI and the LSP `rootUri` from the same path while the language server runs with
+    // `cwd: workspaceDir`. Disagreement does not error — it silently yields no completions and no
+    // diagnostics for every file:
+    //   CFES  worker/Dockerfile.devbox                              ENV WORKSPACE_DIR
+    //   remy-frontend  .../CodeEditor/lspClient.ts                  WORKSPACE_ROOT
+    //
+    // Was `/home/vercel-sandbox/workspace` while dev boxes ran on Vercel Sandbox.
+    workspaceDir: optional('WORKSPACE_DIR', '/home/remy/workspace'),
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken,
     sessionId: process.env['MINDSTUDIO_SESSION_ID'] || null,
