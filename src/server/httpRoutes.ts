@@ -7,6 +7,7 @@ import { getVersions } from './versionCache.js';
 import { getAgentActivity } from '../processes/agent/activity.js';
 import { getSandboxBrowserState } from '../processes/tunnel/index.js';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
+import { sendPreviewPlaceholder } from './previewPlaceholder.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -204,16 +205,12 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
 
     const proxy = getProxy();
     if (!proxy) {
-      res.writeHead(503, { 'Content-Type': 'text/html' });
-      res.end('<html><body><p>Preview starting...</p></body></html>');
+      sendPreviewPlaceholder(req, res, 'starting');
       return;
     }
 
     proxy.web(req, res, {}, () => {
-      if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/html' });
-        res.end('<html><body><p>Preview unavailable</p></body></html>');
-      }
+      sendPreviewPlaceholder(req, res, 'unavailable');
     });
   };
 }
