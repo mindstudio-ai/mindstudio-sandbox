@@ -20,7 +20,8 @@ export interface ToolContext {
   setAppConfig: (config: AppConfig) => void;
   /**
    * Fired once, on the genuine first transition into the `buildComplete`
-   * onboarding state. The implementation (wired in index.ts) pushes `_draft`
+   * onboarding state. The implementation (wired in index.ts) snapshots the
+   * workspace (which carries the manifest's display fields to the platform)
    * then POSTs youai-api's initial-build-complete email. Fire-and-forget.
    */
   onInitialBuildComplete: () => void;

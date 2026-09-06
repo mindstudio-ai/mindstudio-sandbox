@@ -9,6 +9,7 @@ import {
   installLsp,
   writeTunnelConfig,
   cloneAppRepo,
+  refreshGitRemote,
   configureGit,
   unshallowAsync,
   readAppConfig,
@@ -21,6 +22,7 @@ import { ProcessManager } from './processes/ProcessManager.js';
 import {
   startTunnel,
   createTunnelActions,
+  failPendingCommands,
   sendCommand as sendTunnelCommand,
 } from './processes/tunnel/index.js';
 import {
@@ -28,7 +30,7 @@ import {
   sendAgentCommand,
   sendToolResult,
 } from './processes/agent/index.js';
-import { createAgentActions } from './processes/agent/actions.js';
+import { createAgentActions, quiesceAgent } from './processes/agent/actions.js';
 import { startDevServer } from './processes/devServer/index.js';
 import { ResourceMonitor } from './processes/ResourceMonitor.js';
 import { BroadcastBatcher } from './server/BroadcastBatcher.js';
@@ -63,7 +65,8 @@ import {
   markDirty,
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
-import { DraftSnapshotManager } from './projectStatus/DraftSnapshotManager.js';
+import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.js';
+import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.js';
 import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
 import {
   initProjectStatus,
@@ -78,6 +81,16 @@ import { setupFileWatcher } from './fileWatcher/index.js';
 import { cacheVersions } from './server/versionCache.js';
 
 const log = createLogger('controller');
+
+// Shutdown flush budgets. SIGTERM is the one flush path: Kubernetes delivers it on every stop (the
+// platform's, the reaper's, a node drain) and the pod's terminationGracePeriodSeconds (90s, set by
+// CFES) bounds the whole shutdown, so these must sum to well under that.
+const SHUTDOWN_QUIESCE_BUDGET_MS = 8_000;
+// remy emits its cancel terminal BEFORE the (sync) session-file write — give the write a beat to
+// land once the agent reports idle.
+const SHUTDOWN_SETTLE_MS = 750;
+// Tar + upload of a whole home directory; a multi-GB one on a busy box needs most of this.
+const SHUTDOWN_SNAPSHOT_BUDGET_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // State manager construction
@@ -108,6 +121,15 @@ function createStateManagers(config: Config): Managers {
     onStateChange: (event) => {
       batcher.push('processStateChanged', event);
       markDirty();
+      // Nothing will answer a command sent to a tunnel that just died — fail
+      // the callers now instead of after their full timeout.
+      if (
+        event.name === 'tunnel' &&
+        event.prevState === 'running' &&
+        event.state !== 'running'
+      ) {
+        failPendingCommands(`tunnel ${event.state}`);
+      }
     },
     logsDir,
   });
@@ -182,7 +204,7 @@ async function startServices(
   managers: Managers,
   appConfig: AppConfig | null,
   progress: (step: string, message: string) => void,
-  snapshotManager: DraftSnapshotManager,
+  snapshotManager: HomeSnapshotManager,
 ): Promise<{ lspClient: LspClient; lspSidecar: LspSidecar }> {
   const { processManager, registry } = managers;
 
@@ -284,9 +306,9 @@ async function startServices(
     setAppConfig: (updated) => {
       ctx.appConfig = updated;
     },
-    // Genuine first build finished — push _draft (final metadata) then notify
-    // youai-api to email the creator. Fire-and-forget; never blocks remy's
-    // tool result, never throws.
+    // Genuine first build finished — snapshot (the commit carries the final
+    // metadata) then notify youai-api to email the creator. Fire-and-forget;
+    // never blocks remy's tool result, never throws.
     onInitialBuildComplete: () => {
       void sendInitialBuildCompleteEmail({
         snapshotManager,
@@ -326,10 +348,6 @@ async function startServices(
         }
         return handler.handle(id, input, toolContext);
       },
-      // Explicit snapshot trigger on turn completion — kept alongside the file
-      // watcher's trigger so snapshot-on-turn doesn't silently depend on remy
-      // happening to rewrite (watched) .remy-stats.json each turn.
-      onTurnDone: () => snapshotManager.scheduleSnapshot(),
     },
   );
 
@@ -356,9 +374,14 @@ async function main(): Promise<void> {
 
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
-  const snapshotManager = new DraftSnapshotManager(config.workspaceDir, {
+  const snapshotManager = new HomeSnapshotManager({
+    homeDir: config.homeDir,
+    workspaceDir: config.workspaceDir,
+    appId: config.appId,
     sessionId: config.sessionId,
-    // Health transitions (pushes failing / recovered / fenced) go straight to
+    apiBaseUrl: config.apiBaseUrl,
+    apiKey: config.apiKey,
+    // Health transitions (uploads failing / recovered / fenced) go straight to
     // editor clients so "your work isn't backed up" is visible, not a counter
     // nobody polls.
     onStatusChange: () =>
@@ -368,7 +391,6 @@ async function main(): Promise<void> {
   });
   ctx.snapshotManager = snapshotManager;
   let shuttingDown = false;
-  let bootstrapComplete = false;
   const shutdown = async () => {
     if (shuttingDown) {
       return;
@@ -380,11 +402,25 @@ async function main(): Promise<void> {
     managers.batcher.stop();
     stopAutoSave();
     await saveState();
-    if (bootstrapComplete) {
-      // flushNow, not snapshot(): the plain call drops when a run is already
-      // in flight and honors push backoff — either way the final state never
-      // ships. This is the last chance before the container dies.
-      await snapshotManager.flushNow();
+    // Only a fully-booted box flushes. 'bootstrapping': the restore may not have run yet, so a
+    // snapshot could upload scaffold state over the real one. 'error': the restore was
+    // unresolvable, so uploading would overwrite good work.
+    if (ctx.status === 'ready') {
+      // Quiesce the agent first so the snapshot is of a settled workspace, not one mid-write.
+      const quiesced = await quiesceAgent(
+        managers.processManager,
+        SHUTDOWN_QUIESCE_BUDGET_MS,
+      );
+      if (quiesced) {
+        await new Promise((r) => setTimeout(r, SHUTDOWN_SETTLE_MS));
+      }
+      // flushNow, not snapshot(): the plain call drops when a run is already in flight and honors
+      // the upload backoff — either way the final state never ships. Bounded so a hung upload
+      // cannot hold the rest of the shutdown until SIGKILL.
+      await Promise.race([
+        snapshotManager.flushNow().catch(() => false),
+        new Promise((r) => setTimeout(r, SHUTDOWN_SNAPSHOT_BUDGET_MS)),
+      ]);
     }
     snapshotManager.stop();
     closeAllPty();
@@ -442,50 +478,65 @@ async function main(): Promise<void> {
     // 5b. Cache binary versions (non-blocking — best effort)
     await cacheVersions();
 
-    // 6. Prepare workspace
-    await writeTunnelConfig(config);
-    await cloneAppRepo(config, progress);
-    configureGit(config.workspaceDir);
-    ensureProdCli();
-    fsSync.mkdirSync(managers.logsDir, { recursive: true });
-    const restoreOutcome = await snapshotManager.restore();
-    // Drop any cached log WriteStream FDs — `git restore` does atomic
-    // rename which gives restored files (including .logs/*.ndjson) new
-    // inodes. Cached FDs from before restore now point to orphan inodes
-    // and writes vanish from the filesystem. Closing forces the next
-    // appendLog to reopen against the live inode.
-    managers.registry.closeAllLogStreams();
-    log.info('Reopened log streams after snapshot restore');
-    if (restoreOutcome === 'unresolvable') {
-      // Refuse to boot in scaffold state. The user's draft either exists
-      // and we couldn't fetch/apply it, or the remote is in a state where
-      // we can't tell. Either way, proceeding past here would let the user
-      // edit on top of the scaffold and silently lose their real work.
-      const reason = snapshotManager.getSnapshotStatus().lastError ?? 'unknown';
+    // 6. Prepare home. Refuse to boot in scaffold state whenever the user's
+    // work may exist but could not be brought back: proceeding would let them
+    // edit on top of the scaffold and the next snapshot would overwrite it.
+    const refuseToBoot = (reason: string) => {
       const message = `Could not restore your last session: ${reason}`;
       log.error(`${message}. Refusing to boot in scaffold state.`);
       setStatus('error');
       broadcast('bootstrapProgress', { step: 'error', message });
+    };
+    progress('restore', 'Restoring workspace...');
+    const restoreOutcome = await snapshotManager.prepareHome();
+    if (restoreOutcome === 'unresolvable') {
+      refuseToBoot(snapshotManager.getSnapshotStatus().lastError ?? 'unknown');
       return; // skip steps 7+: no project status init, no dev server, no agent edits. WS stays up.
     }
+    if (restoreOutcome === 'no_snapshot') {
+      // First boot since the app last ran on the `_draft` branch, or a brand
+      // new app: clone, then try the legacy branch. A restored draft is
+      // uploaded on the first snapshot cycle so the app has a snapshot from
+      // here on.
+      await cloneAppRepo(config, progress);
+      const legacy = await restoreFromLegacyDraft(config.workspaceDir);
+      if (legacy.outcome === 'unresolvable') {
+        refuseToBoot(legacy.error ?? 'unknown');
+        return;
+      }
+      if (legacy.outcome === 'restored') {
+        snapshotManager.forceNextUpload();
+      }
+      // After the legacy fetch has released `.git/shallow.lock`: the two
+      // shallow-mutating fetches must not run concurrently.
+      unshallowAsync(config.workspaceDir);
+    } else {
+      // A restored (or resumed) workspace carries the previous session's git
+      // credential, which the platform has since revoked.
+      refreshGitRemote(config);
+    }
+    await writeTunnelConfig(config);
+    configureGit(config.workspaceDir);
+    ensureProdCli();
+    fsSync.mkdirSync(managers.logsDir, { recursive: true });
+    // Drop any cached log WriteStream FDs — the restore replaced files
+    // (including .logs/*.ndjson) with new inodes, so FDs opened before it
+    // point at orphans and writes vanish. Closing forces the next appendLog
+    // to reopen against the live inode.
+    managers.registry.closeAllLogStreams();
+    snapshotManager.markBooted();
 
-    // Now that restore()'s depth-1 fetch has released `.git/shallow.lock`,
-    // kick off the background unshallow. Deferred to here (rather than inside
-    // configureGit) so the two shallow-mutating fetches never run concurrently.
-    // Only on the success path — no point deepening history if we're refusing
-    // to boot above.
-    unshallowAsync(config.workspaceDir);
-
-    // 7. Init project status (after snapshot restore so file is available)
+    // 7. Init project status (after the restore so the file is available)
     initProjectStatus(config.workspaceDir);
 
     // 7b. Forked-app onboarding stamp. A fork is a main-only git copy of its
-    // source, so it carries no _draft — where .project-status.json lives — and
-    // would otherwise boot into onboarding. The backend leaves a durable git
-    // trailer on main's stamp commit; if we see it and haven't already finished,
-    // stamp finished. Gated on state (not the trailer, which lives in history
-    // forever) → one-time on first boot, then self-heals (the stamped status
-    // rides the next draft snapshot, so later boots restore finished and skip).
+    // source, so it carries no workspace snapshot — where .project-status.json
+    // lives — and would otherwise boot into onboarding. The backend leaves a
+    // durable git trailer on main's stamp commit; if we see it and haven't
+    // already finished, stamp finished. Gated on state (not the trailer, which
+    // lives in history forever) → one-time on first boot, then self-heals (the
+    // stamped status rides the next snapshot, so later boots restore finished
+    // and skip).
     if (getOnboardingState() !== 'onboardingFinished') {
       const forkSource = await readForkSource(config.workspaceDir);
       if (forkSource) {
@@ -593,12 +644,10 @@ async function main(): Promise<void> {
     // 14. File watcher
     setupFileWatcher(config, managers, lspSidecar);
 
-    // 15. Start the snapshot backstop timer (real changes and agent turns
-    // trigger snapshots sooner via the file watcher / onTurnDone).
+    // 15. Start the snapshot interval (plus the SIGTERM flush in shutdown).
     snapshotManager.start();
 
     // Ready
-    bootstrapComplete = true;
     setStatus('ready');
     progress('ready', 'C&C server is ready');
     log.info('Bootstrap complete');

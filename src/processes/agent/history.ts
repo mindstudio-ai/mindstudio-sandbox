@@ -112,6 +112,11 @@ export function transformHistory(
           if (block.backgroundResult != null) {
             toolBlock.backgroundResult = block.backgroundResult;
           }
+          // Browser-test replay reference (see remy src/recording.ts). Lives on
+          // the block, not in `result`, so the result cap can't truncate it.
+          if (block.recording != null) {
+            toolBlock.recording = block.recording;
+          }
           if (Array.isArray(block.subAgentMessages)) {
             toolBlock.subAgentMessages = transformHistory(
               block.subAgentMessages as unknown[],

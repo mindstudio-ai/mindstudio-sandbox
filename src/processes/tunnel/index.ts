@@ -5,7 +5,9 @@
  * Uses requestId-based correlation for all stdin commands.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { ProcessManager } from '../ProcessManager.js';
+import { getAgentActivity } from '../agent/activity.js';
 import { parseTunnelMessage } from './events.js';
 import type { TunnelEvent } from './events.js';
 import { createLogger } from '../../logger.js';
@@ -71,6 +73,53 @@ export function getSandboxBrowserState(): SandboxBrowserState {
   return { ...sandboxBrowserState };
 }
 
+// ---------------------------------------------------------------------------
+// Replay video export — one job at a time, tracked here so a reconnecting
+// editor picks the result back up from the init frame.
+// ---------------------------------------------------------------------------
+
+export interface RecordingExportStatus {
+  jobId: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  startedAt: number;
+  finishedAt?: number;
+  url?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  error?: string;
+  errorCode?: string;
+}
+
+let recordingExport: RecordingExportStatus | null = null;
+let recordingExportExpiry: ReturnType<typeof setTimeout> | null = null;
+// Keep a finished job long enough for an editor that reloaded mid-render to
+// still see the result.
+const RECORDING_EXPORT_RETENTION_MS = 10 * 60_000;
+// Above the tunnel's own budget (6-minute replay cap plus ready/encode/upload
+// margin) so the tunnel's error code, not a bare timeout, is what we report.
+const RECORDING_EXPORT_TIMEOUT_MS = 600_000;
+
+export function getRecordingExportStatus(): RecordingExportStatus | null {
+  return recordingExport ? { ...recordingExport } : null;
+}
+
+function finishRecordingExport(next: RecordingExportStatus): void {
+  recordingExport = next;
+  if (recordingExportExpiry) {
+    clearTimeout(recordingExportExpiry);
+  }
+  recordingExportExpiry = setTimeout(() => {
+    if (recordingExport?.jobId === next.jobId) {
+      recordingExport = null;
+    }
+  }, RECORDING_EXPORT_RETENTION_MS);
+}
+
+// The server's broadcast, captured at startup so the export handler can
+// announce completion outside a stdout callback.
+let broadcastFn: TunnelCallbacks['broadcast'] | null = null;
+
 export interface TunnelCallbacks {
   onSessionStarted: (session: TunnelSessionState) => void;
   onSessionEnded: () => void;
@@ -84,6 +133,7 @@ export function startTunnel(
   config: { workspaceDir: string; devPort: number },
   callbacks: TunnelCallbacks,
 ): void {
+  broadcastFn = callbacks.broadcast;
   pm.start({
     name: 'tunnel',
     command: 'mindstudio-local',
@@ -146,6 +196,19 @@ export function sendCommand(
   });
 }
 
+/**
+ * Resolve every in-flight command as failed. Called when the tunnel process
+ * leaves `running`: nothing will ever answer those requestIds, and without
+ * this a caller waits out its full timeout (a replay export: ten minutes).
+ */
+export function failPendingCommands(reason: string): void {
+  for (const [requestId, entry] of pending) {
+    clearTimeout(entry.timer);
+    pending.delete(requestId);
+    entry.resolve({ success: false, error: reason });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Stdout handling
 // ---------------------------------------------------------------------------
@@ -185,6 +248,13 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
   cb.broadcast('tunnelEvent', { tunnelEvent });
 
   switch (tunnelEvent.event) {
+    case 'recording-export-progress':
+      cb.broadcast('recordingExportProgress', {
+        jobId: tunnelEvent.jobId,
+        phase: tunnelEvent.phase,
+        percent: tunnelEvent.percent,
+      });
+      break;
     case 'session-starting':
       log.info('Session starting', {
         appId: tunnelEvent.appId,
@@ -426,6 +496,89 @@ export function createTunnelActions(
     },
     listDatabases: async () => {
       return await sendCommand(pm, 'list-databases', {}, 30_000);
+    },
+    // Render a browser-test replay to an mp4 on the box. Answers at once with
+    // a jobId — the editor's request has no timeout, so the render is never
+    // awaited here. Progress arrives as `recordingExportProgress`, the result
+    // as `recordingExportCompleted`, and the init frame carries the status.
+    tunnelExportRecording: async (p) => {
+      const { eventsUrl } = p as { eventsUrl?: string };
+      if (typeof eventsUrl !== 'string' || !eventsUrl.startsWith('https://')) {
+        throw new Error(
+          'Missing "eventsUrl" parameter (https URL of the recording)',
+        );
+      }
+      // The render shares Chrome and CPU with everything else on the box, so
+      // it never starts while the agent (or the QA browser it drives) works.
+      if (getAgentActivity().busy) {
+        throw new Error(
+          'Remy is working right now — wait for the current turn to finish before exporting.',
+        );
+      }
+      if (recordingExport?.status === 'running') {
+        throw new Error('A video export is already running.');
+      }
+      const jobId = randomBytes(16).toString('hex');
+      const startedAt = Date.now();
+      if (recordingExportExpiry) {
+        clearTimeout(recordingExportExpiry);
+        recordingExportExpiry = null;
+      }
+      recordingExport = { jobId, status: 'running', startedAt };
+      log.info(`Replay export started: ${jobId}`);
+      void sendCommand(
+        pm,
+        'export-recording',
+        { jobId, eventsUrl },
+        RECORDING_EXPORT_TIMEOUT_MS,
+      ).then((res) => {
+        if (recordingExport?.jobId !== jobId) {
+          return;
+        }
+        const finishedAt = Date.now();
+        if (res.success) {
+          finishRecordingExport({
+            jobId,
+            status: 'completed',
+            startedAt,
+            finishedAt,
+            url: res.url as string,
+            width: res.width as number,
+            height: res.height as number,
+            durationMs: res.durationMs as number,
+          });
+        } else {
+          const errorCode =
+            typeof res.errorCode === 'string' ? res.errorCode : undefined;
+          finishRecordingExport({
+            jobId,
+            status: errorCode === 'CANCELLED' ? 'cancelled' : 'failed',
+            startedAt,
+            finishedAt,
+            error: typeof res.error === 'string' ? res.error : 'Export failed',
+            ...(errorCode ? { errorCode } : {}),
+          });
+        }
+        log.info(
+          `Replay export finished: ${jobId} (${getRecordingExportStatus()?.status})`,
+        );
+        broadcastFn?.('recordingExportCompleted', {
+          export: getRecordingExportStatus(),
+        });
+      });
+      return { jobId };
+    },
+    tunnelCancelExportRecording: async (p) => {
+      const { jobId } = p as { jobId?: string };
+      if (typeof jobId !== 'string' || !jobId) {
+        throw new Error('Missing "jobId" parameter');
+      }
+      return await sendCommand(
+        pm,
+        'cancel-export-recording',
+        { jobId },
+        15_000,
+      );
     },
   };
 }

@@ -1,12 +1,12 @@
 /**
- * Persistent sandbox state — survives hibernate/resume via filesystem snapshot.
+ * Persistent sandbox state, written to the workspace so it survives a C&C server restart.
  *
  * Stores process registry snapshots (metadata + per-process logs).
  * Chat history is owned by remy (fetched via get_history action).
  *
  * Auto-save: state is flushed synchronously (writeFileSync) after
- * mutations, debounced to avoid thrashing. This survives unclean
- * shutdowns where SIGTERM never arrives.
+ * mutations, debounced to avoid thrashing, so a crash loses at most the
+ * debounce window.
  */
 
 import fs from 'node:fs/promises';

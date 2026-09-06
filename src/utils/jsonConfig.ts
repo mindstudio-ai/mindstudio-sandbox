@@ -12,7 +12,7 @@
  * admin CLI and the server-side deploy pipeline both are), so a
  * lenient-only read just relocates the failure to publish time, far from the
  * edit that caused it. Repairing on disk fixes it for every consumer at once,
- * and the repaired file rides the next `_draft` snapshot.
+ * and the repaired file rides the next workspace snapshot.
  *
  * Strict-first means the steady state never rewrites: no formatting churn and
  * no snapshot noise for files that were already valid.

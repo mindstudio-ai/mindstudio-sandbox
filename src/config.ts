@@ -7,16 +7,19 @@ const VALID_LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 export interface Config {
   gitRepoUrl: string;
   apiKey: string;
+  appId: string;
   userId: string;
   apiBaseUrl: string;
+  /** The user's computer: everything under here is what a workspace snapshot
+   * persists. The workspace is inside it. */
+  homeDir: string;
   workspaceDir: string;
   port: number;
   sandboxToken: string;
-  /** Platform sandbox-session id, stamped on `_draft` snapshot commits so a
-   * superseded instance can detect a newer session's tip and stop pushing.
-   * Null on platform versions that don't send it — fencing degrades to
-   * lease-only. */
-  sessionId: string | null;
+  /** Platform sandbox-session id, sent with every workspace-snapshot write.
+   * youai-api only accepts writes from the app's newest session, so a
+   * superseded box learns it has been replaced and stops. */
+  sessionId: string;
   logLevel: LogLevel;
 }
 
@@ -65,20 +68,20 @@ export function loadConfig(): Config {
   const config: Config = {
     gitRepoUrl: required('GIT_REPO_URL'),
     apiKey: required('MINDSTUDIO_API_KEY'),
+    appId: required('MINDSTUDIO_APP_ID'),
     userId: required('USER_ID'),
     apiBaseUrl: optional('API_BASE_URL', 'https://api.mindstudio.ai'),
+    homeDir: optional('HOME', '/home/remy'),
     // Must agree with two places outside this repo, because the editor builds every Monaco model
     // URI and the LSP `rootUri` from the same path while the language server runs with
     // `cwd: workspaceDir`. Disagreement does not error — it silently yields no completions and no
     // diagnostics for every file:
     //   CFES  worker/Dockerfile.devbox                              ENV WORKSPACE_DIR
     //   remy-frontend  .../CodeEditor/lspClient.ts                  WORKSPACE_ROOT
-    //
-    // Was `/home/vercel-sandbox/workspace` while dev boxes ran on Vercel Sandbox.
     workspaceDir: optional('WORKSPACE_DIR', '/home/remy/workspace'),
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken,
-    sessionId: process.env['MINDSTUDIO_SESSION_ID'] || null,
+    sessionId: required('MINDSTUDIO_SESSION_ID'),
     logLevel,
   };
 

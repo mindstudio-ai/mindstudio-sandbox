@@ -13,12 +13,12 @@
  */
 
 import { createLogger } from '../logger.js';
-import type { DraftSnapshotManager } from './DraftSnapshotManager.js';
+import type { HomeSnapshotManager } from './HomeSnapshotManager.js';
 
 const log = createLogger('initial-build-email');
 
 export interface InitialBuildEmailDeps {
-  snapshotManager: DraftSnapshotManager;
+  snapshotManager: HomeSnapshotManager;
   /** App id from the manifest; null if it couldn't be resolved. */
   appId: string | null;
   /** MINDSTUDIO_API_KEY — the user credential the route's edit check accepts. */
@@ -27,17 +27,17 @@ export interface InitialBuildEmailDeps {
 }
 
 // Bounded retry for the pre-POST snapshot. snapshot() returns false immediately
-// when another snapshot (backstop / onTurnDone / file-change) is already in progress, and
-// that in-flight one may have started before remy wrote the final metadata. So
-// we retry briefly to land a fresh push that includes the real
+// when another snapshot (the interval timer) is already in progress, and that
+// in-flight one may have started before remy wrote the final metadata. So we
+// retry briefly to land a fresh commit that carries the real
 // name/description/iconUrl, rather than emailing scaffold defaults.
 const SNAPSHOT_ATTEMPTS = 6;
 const SNAPSHOT_RETRY_DELAY_MS = 750;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function pushDraftWithFinalMetadata(
-  snapshotManager: DraftSnapshotManager,
+async function snapshotWithFinalMetadata(
+  snapshotManager: HomeSnapshotManager,
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= SNAPSHOT_ATTEMPTS; attempt++) {
     if (await snapshotManager.snapshot()) {
@@ -51,9 +51,10 @@ async function pushDraftWithFinalMetadata(
 }
 
 /**
- * Push the built project to `_draft` (so the email reads final metadata), then
- * POST initial-build-complete. Best-effort: logs and swallows every failure so
- * a transient email problem never affects the build flow.
+ * Snapshot the built project (the commit carries the manifest's display fields,
+ * which is where the email reads them from), then POST initial-build-complete.
+ * Best-effort: logs and swallows every failure so a transient email problem
+ * never affects the build flow.
  */
 export async function sendInitialBuildCompleteEmail(
   deps: InitialBuildEmailDeps,
@@ -67,13 +68,14 @@ export async function sendInitialBuildCompleteEmail(
 
   try {
     // Sequencing requirement: the email's icon/name/description come from the
-    // app's draft metadata, populated by the _draft push from mindstudio.json.
-    // Push first so the email shows the real app, not "Untitled" / no icon.
-    const pushed = await pushDraftWithFinalMetadata(snapshotManager);
-    if (!pushed) {
+    // app's draft metadata, which the snapshot commit populates from
+    // mindstudio.json. Snapshot first so the email shows the real app, not
+    // "Untitled" / no icon.
+    const snapshotted = await snapshotWithFinalMetadata(snapshotManager);
+    if (!snapshotted) {
       log.warn(
-        'Could not confirm a fresh _draft push before initial-build email; ' +
-          'proceeding (earlier snapshots likely already pushed current metadata)',
+        'Could not confirm a fresh snapshot before initial-build email; ' +
+          'proceeding (an earlier snapshot likely already carried current metadata)',
       );
     }
 
