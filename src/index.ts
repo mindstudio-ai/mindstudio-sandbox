@@ -485,16 +485,13 @@ async function main(): Promise<void> {
   };
 
   try {
-    // 5. Install binaries
+    // 5. Install binaries. NOT installAgentSdk — see step 6b: it settles the global agent SDK
+    // against the home directory, so it has to run on the home directory the box ends up with.
     await Promise.all([
       installTunnel(progress),
       installAgent(progress),
-      installAgentSdk(progress),
       installLsp(progress),
     ]);
-
-    // 5b. Cache binary versions (non-blocking — best effort)
-    await cacheVersions();
 
     // 6. Prepare home. Refuse to boot in scaffold state whenever the user's
     // work may exist but could not be brought back: proceeding would let them
@@ -543,6 +540,16 @@ async function main(): Promise<void> {
     // to reopen against the live inode.
     managers.registry.closeAllLogStreams();
     snapshotManager.markBooted();
+
+    // 6b. Settle the global agent SDK, which remy shells out to as a bash tool and which must
+    // therefore always be the image's. This runs HERE rather than with the other installers because
+    // it reasons about `~/.npm-global` — and until the restore has landed, that is the wrong home
+    // directory: an eviction before it would be undone by the untar seconds later.
+    await installAgentSdk(progress);
+
+    // 6c. Record installed versions for `/status`. After the restore AND after the step above, so
+    // it describes the tooling the box will actually run. Cheap now (a package.json read each).
+    await cacheVersions();
 
     // 7. Init project status (after the restore so the file is available)
     initProjectStatus(config.workspaceDir);

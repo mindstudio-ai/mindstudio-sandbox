@@ -2,8 +2,8 @@
  * Caches binary versions at boot so /status doesn't shell out per request.
  */
 
-import { exec as execCb } from 'node:child_process';
 import { createLogger } from '../logger.js';
+import { findGlobalPackage } from '../utils/globalPackages.js';
 
 const log = createLogger('versions');
 
@@ -39,34 +39,27 @@ const cached: Versions = {
   typescriptLanguageServer: { version: 'unknown', devBranch: null },
 };
 
-function npmVersion(pkg: string): Promise<string> {
-  return new Promise((resolve) => {
-    execCb(
-      `npm list -g ${pkg} --depth=0`,
-      { encoding: 'utf-8', timeout: 10_000 },
-      (_err, stdout) => {
-        // npm list exits non-zero when the package is missing, but still
-        // prints output — try to parse either way.
-        const output = stdout ?? '';
-        const match = output.match(new RegExp(`${pkg}@(.+)`));
-        resolve(match ? match[1].trim() : 'unknown');
-      },
-    );
-  });
-}
+const versionOf = (pkg: string): string =>
+  findGlobalPackage(pkg)?.version ?? 'unknown';
 
-/** Shell out to get binary versions. Call once at boot. */
+/**
+ * Read the installed versions. Call once, AFTER the home restore.
+ *
+ * Reads each package.json directly instead of shelling out to `npm list -g` four times, which cost
+ * ~7s of boot and was on the critical path ahead of the restore. It was also giving wrong answers
+ * twice over: `npm list -g` only sees the runtime prefix in $HOME, so every tool baked into the
+ * image read as `unknown`, and running before the restore meant it described a home directory that
+ * was about to be replaced. See `utils/globalPackages.ts`.
+ */
 export async function cacheVersions(): Promise<void> {
-  const [remy, tunnel, agentSdk, tls] = await Promise.all([
-    npmVersion('@mindstudio-ai/remy'),
-    npmVersion('@mindstudio-ai/local-model-tunnel'),
-    npmVersion('@mindstudio-ai/agent'),
-    npmVersion('typescript-language-server'),
-  ]);
-  cached.remy.version = remy;
-  cached.mindstudioLocal.version = tunnel;
-  cached.agentSdk.version = agentSdk;
-  cached.typescriptLanguageServer.version = tls;
+  cached.remy.version = versionOf('@mindstudio-ai/remy');
+  cached.mindstudioLocal.version = versionOf(
+    '@mindstudio-ai/local-model-tunnel',
+  );
+  cached.agentSdk.version = versionOf('@mindstudio-ai/agent');
+  cached.typescriptLanguageServer.version = versionOf(
+    'typescript-language-server',
+  );
   log.info('Cached binary versions', { ...cached });
 }
 

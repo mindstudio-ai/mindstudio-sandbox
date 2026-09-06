@@ -1,4 +1,4 @@
-import { exec, execSync } from 'node:child_process';
+import { exec } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -8,6 +8,11 @@ import type { AppConfig } from '../types.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import { createLogger } from '../logger.js';
 import { loadJsonConfigFile } from '../utils/jsonConfig.js';
+import {
+  findGlobalPackage,
+  HOME_GLOBAL_NODE_MODULES,
+  IMAGE_GLOBAL_NODE_MODULES,
+} from '../utils/globalPackages.js';
 import {
   run,
   runAsync,
@@ -91,18 +96,46 @@ export async function installAgent(progress: ProgressFn): Promise<void> {
 export async function installAgentSdk(progress: ProgressFn): Promise<void> {
   const devBranch = process.env['AGENT_SDK_DEV_BRANCH'];
 
+  // The GLOBAL agent SDK is PLATFORM tooling, not a project dependency: remy shells out to it as a
+  // bash tool. The version the user's app depends on is its own — `dist/methods/package.json` in
+  // their repo, theirs and the agent's to manage — and is untouched by any of this. So this copy
+  // must always be the image's, which is what makes `--allow-scripts` and a tested postinstall in
+  // Dockerfile.devbox meaningful.
+  //
+  // Nothing to install, then: the image already baked it into /usr/local. The job here is the
+  // opposite one. `NPM_CONFIG_PREFIX` points at ~/.npm-global, which rides INSIDE the home
+  // snapshot and comes FIRST on PATH — so a copy there shadows the image's for the life of the app.
+  // The old presence check used `npm list -g`, which only sees that runtime prefix, so it reinstalled
+  // on every boot and every snapshot since has frozen a copy there. Evicting it is both the fix and
+  // the cleanup for the snapshots already written.
+  //
+  // `npm uninstall -g` rather than an rm: it clears the bin symlinks too, and a dangling link first
+  // on PATH is worse than the shadow. Costs ~1s once per app, then the directory is gone and this
+  // step is free forever.
   if (!devBranch) {
-    try {
-      execSync('npm list -g @mindstudio-ai/agent', {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
+    const shadow = findGlobalPackage('@mindstudio-ai/agent', [
+      HOME_GLOBAL_NODE_MODULES,
+    ]);
+    if (shadow) {
+      progress('installAgentSdk', 'Removing stale local copy...');
+      log.info(
+        `agent SDK ${shadow.version} found in the home prefix, shadowing the image's — removing`,
+      );
+      run('npm uninstall -g @mindstudio-ai/agent', {
+        label: 'npm uninstall -g @mindstudio-ai/agent',
       });
-      progress('installAgentSdk', 'Already installed, skipping');
-      log.info('agent SDK already installed, skipping');
-      return;
-    } catch {
-      // Not installed, proceed with install
     }
+
+    const baked = findGlobalPackage('@mindstudio-ai/agent', [
+      IMAGE_GLOBAL_NODE_MODULES,
+    ]);
+    if (baked) {
+      progress('installAgentSdk', 'Using image version, skipping');
+      log.info(`agent SDK ${baked.version} from image, skipping install`);
+      return;
+    }
+    // Only reachable on an image predating the baked install. Falls through and installs.
+    log.warn('agent SDK not baked into this image; installing at boot');
   }
 
   if (devBranch) {
