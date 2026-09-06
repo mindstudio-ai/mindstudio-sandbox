@@ -361,9 +361,8 @@ export async function applyWorkspaceEdits(
       r.status === 'overlap',
   ).length;
 
-  // Snapshots are scheduled centrally by the file watcher's change handler
-  // (each applied edit fires ctx.onFileChanged → scheduleSnapshot), so there's
-  // no per-edit snapshot trigger here. See DraftSnapshotManager.
+  // No snapshot trigger here: the snapshot manager walks home for changes on
+  // its own interval (see HomeSnapshotManager).
   log.info(
     `applyWorkspaceEdits done: applied=${totalApplied}, errors=${totalErrors}`,
   );
