@@ -259,9 +259,43 @@ export async function cloneAppRepo(
   progress('cloneApp', 'Cloning app repo...');
   log.debug(`Creating workspace dir: ${workspaceDir}`);
   await fs.mkdir(workspaceDir, { recursive: true });
+
+  // NOT `git clone <url> <workspaceDir>`, which is what this was: the image now ships this app's
+  // node_modules already installed at their final paths inside the workspace (Dockerfile.devbox),
+  // and clone refuses a non-empty destination.
+  //
+  // So clone the METADATA to a scratch directory, move the `.git` into the workspace, and let git
+  // materialise the tree in place. `--no-checkout` is what makes the move cheap — nothing but `.git`
+  // is written, so it is one directory rename rather than a tree copy.
+  //
+  // The scratch directory has to sit under $HOME and not /tmp. Both are inside the container, but a
+  // tmpfs `/tmp` would put the two on different filesystems and turn the rename back into the
+  // recursive copy this whole arrangement exists to avoid.
+  //
+  // Then `git reset --hard`, which writes the tracked tree and leaves untracked files alone —
+  // node_modules is gitignored in the scaffold and in every real app, so the baked trees survive.
+  // Doing it this way keeps git's own clone semantics: a local branch tracking origin's default,
+  // shallow state intact. `refreshGitRemote`, `unshallowAsync` and the agent's own commits all
+  // assume a normal checkout, and a detached HEAD would break pushing without failing here.
+  const scratchDir = path.join(config.homeDir, '.app-clone');
+  await fs.rm(scratchDir, { recursive: true, force: true });
   log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
-  run(`git clone --depth 1 ${gitRepoUrl} ${workspaceDir}`, {
-    label: `git clone → ${workspaceDir}`,
+  run(`git clone --depth 1 --no-checkout ${gitRepoUrl} ${scratchDir}`, {
+    label: 'git clone (metadata only)',
+  });
+  // `-T`: treat the destination as the thing to become, not a directory to move into. Without it a
+  // pre-existing `.git` in the workspace would silently become `.git/.git` and the reset below would
+  // fail somewhere less obvious. Nothing should put one there — this path runs only when there was
+  // no snapshot to restore, and the image ships no repo — so the right behaviour is to fail loudly
+  // if that assumption ever stops holding.
+  run(
+    `mv -T ${path.join(scratchDir, '.git')} ${path.join(workspaceDir, '.git')}`,
+    { label: 'git dir → workspace' },
+  );
+  await fs.rm(scratchDir, { recursive: true, force: true });
+  run('git reset --hard HEAD', {
+    cwd: workspaceDir,
+    label: 'git reset --hard (materialise tree)',
   });
 
   // Verify workspace has a manifest
@@ -599,23 +633,6 @@ async function npmInstallWithFallback(
 }
 
 /**
- * Where Dockerfile.devbox leaves the trees it baked.
- *
- * Keyed by the directory's path within the workspace with separators flattened — `dist/methods`
- * becomes `methods`, `dist/interfaces/web` becomes `interfaces-web`. Not the basename, which would
- * make an interface named `methods` collide with the methods directory and get handed the wrong
- * tree; npm would reconcile that, but silently and slowly.
- */
-const BAKED_DEPS_DIR = '/opt/remy-baked';
-
-const bakedKeyFor = (workspaceDir: string, dir: string): string =>
-  path
-    .relative(workspaceDir, dir)
-    .split(path.sep)
-    .filter((part) => part !== 'dist')
-    .join('-');
-
-/**
  * The directories in this app that have npm dependencies of their own.
  *
  * Every interface, not just `web`. A Remy app has one methods directory and N interfaces, and today
@@ -623,8 +640,8 @@ const bakedKeyFor = (workspaceDir: string, dir: string): string =>
  * carry no package.json, so they fall out here at no cost. Naming `web` explicitly, as this used to,
  * would just be wrong on the day a second interface serves JS.
  *
- * Shared by the placement step and the install step deliberately: they have to agree on the set, or
- * a tree gets baked into a directory nothing installs in.
+ * Has to agree with the set Dockerfile.devbox bakes trees into, or a tree lands in a directory
+ * nothing installs in.
  */
 async function findPackageDirs(workspaceDir: string): Promise<string[]> {
   const interfacesDir = path.join(workspaceDir, 'dist', 'interfaces');
@@ -648,49 +665,6 @@ async function findPackageDirs(workspaceDir: string): Promise<string[]> {
   return found;
 }
 
-/**
- * Move the image's baked dependency trees into place, for the directories that have none.
- *
- * npm's cost is per package it must materialize, so handing it a tree that is already most of the
- * answer is the only lever available short of changing package manager: measured 7,530ms to install
- * a real app's 648 packages from empty against 5,860ms on top of the baked tree.
- *
- * ONLY when `node_modules` is absent, and therefore only AFTER the restore. A snapshot old enough to
- * still carry `node_modules` would otherwise extract over the baked copy, and while npm does
- * reconcile the merge correctly it is strictly more work than either tree alone.
- *
- * `mv` and NOT `fs.rename`, which is the trap here: /opt lives in a lower image layer, and overlayfs
- * refuses to rename a directory out of one — `fs.renameSync` throws EXDEV immediately, verified in
- * the image. coreutils falls back to a recursive copy, which is what makes this work and also what
- * makes it cost 857ms for 228 MB rather than nothing. Still well under what it saves, and the timing
- * is logged per directory because it is the number that would justify staging the tree during the
- * restore instead (worth ~800ms more, at the cost of contending with the restore for the same disk).
- */
-export async function placeBakedDependencies(
-  workspaceDir: string,
-): Promise<void> {
-  for (const dir of await findPackageDirs(workspaceDir)) {
-    const key = bakedKeyFor(workspaceDir, dir);
-    const target = path.join(dir, 'node_modules');
-    const baked = path.join(BAKED_DEPS_DIR, key, 'node_modules');
-    // Absent on any box whose image predates the bake, which is the whole of the rollout: it just
-    // installs the full tree, exactly as before.
-    if (fsSync.existsSync(target) || !fsSync.existsSync(baked)) {
-      continue;
-    }
-    const start = Date.now();
-    try {
-      await runAsync(`mv ${baked} ${target}`, {
-        label: `place baked deps → ${key}`,
-      });
-      log.info(`Placed baked ${key} deps in ${Date.now() - start}ms`);
-    } catch (err) {
-      // Nothing is lost: the install below does the whole tree instead.
-      log.warn(`Could not place baked ${key} deps: ${err}`);
-    }
-  }
-}
-
 export async function installDependencies(
   workspaceDir: string,
   progress: ProgressFn,
@@ -709,19 +683,42 @@ export async function installDependencies(
   );
 
   const startTime = Date.now();
-  // Name the directory as each one lands. This is now the phase most of a boot sits in, and the
-  // installs run concurrently with no incremental output of their own, so a subtitle that names
-  // what finished is the only honest progress available — a two-tick progress bar would be theatre.
+
+  // This is the phase most of a boot now sits in, and npm prints no incremental progress of its own,
+  // so without this the longest row on screen was a ticking timer over an empty subtitle for 30s.
+  // Directories finished out of directories found is the only measure honestly available; both ends
+  // are observed, and the label names whichever are still running so the line changes as well as
+  // the bar.
+  //
+  // Emitted BEFORE the installs start, not just as each lands. Without the opening `0 of N` the row
+  // has nothing at all until the first directory finishes, which on a two-directory app is most of
+  // the phase.
+  const remaining = new Set(installDirs.map((dir) => path.basename(dir)));
+  const emit = (done: number) => {
+    const names = [...remaining].join(', ');
+    bootPhase(
+      names ? `Installing dependencies · ${names}` : 'Dependencies installed',
+      {
+        phase: 'deps',
+        state: 'active',
+        counter: {
+          done,
+          total: installDirs.length,
+          unit: 'dirs',
+          label: names ? `Installing ${names}` : 'Installed',
+        },
+      },
+    );
+  };
+  emit(0);
+
   let done = 0;
   const results = await Promise.all(
     installDirs.map((dir) =>
       npmInstallWithFallback(dir).finally(() => {
         done += 1;
-        bootPhase(`Dependencies · ${path.basename(dir)}`, {
-          phase: 'deps',
-          state: 'active',
-          detail: `${done} of ${installDirs.length} ready`,
-        });
+        remaining.delete(path.basename(dir));
+        emit(done);
       }),
     ),
   );

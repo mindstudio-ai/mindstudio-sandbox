@@ -7,7 +7,6 @@ import {
   installAgent,
   installAgentSdk,
   installLsp,
-  placeBakedDependencies,
   writeTunnelConfig,
   cloneAppRepo,
   refreshGitRemote,
@@ -665,9 +664,6 @@ async function main(): Promise<void> {
     // terminal/editor/agent all functional so the user can recover).
     bootPhase('Checking dependencies', { phase: 'deps', state: 'active' });
     const depsStart = Date.now();
-    // Hand npm a tree that is already most of the answer, where the app has none of its own. After
-    // the restore, because whether a directory needs one is a question only the restore can settle.
-    await placeBakedDependencies(config.workspaceDir);
     const installResult = await installDependencies(
       config.workspaceDir,
       progress,
