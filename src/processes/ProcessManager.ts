@@ -25,6 +25,17 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('procman');
 
+/**
+ * True once the child is gone.
+ *
+ * BOTH fields, because `exitCode` stays null for a process killed by a signal — the case that
+ * matters most here, since a container's SIGTERM reaches every child directly. Checking only
+ * `exitCode` reads a signal-killed child as still running, and then waiting for an `exit` event it
+ * already emitted waits forever.
+ */
+const hasExited = (child: ChildProcess): boolean =>
+  child.exitCode !== null || child.signalCode !== null;
+
 interface ManagedProcess {
   config: ManagedProcessConfig;
   child: ChildProcess | null;
@@ -46,9 +57,31 @@ interface ManagedProcess {
 export class ProcessManager {
   private processes = new Map<string, ManagedProcess>();
   private registry: ProcessRegistry;
+  private shuttingDown = false;
 
   constructor(registry: ProcessRegistry) {
     this.registry = registry;
+  }
+
+  /**
+   * Stop supervising, because the box is going away.
+   *
+   * A container's SIGTERM reaches every process inside it, not just this one, so the children are
+   * already exiting before the shutdown routine runs its first line — and their exits are expected,
+   * not crashes. Without this the supervisor reacts to its own shutdown: `devServer` gets a restart
+   * scheduled, and `agent` (maxRestarts 0, critical) turns a clean exit into `process.exit(1)`
+   * roughly a tenth of a second in, which kills the process while the final snapshot is still
+   * uploading. Must therefore be called BEFORE any of the slow shutdown work, not alongside
+   * `stopAll` at the end of it.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true;
+    for (const proc of this.processes.values()) {
+      if (proc.restartTimer) {
+        clearTimeout(proc.restartTimer);
+        proc.restartTimer = null;
+      }
+    }
   }
 
   start(config: ManagedProcessConfig): void {
@@ -81,7 +114,7 @@ export class ProcessManager {
   }
 
   private spawn(proc: ManagedProcess): void {
-    if (proc.stopped) {
+    if (proc.stopped || this.shuttingDown) {
       log.debug(`"${proc.config.name}" is stopped, not spawning`);
       return;
     }
@@ -150,7 +183,7 @@ export class ProcessManager {
         `"${config.name}" (PID ${child.pid}) exited — code=${code}, signal=${signal}`,
       );
 
-      if (proc.stopped) {
+      if (proc.stopped || this.shuttingDown) {
         this.registry.setState(config.name, 'stopped', {
           exitCode: code,
           signal: signal ?? undefined,
@@ -262,7 +295,7 @@ export class ProcessManager {
       log.error(`writeStdin("${name}"): no stdin available`);
       return;
     }
-    if (proc.child.exitCode !== null) {
+    if (hasExited(proc.child)) {
       log.error(`writeStdin("${name}"): process already exited`);
       return;
     }
@@ -292,7 +325,7 @@ export class ProcessManager {
     }
 
     log.info(`Restarting "${name}"...`);
-    if (proc.child && proc.child.exitCode === null) {
+    if (proc.child && !hasExited(proc.child)) {
       proc.stopped = true;
       await this.killChild(proc.child, name);
     }
@@ -315,7 +348,7 @@ export class ProcessManager {
       clearTimeout(proc.restartTimer);
     }
 
-    if (!proc.child || proc.child.exitCode !== null) {
+    if (!proc.child || hasExited(proc.child)) {
       this.registry.setState(name, 'stopped');
       log.debug(`"${name}" already exited`);
       return;
@@ -336,7 +369,7 @@ export class ProcessManager {
 
   private killChild(child: ChildProcess, name: string): Promise<void> {
     return new Promise((resolve) => {
-      if (child.exitCode !== null) {
+      if (hasExited(child)) {
         resolve();
         return;
       }
@@ -347,7 +380,7 @@ export class ProcessManager {
         child.kill('SIGKILL');
       }, 5000);
 
-      child.on('exit', () => {
+      child.once('exit', () => {
         clearTimeout(forceKill);
         resolve();
       });

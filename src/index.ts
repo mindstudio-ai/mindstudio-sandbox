@@ -93,6 +93,10 @@ const SHUTDOWN_SETTLE_MS = 750;
 // The whole quiesce-settle-tar-upload sequence. A multi-GB home on a busy box needs most of this,
 // and it must stay clear of the pod's terminationGracePeriodSeconds (90s).
 const SHUTDOWN_SNAPSHOT_BUDGET_MS = 75_000;
+// Closing the server waits for every connection to drain, and a WS peer that never answers its
+// close frame (a laptop that shut its lid mid-session) holds its socket for the `ws` library's own
+// 30s timeout. The snapshot has already landed by then, so waiting protects nothing.
+const SHUTDOWN_SERVER_CLOSE_BUDGET_MS = 3_000;
 
 // ---------------------------------------------------------------------------
 // State manager construction
@@ -431,6 +435,13 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     log.info('Shutting down...');
+    // FIRST, before the snapshot below and before anything else that takes time. SIGTERM reaches
+    // every process in the container, so the agent, the dev server and the language server are
+    // already exiting by the time this line runs — and a supervisor that reads those as crashes
+    // acts on them mid-shutdown: procman's `critical` guard turns the agent's clean exit into
+    // `process.exit(1)`, which kills this process before the snapshot below can finish.
+    managers.processManager.beginShutdown();
+    lspClientRef?.stop();
     managers.registry.setState('system', 'stopped');
     managers.resourceMonitor.stop();
     managers.batcher.stop();
@@ -454,10 +465,12 @@ async function main(): Promise<void> {
     snapshotManager.stop();
     closeAllPty();
     stopWatcher();
-    lspClientRef?.stop();
     await managers.processManager.stopAll();
     managers.registry.closeAllLogStreams();
-    await stopServer();
+    await Promise.race([
+      stopServer(),
+      new Promise((r) => setTimeout(r, SHUTDOWN_SERVER_CLOSE_BUDGET_MS)),
+    ]);
     log.info('Shutdown complete');
     process.exit(0);
   };
