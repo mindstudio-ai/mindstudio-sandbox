@@ -267,14 +267,23 @@ export function createAgentActions(
 }
 
 /**
- * Quiesce the agent before a pre-destroy flush: drop queued user messages
- * FIRST (a plain cancel preserves them, and they'd immediately start the next
- * turn — remy's handleCancel removes only chain/background items), then abort
- * the in-flight turn, then await idle. Best-effort and bounded — returns
- * whether the agent actually went idle. Safe when the agent isn't running
- * (sendAgentCommand resolves {success:false} immediately) and when remy is
- * wedged (the short ACK timeouts resolve rather than reject, so two dead
- * round-trips can't eat the whole budget).
+ * Quiesce the agent before a pre-destroy flush: abort the in-flight turn, then
+ * await idle, so the tar isn't of a workspace the agent is halfway through
+ * writing. Best-effort and bounded — returns whether the agent actually went
+ * idle. Safe when the agent isn't running (sendAgentCommand resolves
+ * {success:false} immediately) and when remy is wedged (the short ACK timeout
+ * resolves rather than rejects, so a dead round-trip can't eat the budget).
+ *
+ * `reason: 'shutdown'` is what keeps this from reading as a user pressing Stop.
+ * remy pauses the queue either way — nothing may start a turn while we're
+ * tarring — but a shutdown tags its own pipeline steps so the next boot resumes
+ * them, instead of stranding a build behind a message the user has no reason to
+ * send. They never stopped it; we did.
+ *
+ * No `cancelQueued` first. That used to be here because a plain cancel let the
+ * user's queued messages start the next turn immediately — untrue since remy
+ * gained `held`. All it does now is permanently delete messages someone typed,
+ * before the snapshot, so they aren't even on disk for the next boot.
  */
 export async function quiesceAgent(
   pm: ProcessManager,
@@ -284,10 +293,16 @@ export async function quiesceAgent(
     return true; // nothing to quiesce
   }
   const deadline = Date.now() + budgetMs;
-  await sendAgentCommand(pm, 'cancelQueued', {}, 2_500).response;
-  await sendAgentCommand(pm, 'cancel', {}, 2_500).response;
+  await sendAgentCommand(pm, 'cancel', { reason: 'shutdown' }, 2_500).response;
   while (Date.now() < deadline) {
     if (!getAgentActivity().busy) {
+      return true;
+    }
+    // The agent dying mid-poll is idle, whatever the last queue snapshot said.
+    // Derived busy counts deliverable queue items, so a stale snapshot from a
+    // process that has already exited would otherwise spin out the whole
+    // budget and report not-idle — which costs finalizeWorkspace its settle.
+    if (pm.getState('agent') !== 'running') {
       return true;
     }
     await new Promise((r) => setTimeout(r, 250));

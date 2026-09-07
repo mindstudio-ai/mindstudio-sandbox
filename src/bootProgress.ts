@@ -41,6 +41,16 @@ export interface BootCounter {
    * screen. Directories finished out of directories found is coarse, but both ends are observed.
    */
   unit: 'bytes' | 'files' | 'dirs';
+  /**
+   * What the BAR should read, when that is not `done / total`.
+   *
+   * The two are different questions for a stepwise counter. Two package directories are two events,
+   * so the text can only ever say "1 of 2" — but they are not the same size, and a bar that jumps to
+   * 50% when the small one finishes is claiming half the work is done when it was a seventh of it.
+   * So the text counts events and the bar carries their weight. Omit it and the bar falls back to
+   * the ratio, which is right for a counter whose units are already uniform.
+   */
+  fraction?: number;
   /** Units per second, so the overlay can interpolate between updates instead of freezing. */
   rate?: number;
   /** Short verb for the counter line: `Downloading`, `Unpacking`. */

@@ -44,6 +44,18 @@ export interface QueuedMessage {
    * resume-on-restart: nothing here runs until the user acts.
    */
   held?: boolean;
+  /**
+   * Who put the hold on. Absent means the user (a Stop, or a restart under a
+   * message they typed) and the item waits for them. `'shutdown'` means the
+   * environment took the agent down — a pod recycle or our own pre-destroy
+   * quiesce — and remy releases those chain steps at its next boot, so the
+   * pipeline resumes without the user having to nudge a build they never
+   * stopped. Present only on `chain` items.
+   *
+   * The frontend uses it to say so: a shutdown-paused pipeline is not asking
+   * the user for anything.
+   */
+  heldBy?: 'shutdown';
 }
 
 /**

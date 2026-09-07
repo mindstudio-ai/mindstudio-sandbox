@@ -665,6 +665,27 @@ async function findPackageDirs(workspaceDir: string): Promise<string[]> {
   return found;
 }
 
+/**
+ * How many packages this directory's lockfile resolves to, or 0 when we cannot tell.
+ *
+ * Only used to weight the progress bar across directories, so it wants to be roughly proportional
+ * and never to throw — a missing, unparsable or lockfile-less app just gets an unweighted bar, which
+ * is what it had before. Counting `packages` keys rather than the dependency tree because that map
+ * IS the resolved set, one entry per installed package, which is the closest thing to "how much work
+ * is this" available before npm starts.
+ */
+async function lockfilePackageCount(dir: string): Promise<number> {
+  try {
+    const raw = await fs.readFile(path.join(dir, 'package-lock.json'), 'utf-8');
+    const packages = JSON.parse(raw)?.packages;
+    return packages && typeof packages === 'object'
+      ? Object.keys(packages).length
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function installDependencies(
   workspaceDir: string,
   progress: ProgressFn,
@@ -693,9 +714,26 @@ export async function installDependencies(
   // Emitted BEFORE the installs start, not just as each lands. Without the opening `0 of N` the row
   // has nothing at all until the first directory finishes, which on a two-directory app is most of
   // the phase.
+  //
+  // The BAR is weighted by each directory's package count while the text keeps counting
+  // directories, because the two directories are nowhere near the same size — a real app measured
+  // 111 packages in `methods` against 648 in `interfaces/web`. Unweighted, finishing methods jumped
+  // the bar to 50% when it was a seventh of the work.
+  const weights = await Promise.all(installDirs.map(lockfilePackageCount));
+  const totalWeight = weights.reduce((sum, n) => sum + n, 0);
+  const doneDirs = new Set<string>();
   const remaining = new Set(installDirs.map((dir) => path.basename(dir)));
   const emit = (done: number) => {
     const names = [...remaining].join(', ');
+    // Falls back to the plain ratio when no lockfile could be read, which is the behaviour before
+    // this existed — an app without lockfiles is no worse off than it was.
+    const fraction =
+      totalWeight > 0
+        ? installDirs.reduce(
+            (sum, dir, i) => (doneDirs.has(dir) ? sum + weights[i] : sum),
+            0,
+          ) / totalWeight
+        : undefined;
     bootPhase(
       names ? `Installing dependencies · ${names}` : 'Dependencies installed',
       {
@@ -706,6 +744,7 @@ export async function installDependencies(
           total: installDirs.length,
           unit: 'dirs',
           label: names ? `Installing ${names}` : 'Installed',
+          ...(fraction === undefined ? {} : { fraction }),
         },
       },
     );
@@ -717,6 +756,7 @@ export async function installDependencies(
     installDirs.map((dir) =>
       npmInstallWithFallback(dir).finally(() => {
         done += 1;
+        doneDirs.add(dir);
         remaining.delete(path.basename(dir));
         emit(done);
       }),

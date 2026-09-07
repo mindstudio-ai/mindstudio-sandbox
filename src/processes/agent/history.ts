@@ -112,10 +112,16 @@ export function transformHistory(
           if (block.backgroundResult != null) {
             toolBlock.backgroundResult = block.backgroundResult;
           }
-          // Browser-test replay reference (see remy src/recording.ts). Lives on
-          // the block, not in `result`, so the result cap can't truncate it.
+          // Browser-test replay references (see remy src/recording.ts). Live on
+          // the block, not in `result`, so the result cap can't truncate them:
+          // `recording` is this block's own chunk, `recordings` is every chunk
+          // a sub-agent run recorded — kept on the spawning block because the
+          // transcript cap drops the oldest steps, anchor included.
           if (block.recording != null) {
             toolBlock.recording = block.recording;
+          }
+          if (Array.isArray(block.recordings)) {
+            toolBlock.recordings = block.recordings;
           }
           if (Array.isArray(block.subAgentMessages)) {
             toolBlock.subAgentMessages = transformHistory(
