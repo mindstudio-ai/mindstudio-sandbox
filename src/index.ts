@@ -514,7 +514,7 @@ async function main(): Promise<void> {
   bootPhase(`Control server listening on ${config.port}`, {
     phase: 'server',
     state: 'done',
-    detail: `node ${process.version}`,
+    detail: `Node ${process.version}`,
   });
 
   try {
@@ -540,7 +540,7 @@ async function main(): Promise<void> {
         cached: toolingFromImage,
         detail: toolingFromImage
           ? '3 of 3 from the image'
-          : `installed in ${Date.now() - toolingStart}ms`,
+          : `Installed in ${Date.now() - toolingStart}ms`,
       },
     );
 
@@ -692,7 +692,7 @@ async function main(): Promise<void> {
         state: 'done',
         detail:
           installResult.failures.length > 0
-            ? 'booting without a dev server'
+            ? 'Booting without a dev server'
             : `${installResult.installedDirs} director${
                 installResult.installedDirs === 1 ? 'y' : 'ies'
               } in ${Date.now() - depsStart}ms`,
@@ -776,7 +776,7 @@ async function main(): Promise<void> {
     bootPhase('Services started', {
       phase: 'services',
       state: 'done',
-      detail: `dev server, agent, tunnel and language server in ${
+      detail: `Dev server, agent, tunnel and language server in ${
         Date.now() - servicesStart
       }ms`,
     });

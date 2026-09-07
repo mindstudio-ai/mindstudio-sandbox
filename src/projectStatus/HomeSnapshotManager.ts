@@ -114,16 +114,22 @@ const mib = (bytes: number): string =>
 /**
  * Bytes processed, from a checkpoint line, or null when the line isn't one.
  *
- * `--checkpoint-action=echo=%u` emits the bare number, but tar writes other things to stderr too
- * (`--warning` output, real errors), so anything that isn't purely a number is passed over rather
- * than parsed loosely: a bad parse here would move the progress bar backwards.
+ * `--checkpoint-action=echo=%u` does NOT emit a bare number: GNU tar prefixes its own name, so the
+ * line is `tar: 4096`. Requiring a bare number silently discarded every checkpoint and the extract
+ * bar never moved — the one assumption in this file that could not be checked without GNU tar, and
+ * it was wrong. Measured against GNU tar 1.35: prefix present, and `%u` counts records of the
+ * UNCOMPRESSED stream (a 301 MiB home compressing to 20 KiB still reported 28,672 records ≈ 293.6
+ * MiB at 10,240 bytes each), which is what makes `uncompressedBytes` the right denominator.
+ *
+ * Still strict about the rest, because tar writes other things to stderr (`--warning` output, real
+ * errors) and a loose parse would move the progress bar backwards.
  */
 function recordsToBytes(line: string): number | null {
-  const trimmed = line.trim();
-  if (!/^\d+$/.test(trimmed)) {
+  const match = /^(?:tar: )?(\d+)$/.exec(line.trim());
+  if (!match) {
     return null;
   }
-  return Number(trimmed) * TAR_RECORD_BYTES;
+  return Number(match[1]) * TAR_RECORD_BYTES;
 }
 
 /**
@@ -828,7 +834,9 @@ export class HomeSnapshotManager {
       this.lastRestoreOutcome = 'restored';
       return 'restored';
     } catch (err) {
-      const reason = `snapshot restore failed: ${err instanceof Error ? err.message : String(err)}`;
+      // Reaches the boot display as the `restore` row's subtitle, so it is sentence-cased like the
+      // rest of them rather than log-cased.
+      const reason = `Snapshot restore failed: ${err instanceof Error ? err.message : String(err)}`;
       log.error(reason);
       this.lastError = reason;
       this.lastRestoreOutcome = 'unresolvable';
