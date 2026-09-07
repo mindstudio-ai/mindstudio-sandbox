@@ -30,6 +30,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createLogger } from '../logger.js';
+import { makeCounterEmitter } from '../bootProgress.js';
 
 const log = createLogger('snapshot');
 
@@ -43,6 +44,59 @@ const RESTORE_TAR = '/tmp/restore.tar.zst';
 const RESTORE_RETRY_BACKOFFS_MS = [2_000, 6_000, 18_000];
 const HTTP_TIMEOUT_MS = 30_000;
 const TRANSFER_TIMEOUT_MS = 10 * 60_000;
+
+//////////////////////////////////////////////////////////////////////////////
+// Extract progress
+//
+// GNU tar's `--checkpoint=N --checkpoint-action=echo=%u` prints the number of RECORDS processed
+// every N of them. A record is `blocking factor × 512` bytes, and the blocking factor is passed
+// explicitly below rather than left to the default so this arithmetic is pinned rather than
+// assumed — the whole point is that the figure the display divides by is the one tar is counting.
+// 20 IS the default, so pinning it changes nothing about how the archive is read.
+//
+// Records, not files: there is no way to get a file count out of tar without `-v`, which prints a
+// line per member. On a few hundred thousand files that is both a flood on a 500ms-batched wire and
+// measurable overhead on the phase this exists to make feel shorter.
+//
+// The interval is in records so it scales with the archive rather than with the file count: 4096
+// records is ~40 MiB, so a 1 GiB home reports about 25 times over ~16s, and the client interpolates
+// between them.
+//////////////////////////////////////////////////////////////////////////////
+const TAR_BLOCKING_FACTOR = 20;
+const TAR_RECORD_BYTES = TAR_BLOCKING_FACTOR * 512;
+const TAR_CHECKPOINT_RECORDS = 4096;
+
+/** One MiB-formatted figure, for log lines a person reads. */
+const mib = (bytes: number): string =>
+  `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
+/**
+ * Bytes processed, from a checkpoint line, or null when the line isn't one.
+ *
+ * `--checkpoint-action=echo=%u` emits the bare number, but tar writes other things to stderr too
+ * (`--warning` output, real errors), so anything that isn't purely a number is passed over rather
+ * than parsed loosely: a bad parse here would move the progress bar backwards.
+ */
+function recordsToBytes(line: string): number | null {
+  const trimmed = line.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  return Number(trimmed) * TAR_RECORD_BYTES;
+}
+
+/**
+ * Uncompressed byte total, from GNU tar's `--totals` line on the WRITE side.
+ *
+ * Format is `Total bytes written: 1234567890 (1.2GiB, 45MiB/s)`. Parsed rather than computed
+ * because it is the only authoritative figure for what the next boot has to unpack, and a streamed
+ * zstd frame's header carries no decompressed size. Null when the line isn't there or changes
+ * shape, which costs the next boot its progress bar and nothing else.
+ */
+function parseTarTotalBytes(stderr: string): number | null {
+  const m = stderr.match(/Total bytes written:\s*(\d+)/);
+  return m ? Number(m[1]) : null;
+}
 
 // Presentation sources youai-api assembles into the dashboard's draft view.
 // The roadmap's item files are discovered under src/roadmap at snapshot time.
@@ -105,6 +159,8 @@ export interface HomeSnapshotManagerOptions {
 interface CurrentSnapshot {
   snapshotId: string;
   bytes: number | null;
+  /** Absent from snapshots committed before boxes reported it. See TAR_RECORD_BYTES. */
+  uncompressedBytes?: number | null;
   sha256: string | null;
   downloadUrl: string;
 }
@@ -152,6 +208,12 @@ export class HomeSnapshotManager {
   private lastPresentationHash: string | null = null;
   /** size:mtime of the usage ledger at its last upload. */
   private lastLedgerStamp: string | null = null;
+  /** One clause describing the restore, for the boot display. Null until one runs. */
+  private restoreSummary: string | null = null;
+  /** Uncompressed size of the archive this box last WROTE, sent with its commit so the next boot
+   * has a denominator for the extract. Null until a snapshot is tarred, and null forever if tar's
+   * `--totals` output can't be parsed — the display degrades to a bare count. */
+  private lastUncompressedBytes: number | null = null;
 
   constructor(opts: HomeSnapshotManagerOptions) {
     this.homeDir = opts.homeDir;
@@ -195,6 +257,11 @@ export class HomeSnapshotManager {
    * restart of the server resumes local state instead of restoring over it. */
   markBooted(): void {
     fs.writeFileSync(BOOTED_MARKER, String(Date.now()));
+  }
+
+  /** Size and duration of this boot's restore, for the boot display. Null when none ran. */
+  getRestoreSummary(): string | null {
+    return this.restoreSummary;
   }
 
   getSnapshotStatus() {
@@ -306,6 +373,12 @@ export class HomeSnapshotManager {
         sessionId: this.sessionId,
         bytes,
         sha256,
+        // Omitted rather than sent as null when tar's `--totals` line couldn't be read: the route
+        // treats absent as "unknown" and stores NULL, and the next boot shows a rising figure with
+        // no bar. A wrong denominator would be worse than no denominator.
+        ...(this.lastUncompressedBytes !== null
+          ? { uncompressedBytes: this.lastUncompressedBytes }
+          : {}),
         manifest: await this.readManifestFields(),
         ...(presentation ? { presentation: presentation.sources } : {}),
       });
@@ -381,9 +454,16 @@ export class HomeSnapshotManager {
     await fsp.unlink(SNAPSHOT_TAR).catch(() => {});
     // A live box writes while we read; GNU tar exits 1 for "file changed as
     // we read it", which is expected here and not a failure.
-    await run(
+    const { stderr } = await run(
       'tar',
       [
+        // `--totals` writes `Total bytes written: N` to stderr when the archive is finished. That
+        // figure is the next boot's progress denominator: it is the uncompressed size, which the
+        // object itself cannot report (a streamed zstd frame carries no decompressed size) and
+        // which nothing else here computes. Costs nothing — tar is already counting.
+        '--totals',
+        '--blocking-factor',
+        String(TAR_BLOCKING_FACTOR),
         // `zstd -T0` (every core) rather than tar's own `--zstd`, which is single-threaded.
         //
         // This is a DATA-LOSS budget, not a latency one. On the shutdown path the whole cycle has
@@ -407,6 +487,7 @@ export class HomeSnapshotManager {
       ],
       { okExitCodes: [0, 1], timeoutMs: TRANSFER_TIMEOUT_MS },
     );
+    this.lastUncompressedBytes = parseTarTotalBytes(stderr);
     const [stat, sha256] = await Promise.all([
       fsp.stat(SNAPSHOT_TAR),
       sha256File(SNAPSHOT_TAR),
@@ -538,7 +619,26 @@ export class HomeSnapshotManager {
         `Restoring snapshot ${fetched.snapshotId.slice(0, 8)} (${fetched.bytes === null ? '?' : (fetched.bytes / 1024 / 1024).toFixed(1)} MiB)...`,
       );
       const start = Date.now();
-      const sha256 = await downloadFile(fetched.downloadUrl, RESTORE_TAR);
+      const emitTransfer = makeCounterEmitter('restore');
+      const sha256 = await downloadFile(
+        fetched.downloadUrl,
+        RESTORE_TAR,
+        (done, contentLength) => {
+          const total = contentLength ?? fetched.bytes;
+          emitTransfer(
+            {
+              done,
+              total,
+              unit: 'bytes',
+              rate: done / Math.max(0.001, (Date.now() - start) / 1000),
+              label: 'Downloading',
+            },
+            total
+              ? `Downloading snapshot · ${mib(done)} of ${mib(total)}`
+              : `Downloading snapshot · ${mib(done)}`,
+          );
+        },
+      );
       if (fetched.sha256 && sha256 !== fetched.sha256) {
         throw new Error(
           `snapshot checksum mismatch (got ${sha256.slice(0, 12)}, expected ${fetched.sha256.slice(0, 12)})`,
@@ -553,13 +653,56 @@ export class HomeSnapshotManager {
       const transferMs = Date.now() - start;
       const extractStart = Date.now();
       await fsp.mkdir(this.homeDir, { recursive: true });
-      await run('tar', ['--zstd', '-xf', RESTORE_TAR, '-C', this.homeDir], {
-        timeoutMs: TRANSFER_TIMEOUT_MS,
-      });
+      // `--checkpoint` gives us a progress feed for the 16s that dominates a boot. It counts
+      // RECORDS, not files, so the figure is bytes of the uncompressed archive — which is why the
+      // denominator is `uncompressedBytes` from the commit rather than the object's own size.
+      // `--checkpoint-action=echo` writes to stderr, which `run` streams to us line by line.
+      const emitExtract = makeCounterEmitter('restore');
+      const total = fetched.uncompressedBytes ?? null;
+      await run(
+        'tar',
+        [
+          '--zstd',
+          '-xf',
+          RESTORE_TAR,
+          '-C',
+          this.homeDir,
+          '--blocking-factor',
+          String(TAR_BLOCKING_FACTOR),
+          `--checkpoint=${TAR_CHECKPOINT_RECORDS}`,
+          '--checkpoint-action=echo=%u',
+        ],
+        {
+          timeoutMs: TRANSFER_TIMEOUT_MS,
+          onStderrLine: (line) => {
+            const done = recordsToBytes(line);
+            if (done === null) {
+              return;
+            }
+            emitExtract(
+              {
+                done,
+                total,
+                unit: 'bytes',
+                rate:
+                  done / Math.max(0.001, (Date.now() - extractStart) / 1000),
+                label: 'Unpacking',
+              },
+              total
+                ? `Unpacking · ${mib(done)} of ${mib(total)}`
+                : `Unpacking · ${mib(done)}`,
+            );
+          },
+        },
+      );
       const extractMs = Date.now() - extractStart;
       log.info(
         `Home restored in ${Date.now() - start}ms (transfer+verify ${transferMs}ms, extract ${extractMs}ms)`,
       );
+      this.restoreSummary = `${mib(fetched.bytes ?? 0)} in ${(
+        (Date.now() - start) /
+        1000
+      ).toFixed(1)}s`;
       this.lastError = null;
       this.lastRestoreOutcome = 'restored';
       return 'restored';
@@ -683,8 +826,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function run(
   cmd: string,
   args: string[],
-  opts: { okExitCodes?: number[]; timeoutMs?: number } = {},
-): Promise<{ stdout: string }> {
+  opts: {
+    okExitCodes?: number[];
+    timeoutMs?: number;
+    /**
+     * Called per complete stderr line as it arrives, for tar's checkpoint feed. stderr is still
+     * accumulated as well: it's what the rejection message is built from, and a progress consumer
+     * must not cost us the error text when the command fails.
+     */
+    onStderrLine?: (line: string) => void;
+  } = {},
+): Promise<{ stdout: string; stderr: string }> {
   const okExitCodes = opts.okExitCodes ?? [0];
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
@@ -693,14 +845,29 @@ function run(
     });
     let stdout = '';
     let stderr = '';
+    let pending = '';
     child.stdout.on('data', (d) => {
       stdout += d;
     });
     child.stderr.on('data', (d) => {
       stderr += d;
+      if (!opts.onStderrLine) {
+        return;
+      }
+      // Split on newlines and hold the trailing partial: a checkpoint number arriving in two
+      // chunks would otherwise parse as two smaller numbers and walk the progress bar backwards.
+      pending += d;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        opts.onStderrLine(line);
+      }
     });
     child.on('error', reject);
     child.on('close', (code, signal) => {
+      if (opts.onStderrLine && pending) {
+        opts.onStderrLine(pending);
+      }
       if (signal) {
         reject(new Error(`${cmd} killed by ${signal}`));
         return;
@@ -713,7 +880,7 @@ function run(
         );
         return;
       }
-      resolve({ stdout });
+      resolve({ stdout, stderr });
     });
   });
 }
@@ -771,7 +938,13 @@ async function putFile(
 }
 
 /** Download a presigned URL to a file; resolves to the body's sha256. */
-async function downloadFile(url: string, destPath: string): Promise<string> {
+async function downloadFile(
+  url: string,
+  destPath: string,
+  /** Bytes so far and the total when the response declares one. Free: every chunk already passes
+   * through here to be hashed. */
+  onProgress?: (done: number, total: number | null) => void,
+): Promise<string> {
   const target = new URL(url);
   const client = target.protocol === 'http:' ? http : https;
   return new Promise<string>((resolve, reject) => {
@@ -781,8 +954,15 @@ async function downloadFile(url: string, destPath: string): Promise<string> {
         reject(new Error(`GET snapshot → ${res.statusCode}`));
         return;
       }
+      const declared = Number(res.headers['content-length']);
+      const total = Number.isFinite(declared) && declared > 0 ? declared : null;
       const hash = createHash('sha256');
-      res.on('data', (chunk) => hash.update(chunk));
+      let done = 0;
+      res.on('data', (chunk) => {
+        hash.update(chunk);
+        done += chunk.length;
+        onProgress?.(done, total);
+      });
       pipeline(res, fs.createWriteStream(destPath))
         .then(() => resolve(hash.digest('hex')))
         .catch(reject);

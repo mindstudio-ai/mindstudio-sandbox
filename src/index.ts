@@ -65,6 +65,7 @@ import {
   markDirty,
 } from './state.js';
 import { createLogger, onLog } from './logger.js';
+import { bootPhase } from './bootProgress.js';
 import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.js';
 import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.js';
 import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
@@ -220,20 +221,30 @@ async function startServices(
   // they reconnect and re-announce theirs.
   lspClient.onRelaunched = () =>
     closeLspClients(1012, 'Language server restarted');
-  try {
-    await lspClient.start(config.workspaceDir, registry);
-  } catch (err) {
+  // NOT awaited. The `initialize` round trip is ~400ms and NOTHING below needs it: the agent needs
+  // the SIDECAR on 4388, which comes up either way (see its comment), and the dev server and tunnel
+  // need neither. Awaiting it delayed the spawn of all three, and since `ready` is set once this
+  // function returns, it delayed the editor too — so the cost was ~400ms on top of Vite's own
+  // multi-second boot and remy's own startup, rather than overlapped with them.
+  //
+  // The trade is that an LSP request in that window answers "not running" instead of blocking. That
+  // is the same degraded mode a failed init already produces, deliberately: code intelligence is a
+  // convenience here, not a boot dependency.
+  void lspClient.start(config.workspaceDir, registry).catch((err) => {
     log.error(
       `LSP failed to start; continuing without code intelligence: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
-  }
+  });
   ctx.lspClient = lspClient;
 
   // LSP HTTP sidecar for remy — started regardless of the init outcome so the
   // configured lsp-url is always live. If the LSP isn't running, requests
   // degrade to "not running" errors rather than connection failures.
+  //
+  // This one IS awaited: remy is spawned below with `--lsp-url` pointing here, so the port has to
+  // be bound before it can ask. Milliseconds, and it does not wait on the handshake above.
   const lspSidecar = new LspSidecar(lspClient);
   await lspSidecar.start(4388);
   lspSidecar.setProcessManager(processManager);
@@ -484,14 +495,40 @@ async function main(): Promise<void> {
     broadcast('bootstrapProgress', { step, message });
   };
 
+  // The control server is up, which is the first thing this process can honestly claim. CFES has
+  // already reported everything before it (schedule, image, VM) from outside.
+  bootPhase(`Control server listening on ${config.port}`, {
+    phase: 'server',
+    state: 'done',
+    detail: `node ${process.version}`,
+  });
+
   try {
     // 5. Install binaries. NOT installAgentSdk — see step 6b: it settles the global agent SDK
     // against the home directory, so it has to run on the home directory the box ends up with.
-    await Promise.all([
+    bootPhase('Preparing tooling', { phase: 'tooling', state: 'active' });
+    const toolingStart = Date.now();
+    const tooling = await Promise.all([
       installTunnel(progress),
       installAgent(progress),
       installLsp(progress),
     ]);
+    // `cached` only when every one of the three came from the image. Any install that actually ran
+    // is a slower boot for a reason worth showing, so it must not be reported as free.
+    const toolingFromImage = tooling.every((t) => t?.fromImage !== false);
+    bootPhase(
+      toolingFromImage
+        ? 'Tooling already in the image'
+        : 'Tooling installed at boot',
+      {
+        phase: 'tooling',
+        state: 'done',
+        cached: toolingFromImage,
+        detail: toolingFromImage
+          ? '3 of 3 from the image'
+          : `installed in ${Date.now() - toolingStart}ms`,
+      },
+    );
 
     // 6. Prepare home. Refuse to boot in scaffold state whenever the user's
     // work may exist but could not be brought back: proceeding would let them
@@ -501,8 +538,14 @@ async function main(): Promise<void> {
       log.error(`${message}. Refusing to boot in scaffold state.`);
       setStatus('error');
       broadcast('bootstrapProgress', { step: 'error', message });
+      bootPhase(message, { phase: 'restore', state: 'done', detail: reason });
     };
     progress('restore', 'Restoring workspace...');
+    // `prepareHome` emits this phase's own counters as it transfers and unpacks.
+    bootPhase('Restoring your workspace', {
+      phase: 'restore',
+      state: 'active',
+    });
     const restoreOutcome = await snapshotManager.prepareHome();
     if (restoreOutcome === 'unresolvable') {
       refuseToBoot(snapshotManager.getSnapshotStatus().lastError ?? 'unknown');
@@ -540,6 +583,23 @@ async function main(): Promise<void> {
     // to reopen against the live inode.
     managers.registry.closeAllLogStreams();
     snapshotManager.markBooted();
+
+    // The restore's own counters have stopped by here. `resumed` is an in-place server restart on a
+    // box whose filesystem never went away, and saying "restored" for it would be a small lie in
+    // the one display whose job is to be believable.
+    bootPhase(
+      restoreOutcome === 'resumed'
+        ? 'Session resumed in place'
+        : restoreOutcome === 'restored'
+          ? 'Workspace restored'
+          : 'Fresh workspace prepared',
+      {
+        phase: 'restore',
+        state: 'done',
+        cached: restoreOutcome === 'restored' || restoreOutcome === 'resumed',
+        detail: snapshotManager.getRestoreSummary() ?? undefined,
+      },
+    );
 
     // 6b. Settle the global agent SDK, which remy shells out to as a bash tool and which must
     // therefore always be the image's. This runs HERE rather than with the other installers because
@@ -589,6 +649,8 @@ async function main(): Promise<void> {
     // with --legacy-peer-deps internally; if everything still fails we
     // record the failures and boot in degraded mode (no dev server, but
     // terminal/editor/agent all functional so the user can recover).
+    bootPhase('Checking dependencies', { phase: 'deps', state: 'active' });
+    const depsStart = Date.now();
     const installResult = await installDependencies(
       config.workspaceDir,
       progress,
@@ -599,6 +661,28 @@ async function main(): Promise<void> {
       );
       ctx.installFailures = installResult.failures;
     }
+    // A restored home already carries `node_modules`, so these two installs are verification passes
+    // rather than downloads. That is the single biggest reason a boot is fast, and it's the fact
+    // worth putting on screen — derived from the restore outcome rather than from parsing npm's
+    // output, because the outcome is structural and the output is not.
+    const depsFromSnapshot =
+      restoreOutcome === 'restored' || restoreOutcome === 'resumed';
+    bootPhase(
+      installResult.failures.length > 0
+        ? `Dependencies incomplete in ${installResult.failures.length} directory(ies)`
+        : depsFromSnapshot
+          ? 'Dependencies already present'
+          : 'Dependencies installed',
+      {
+        phase: 'deps',
+        state: 'done',
+        cached: depsFromSnapshot && installResult.failures.length === 0,
+        detail:
+          installResult.failures.length > 0
+            ? 'booting without a dev server'
+            : `verified in ${Date.now() - depsStart}ms`,
+      },
+    );
 
     // 10. Init handlers
     initFilesystem(config.workspaceDir);
@@ -657,6 +741,8 @@ async function main(): Promise<void> {
     await managers.specFileTreeManager.buildTree();
 
     // 13. Start services
+    bootPhase('Starting services', { phase: 'services', state: 'active' });
+    const servicesStart = Date.now();
     const { lspClient, lspSidecar } = await startServices(
       config,
       managers,
@@ -672,9 +758,18 @@ async function main(): Promise<void> {
     // 15. Start the snapshot interval (plus the SIGTERM flush in shutdown).
     snapshotManager.start();
 
+    bootPhase('Services started', {
+      phase: 'services',
+      state: 'done',
+      detail: `dev server, agent, tunnel and language server in ${
+        Date.now() - servicesStart
+      }ms`,
+    });
+
     // Ready
     setStatus('ready');
     progress('ready', 'C&C server is ready');
+    bootPhase('Ready', { phase: 'ready', state: 'done' });
     log.info('Bootstrap complete');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Bootstrap failed';

@@ -1,6 +1,9 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
+import { createGzip } from 'node:zlib';
 import type httpProxy from 'http-proxy';
 import { ctx } from './context.js';
 import { getVersions } from './versionCache.js';
@@ -23,6 +26,67 @@ const STANDALONE_LOGS: Record<string, string> = {
   requests: '.logs/requests.ndjson',
   browser: '.logs/browser.ndjson',
 };
+
+//////////////////////////////////////////////////////////////////////////////
+// Serving workspace files
+//////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Stream a workspace file back, gzipped when the client accepts it.
+ *
+ * Everything this serves is append-only text that grows for the life of the app rather than the
+ * life of the box: `.remy-session.json` was 22.8MB on the box that motivated this, the usage ledger
+ * 2.4MB, and the process logs 1.7MB each. Reading those into a string first (which is what every
+ * handler here used to do) meant ~30MB of heap materialized before a byte went out whenever the
+ * debug collector asked for all of them at once, in a guest whose base memory is 2GiB — and it
+ * pushed time-to-first-byte out past the collector's deadline, so the reports that mattered most
+ * arrived with their largest artifacts missing.
+ *
+ * Streaming fixes the heap and the latency; gzip fixes the bytes, and NDJSON compresses about 10:1.
+ * The browser decodes `Content-Encoding` transparently, so callers see identical content either way
+ * and nothing downstream had to change. Not applied to Range requests — the editor's live log tail
+ * reads incrementally by offset, and a compressed body would have to be re-fetched whole.
+ */
+function sendWorkspaceFile(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  fullPath: string,
+  contentType: string,
+  onMissing: () => void,
+): void {
+  fs.stat(fullPath)
+    .then((stat) => {
+      const gzip = (req.headers['accept-encoding'] ?? '').includes('gzip');
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'no-cache',
+        // Chunked when compressed: the encoded length isn't known until the stream ends, and
+        // guessing it wrong is worse than omitting it.
+        ...(gzip
+          ? { 'Content-Encoding': 'gzip' }
+          : { 'Content-Length': String(stat.size) }),
+        'Accept-Ranges': 'bytes',
+        ...CORS_HEADERS,
+      });
+      const source = createReadStream(fullPath);
+      const onDone = (err: NodeJS.ErrnoException | null) => {
+        // Headers are already out, so there is no status left to send. Tearing the socket down is
+        // what tells the client the body is incomplete rather than handing it a silent truncation.
+        if (err) {
+          res.destroy();
+        }
+      };
+      if (gzip) {
+        // Level 1: the point is fewer bytes on the wire, not the smallest possible archive, and the
+        // client decompresses immediately. On NDJSON this still lands around 7:1 for a fraction of
+        // the CPU that level 6 would spend compressing a 20MB session dump inside the guest.
+        pipeline(source, createGzip({ level: 1 }), res, onDone);
+      } else {
+        pipeline(source, res, onDone);
+      }
+    })
+    .catch(onMissing);
+}
 
 interface HttpHandlerOpts {
   workspaceDir: string;
@@ -65,23 +129,19 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
     }
 
     if (req.url === '/agent-stats' || req.url?.startsWith('/agent-stats?')) {
-      const statsPath = path.join(workspaceDir, '.remy-stats.json');
-      fs.readFile(statsPath, 'utf-8')
-        .then((content) => {
-          res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache',
-            ...CORS_HEADERS,
-          });
-          res.end(content);
-        })
-        .catch(() => {
+      sendWorkspaceFile(
+        req,
+        res,
+        path.join(workspaceDir, '.remy-stats.json'),
+        'application/json',
+        () => {
           res.writeHead(404, {
             'Content-Type': 'application/json',
             ...CORS_HEADERS,
           });
           res.end(JSON.stringify({ error: 'Stats not available yet' }));
-        });
+        },
+      );
       return;
     }
 
@@ -89,23 +149,19 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       req.url === '/agent-session' ||
       req.url?.startsWith('/agent-session?')
     ) {
-      const sessionPath = path.join(workspaceDir, '.remy-session.json');
-      fs.readFile(sessionPath, 'utf-8')
-        .then((content) => {
-          res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache',
-            ...CORS_HEADERS,
-          });
-          res.end(content);
-        })
-        .catch(() => {
+      sendWorkspaceFile(
+        req,
+        res,
+        path.join(workspaceDir, '.remy-session.json'),
+        'application/json',
+        () => {
           res.writeHead(404, {
             'Content-Type': 'application/json',
             ...CORS_HEADERS,
           });
           res.end(JSON.stringify({ error: 'Session not available' }));
-        });
+        },
+      );
       return;
     }
 
@@ -113,23 +169,19 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       // Append-only NDJSON ledger of every billable LLM/CLI call across the
       // session. Survives /clear, restarts, compaction. Served verbatim;
       // consumers run jq queries over it.
-      const usagePath = path.join(workspaceDir, '.logs', 'usage.ndjson');
-      fs.readFile(usagePath, 'utf-8')
-        .then((content) => {
-          res.writeHead(200, {
-            'Content-Type': 'application/x-ndjson',
-            'Cache-Control': 'no-cache',
-            ...CORS_HEADERS,
-          });
-          res.end(content);
-        })
-        .catch(() => {
+      sendWorkspaceFile(
+        req,
+        res,
+        path.join(workspaceDir, '.logs', 'usage.ndjson'),
+        'application/x-ndjson',
+        () => {
           res.writeHead(404, {
             'Content-Type': 'application/json',
             ...CORS_HEADERS,
           });
           res.end(JSON.stringify({ error: 'Usage ledger not available yet' }));
-        });
+        },
+      );
       return;
     }
 
@@ -283,46 +335,58 @@ function serveLogs(
     ? 'application/x-ndjson'
     : 'text/plain';
 
+  const rangeHeader = req.headers.range;
+  if (!rangeHeader) {
+    // A log that no process has written yet is not an error — the editor asks for all of them and
+    // shows an empty pane for the quiet ones — so a missing file answers 200 with nothing in it.
+    sendWorkspaceFile(req, res, fullPath, contentType, () => {
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': '0',
+        'Accept-Ranges': 'bytes',
+        ...CORS_HEADERS,
+      });
+      res.end('');
+    });
+    return;
+  }
+
   fs.stat(fullPath)
-    .then(async (stat) => {
-      const rangeHeader = req.headers.range;
-      if (rangeHeader) {
-        const match = rangeHeader.match(/bytes=(\d+)-/);
-        const start = match ? parseInt(match[1], 10) : 0;
-        if (start >= stat.size) {
-          res.writeHead(206, {
-            'Content-Type': contentType,
-            'Content-Range': `bytes ${stat.size}-${stat.size}/${stat.size}`,
-            'Content-Length': '0',
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache',
-            ...CORS_HEADERS,
-          });
-          res.end('');
-          return;
-        }
-        const buf = await fs.readFile(fullPath);
-        const slice = buf.subarray(start);
+    .then((stat) => {
+      const match = rangeHeader.match(/bytes=(\d+)-/);
+      const start = match ? parseInt(match[1], 10) : 0;
+      if (start >= stat.size) {
         res.writeHead(206, {
           'Content-Type': contentType,
-          'Content-Range': `bytes ${start}-${stat.size - 1}/${stat.size}`,
-          'Content-Length': String(slice.length),
+          'Content-Range': `bytes ${stat.size}-${stat.size}/${stat.size}`,
+          'Content-Length': '0',
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'no-cache',
           ...CORS_HEADERS,
         });
-        res.end(slice);
-      } else {
-        const content = await fs.readFile(fullPath, 'utf-8');
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'Content-Length': String(Buffer.byteLength(content)),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'no-cache',
-          ...CORS_HEADERS,
-        });
-        res.end(content);
+        res.end('');
+        return;
       }
+      res.writeHead(206, {
+        'Content-Type': contentType,
+        'Content-Range': `bytes ${start}-${stat.size - 1}/${stat.size}`,
+        'Content-Length': String(stat.size - start),
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-cache',
+        ...CORS_HEADERS,
+      });
+      // Read from the offset rather than slicing the whole file. This is the live-tail path: the
+      // editor re-asks every time a log grows, so reading 1.7MB to return the newest 200 bytes was
+      // paid on every poll, for every open log pane, for the life of the box.
+      pipeline(
+        createReadStream(fullPath, { start, end: stat.size - 1 }),
+        res,
+        (err) => {
+          if (err) {
+            res.destroy();
+          }
+        },
+      );
     })
     .catch(() => {
       res.writeHead(200, {

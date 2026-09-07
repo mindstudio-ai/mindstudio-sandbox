@@ -27,6 +27,17 @@ const log = createLogger('bootstrap');
 
 type ProgressFn = (step: string, message: string) => void;
 
+/**
+ * Whether an installer had to do any work.
+ *
+ * `fromImage` is what the boot display's "cached" marker is made of, so it has to mean exactly
+ * "nothing was installed": a dev-branch build or a corrective (down)grade is a slower boot for a
+ * real reason, and reporting it as free would make the display lie about why boots differ.
+ */
+export interface ToolingInstall {
+  fromImage: boolean;
+}
+
 export function setBootstrapRegistry(r: ProcessRegistry): void {
   setRegistry(r);
 }
@@ -35,13 +46,15 @@ export function setBootstrapRegistry(r: ProcessRegistry): void {
 // Binary installers
 // ---------------------------------------------------------------------------
 
-export async function installTunnel(progress: ProgressFn): Promise<void> {
+export async function installTunnel(
+  progress: ProgressFn,
+): Promise<ToolingInstall> {
   const devBranch = process.env['TUNNEL_DEV_BRANCH'];
 
   if (!devBranch && isInstalled('mindstudio-local')) {
     progress('installTunnel', 'Already installed, skipping');
     log.info('mindstudio-local already installed, skipping');
-    return;
+    return { fromImage: true };
   }
 
   if (devBranch) {
@@ -64,15 +77,18 @@ export async function installTunnel(progress: ProgressFn): Promise<void> {
   }
 
   verifyInstalled('mindstudio-local');
+  return { fromImage: false };
 }
 
-export async function installAgent(progress: ProgressFn): Promise<void> {
+export async function installAgent(
+  progress: ProgressFn,
+): Promise<ToolingInstall> {
   const devBranch = process.env['AGENT_DEV_BRANCH'];
 
   if (!devBranch && isInstalled('remy')) {
     progress('installAgent', 'Already installed, skipping');
     log.info('remy already installed, skipping');
-    return;
+    return { fromImage: true };
   }
 
   if (devBranch) {
@@ -91,6 +107,7 @@ export async function installAgent(progress: ProgressFn): Promise<void> {
   }
 
   verifyInstalled('remy');
+  return { fromImage: false };
 }
 
 export async function installAgentSdk(progress: ProgressFn): Promise<void> {
@@ -168,7 +185,9 @@ const PINNED_LSP_SERVER = 'typescript-language-server@5.3.0';
 const PINNED_TYPESCRIPT = 'typescript@6.0.3';
 const CLASSIC_TS_MAJOR = 6;
 
-export async function installLsp(progress: ProgressFn): Promise<void> {
+export async function installLsp(
+  progress: ProgressFn,
+): Promise<ToolingInstall> {
   // Skip only when the language server is present AND the global TypeScript is
   // on the classic (6.x) line. A bare "is `tsc` present?" check isn't enough: a
   // warm/pre-baked environment may already carry a floated `typescript@7` (which
@@ -182,7 +201,7 @@ export async function installLsp(progress: ProgressFn): Promise<void> {
     log.info(
       `typescript-language-server + typescript@${CLASSIC_TS_MAJOR}.x already installed, skipping`,
     );
-    return;
+    return { fromImage: true };
   }
 
   progress('installLsp', 'Installing TypeScript language server...');
@@ -192,6 +211,7 @@ export async function installLsp(progress: ProgressFn): Promise<void> {
 
   verifyInstalled('typescript-language-server');
   verifyInstalled('tsc');
+  return { fromImage: false };
 }
 
 // ---------------------------------------------------------------------------
