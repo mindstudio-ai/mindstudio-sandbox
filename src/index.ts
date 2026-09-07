@@ -7,6 +7,7 @@ import {
   installAgent,
   installAgentSdk,
   installLsp,
+  placeBakedDependencies,
   writeTunnelConfig,
   cloneAppRepo,
   refreshGitRemote,
@@ -664,6 +665,9 @@ async function main(): Promise<void> {
     // terminal/editor/agent all functional so the user can recover).
     bootPhase('Checking dependencies', { phase: 'deps', state: 'active' });
     const depsStart = Date.now();
+    // Hand npm a tree that is already most of the answer, where the app has none of its own. After
+    // the restore, because whether a directory needs one is a question only the restore can settle.
+    await placeBakedDependencies(config.workspaceDir);
     const installResult = await installDependencies(
       config.workspaceDir,
       progress,
@@ -674,26 +678,24 @@ async function main(): Promise<void> {
       );
       ctx.installFailures = installResult.failures;
     }
-    // A restored home already carries `node_modules`, so these two installs are verification passes
-    // rather than downloads. That is the single biggest reason a boot is fast, and it's the fact
-    // worth putting on screen — derived from the restore outcome rather than from parsing npm's
-    // output, because the outcome is structural and the output is not.
-    const depsFromSnapshot =
-      restoreOutcome === 'restored' || restoreOutcome === 'resumed';
+    // Snapshots no longer carry `node_modules` (see SNAPSHOT_EXCLUDES), so this is a real install
+    // and the phase that most of a boot now sits in. Report the count and the time and nothing else:
+    // whether the tree came from the image's baked copy, a restored older snapshot or the registry
+    // is a fact about our provisioning, and the user's question is only whether their project is
+    // ready. The npm summary that answers OUR question is logged per directory by installDependencies.
     bootPhase(
       installResult.failures.length > 0
         ? `Dependencies incomplete in ${installResult.failures.length} directory(ies)`
-        : depsFromSnapshot
-          ? 'Dependencies already present'
-          : 'Dependencies installed',
+        : 'Dependencies ready',
       {
         phase: 'deps',
         state: 'done',
-        cached: depsFromSnapshot && installResult.failures.length === 0,
         detail:
           installResult.failures.length > 0
             ? 'booting without a dev server'
-            : `verified in ${Date.now() - depsStart}ms`,
+            : `${installResult.installedDirs} director${
+                installResult.installedDirs === 1 ? 'y' : 'ies'
+              } in ${Date.now() - depsStart}ms`,
       },
     );
 

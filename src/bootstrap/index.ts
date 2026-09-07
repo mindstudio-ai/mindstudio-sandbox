@@ -7,6 +7,7 @@ import type { Config } from '../config.js';
 import type { AppConfig } from '../types.js';
 import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
 import { createLogger } from '../logger.js';
+import { bootPhase } from '../bootProgress.js';
 import { loadJsonConfigFile } from '../utils/jsonConfig.js';
 import {
   findGlobalPackage,
@@ -536,6 +537,25 @@ export interface InstallFailure {
 
 export interface InstallResult {
   failures: InstallFailure[];
+  /** How many package directories were found and installed, for the boot display. */
+  installedDirs: number;
+}
+
+/**
+ * npm's own account of what it had to do, kept as telemetry.
+ *
+ * `added N, removed N, changed N` measures how much of the tree was already satisfied before the
+ * install ran — by the image's baked copy, or by a restored snapshot from an older box. A boot that
+ * adds almost nothing found a near-exact match; one that adds hundreds says the baked manifest has
+ * drifted from what real apps resolve to. That is the input for revising the manifest, and npm
+ * prints it for nothing.
+ */
+function logInstallSummary(dir: string, stdout: string): void {
+  const summary = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => /^(added|removed|changed|up to date)/.test(l));
+  log.info(`deps ${path.basename(dir)}: ${summary ?? 'no npm summary line'}`);
 }
 
 /**
@@ -549,7 +569,11 @@ async function npmInstallWithFallback(
   dir: string,
 ): Promise<InstallFailure | null> {
   try {
-    await runAsync('npm install', { cwd: dir, label: `npm install in ${dir}` });
+    const out = await runAsync('npm install', {
+      cwd: dir,
+      label: `npm install in ${dir}`,
+    });
+    logInstallSummary(dir, out);
     return null;
   } catch (err) {
     const firstError = err instanceof Error ? err.message : String(err);
@@ -557,10 +581,11 @@ async function npmInstallWithFallback(
       `Strict npm install failed in ${dir}, retrying with --legacy-peer-deps`,
     );
     try {
-      await runAsync('npm install --legacy-peer-deps', {
+      const out = await runAsync('npm install --legacy-peer-deps', {
         cwd: dir,
         label: `npm install --legacy-peer-deps in ${dir}`,
       });
+      logInstallSummary(dir, out);
       return null;
     } catch (retryErr) {
       const retryError =
@@ -573,32 +598,109 @@ async function npmInstallWithFallback(
   }
 }
 
-export async function installDependencies(
-  workspaceDir: string,
-  progress: ProgressFn,
-): Promise<InstallResult> {
-  const packageDirs = [
+/**
+ * Where Dockerfile.devbox leaves the trees it baked.
+ *
+ * Keyed by the directory's path within the workspace with separators flattened — `dist/methods`
+ * becomes `methods`, `dist/interfaces/web` becomes `interfaces-web`. Not the basename, which would
+ * make an interface named `methods` collide with the methods directory and get handed the wrong
+ * tree; npm would reconcile that, but silently and slowly.
+ */
+const BAKED_DEPS_DIR = '/opt/remy-baked';
+
+const bakedKeyFor = (workspaceDir: string, dir: string): string =>
+  path
+    .relative(workspaceDir, dir)
+    .split(path.sep)
+    .filter((part) => part !== 'dist')
+    .join('-');
+
+/**
+ * The directories in this app that have npm dependencies of their own.
+ *
+ * Every interface, not just `web`. A Remy app has one methods directory and N interfaces, and today
+ * only `web` ships JavaScript — the rest (api, cron, email, webhook, agent) are json/md driven and
+ * carry no package.json, so they fall out here at no cost. Naming `web` explicitly, as this used to,
+ * would just be wrong on the day a second interface serves JS.
+ *
+ * Shared by the placement step and the install step deliberately: they have to agree on the set, or
+ * a tree gets baked into a directory nothing installs in.
+ */
+async function findPackageDirs(workspaceDir: string): Promise<string[]> {
+  const interfacesDir = path.join(workspaceDir, 'dist', 'interfaces');
+  const interfaceNames = await fs.readdir(interfacesDir).catch(() => []);
+  const candidates = [
     path.join(workspaceDir, 'dist', 'methods'),
-    path.join(workspaceDir, 'dist', 'interfaces', 'web'),
+    ...interfaceNames.map((name) => path.join(interfacesDir, name)),
   ];
 
-  log.debug('Scanning for package.json files...');
-
-  const installDirs: string[] = [];
-  for (const dir of packageDirs) {
+  const found: string[] = [];
+  for (const dir of candidates) {
     const pkgPath = path.join(dir, 'package.json');
     try {
       await fs.access(pkgPath);
       log.debug(`  Found: ${pkgPath}`);
-      installDirs.push(dir);
+      found.push(dir);
     } catch {
       log.debug(`  Not found: ${pkgPath}`);
     }
   }
+  return found;
+}
+
+/**
+ * Move the image's baked dependency trees into place, for the directories that have none.
+ *
+ * npm's cost is per package it must materialize, so handing it a tree that is already most of the
+ * answer is the only lever available short of changing package manager: measured 7,530ms to install
+ * a real app's 648 packages from empty against 5,860ms on top of the baked tree.
+ *
+ * ONLY when `node_modules` is absent, and therefore only AFTER the restore. A snapshot old enough to
+ * still carry `node_modules` would otherwise extract over the baked copy, and while npm does
+ * reconcile the merge correctly it is strictly more work than either tree alone.
+ *
+ * `mv` and NOT `fs.rename`, which is the trap here: /opt lives in a lower image layer, and overlayfs
+ * refuses to rename a directory out of one — `fs.renameSync` throws EXDEV immediately, verified in
+ * the image. coreutils falls back to a recursive copy, which is what makes this work and also what
+ * makes it cost 857ms for 228 MB rather than nothing. Still well under what it saves, and the timing
+ * is logged per directory because it is the number that would justify staging the tree during the
+ * restore instead (worth ~800ms more, at the cost of contending with the restore for the same disk).
+ */
+export async function placeBakedDependencies(
+  workspaceDir: string,
+): Promise<void> {
+  for (const dir of await findPackageDirs(workspaceDir)) {
+    const key = bakedKeyFor(workspaceDir, dir);
+    const target = path.join(dir, 'node_modules');
+    const baked = path.join(BAKED_DEPS_DIR, key, 'node_modules');
+    // Absent on any box whose image predates the bake, which is the whole of the rollout: it just
+    // installs the full tree, exactly as before.
+    if (fsSync.existsSync(target) || !fsSync.existsSync(baked)) {
+      continue;
+    }
+    const start = Date.now();
+    try {
+      await runAsync(`mv ${baked} ${target}`, {
+        label: `place baked deps → ${key}`,
+      });
+      log.info(`Placed baked ${key} deps in ${Date.now() - start}ms`);
+    } catch (err) {
+      // Nothing is lost: the install below does the whole tree instead.
+      log.warn(`Could not place baked ${key} deps: ${err}`);
+    }
+  }
+}
+
+export async function installDependencies(
+  workspaceDir: string,
+  progress: ProgressFn,
+): Promise<InstallResult> {
+  log.debug('Scanning for package.json files...');
+  const installDirs = await findPackageDirs(workspaceDir);
 
   if (installDirs.length === 0) {
     log.info('No package.json files found, skipping install');
-    return { failures: [] };
+    return { failures: [], installedDirs: 0 };
   }
 
   progress(
@@ -607,7 +709,22 @@ export async function installDependencies(
   );
 
   const startTime = Date.now();
-  const results = await Promise.all(installDirs.map(npmInstallWithFallback));
+  // Name the directory as each one lands. This is now the phase most of a boot sits in, and the
+  // installs run concurrently with no incremental output of their own, so a subtitle that names
+  // what finished is the only honest progress available — a two-tick progress bar would be theatre.
+  let done = 0;
+  const results = await Promise.all(
+    installDirs.map((dir) =>
+      npmInstallWithFallback(dir).finally(() => {
+        done += 1;
+        bootPhase(`Dependencies · ${path.basename(dir)}`, {
+          phase: 'deps',
+          state: 'active',
+          detail: `${done} of ${installDirs.length} ready`,
+        });
+      }),
+    ),
+  );
   const elapsed = Date.now() - startTime;
   const failures = results.filter((r): r is InstallFailure => r !== null);
   if (failures.length === 0) {
@@ -617,5 +734,5 @@ export async function installDependencies(
       `npm install completed in ${elapsed}ms with ${failures.length} failure(s)`,
     );
   }
-  return { failures };
+  return { failures, installedDirs: installDirs.length };
 }

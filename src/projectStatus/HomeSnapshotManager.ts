@@ -1,12 +1,13 @@
 /**
- * Workspace snapshots: the box's home directory, tarred whole, in S3.
+ * Workspace snapshots: the box's home directory, tarred to S3.
  *
  * `/home/remy` is the user's computer and the image is the platform's, so the
- * snapshot is that directory with no knowledge of what is in it — workspace,
- * node_modules, .git, global npm installs, dotfiles, caches. Restore is untar
- * and go. What the platform needs to know about the contents (the manifest's
- * display fields, the presentation sources, the usage ledger) is sent with
- * each commit rather than read out of the blob.
+ * snapshot is that directory minus what can be rebuilt from it — see
+ * SNAPSHOT_EXCLUDES. Everything else goes in without interpretation: workspace,
+ * .git, dotfiles, logs. Restore is untar and go. What the platform needs to
+ * know about the contents (the manifest's display fields, the presentation
+ * sources, the usage ledger) is sent with each commit rather than read out of
+ * the blob.
  *
  * Cadence: on SIGTERM (the pod's grace period bounds the flush) and every
  * SNAPSHOT_INTERVAL_MS while anything under home changed, detected by a mtime
@@ -35,6 +36,46 @@ import { makeCounterEmitter } from '../bootProgress.js';
 const log = createLogger('snapshot');
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
+
+//////////////////////////////////////////////////////////////////////////////
+// What a snapshot is NOT
+//
+// The snapshot preserves the user's work. These three paths are not it — they are derived from it, or
+// they are ours — and on a real customer app they were 96% of the bytes: node_modules 645 MB, the npm
+// cache 109 MB, against 30 MB of actual repo. Tarring home whole cost 10.4s and produced a 217 MB
+// object; excluding these cost 0.9s and produced 9 MB. That is the difference between a shutdown
+// flush that fits inside the pod's grace period and one that races it.
+//
+//   node_modules   Rebuilt by the `npm install` that already runs on every boot (bootstrap's
+//                  installDependencies), from a lockfile the repo carries. Restoring it only ever
+//                  made that install a no-op.
+//   .npm           npm's own download cache. Measured worth: 900ms of a 6s install.
+//   .npm-global    PLATFORM tooling, not the user's. It rides first on PATH, so a copy frozen here
+//                  shadows the image's — which is exactly the bug installAgentSdk still evicts
+//                  per-package. Excluding it stops making new ones.
+//
+// Consumed by BOTH the tar and the change detector, deliberately: they answer the same question, and
+// a change detector that watches paths the tar ignores wakes up to upload nothing.
+//
+// Anchoring is load-bearing and the two halves differ. `./.npm` must be anchored or it would also
+// match a `.npm` directory inside the user's project and silently drop their data; `node_modules`
+// must NOT be, so it matches at every depth. GNU tar applies --anchored to the patterns that FOLLOW
+// it, so the order below is the meaning. Verified against GNU tar 1.35: `./.npm/`, `./.npm-global/`
+// and node_modules at three different depths all dropped, `./workspace/.npm/user-data.json` kept.
+//////////////////////////////////////////////////////////////////////////////
+const SNAPSHOT_EXCLUDES = {
+  /** Home-relative, matched from the start of the member name. */
+  anchored: ['./.npm', './.npm-global'],
+  /** Matched against any path component, at any depth. */
+  anywhere: ['node_modules'],
+};
+
+const TAR_EXCLUDE_ARGS = [
+  '--anchored',
+  ...SNAPSHOT_EXCLUDES.anchored.map((p) => `--exclude=${p}`),
+  '--no-anchored',
+  ...SNAPSHOT_EXCLUDES.anywhere.map((p) => `--exclude=${p}`),
+];
 // Outside home so it is never inside the tar, and inside the container's own
 // filesystem so it survives an in-place server restart but not a new pod.
 const CHANGE_MARKER = '/tmp/.snapshot-marker';
@@ -214,6 +255,8 @@ export class HomeSnapshotManager {
    * has a denominator for the extract. Null until a snapshot is tarred, and null forever if tar's
    * `--totals` output can't be parsed — the display degrades to a bare count. */
   private lastUncompressedBytes: number | null = null;
+  /** Whether the one-per-box composition line has been emitted. See logCompositionOnce. */
+  private loggedComposition = false;
 
   constructor(opts: HomeSnapshotManagerOptions) {
     this.homeDir = opts.homeDir;
@@ -366,6 +409,7 @@ export class HomeSnapshotManager {
 
       await putFile(begun.uploadUrl, SNAPSHOT_TAR, 'application/zstd');
       await this.uploadUsageLedgerIfChanged(begun.usageLedgerUploadUrl);
+      this.logCompositionOnce();
 
       const presentation = await this.presentationIfChanged();
       await this.api('POST', '/commit', {
@@ -430,14 +474,91 @@ export class HomeSnapshotManager {
     }
   }
 
+  /**
+   * One line, once per box: how much of home the archive left behind.
+   *
+   * The archive's own size is already logged, so the missing half of the picture is what was skipped
+   * — the number that says whether SNAPSHOT_EXCLUDES is still carrying its weight on real apps, and
+   * whether whatever remains is worth a second look. Measured on the excluded paths directly rather
+   * than through `du --exclude`, so the figure doesn't depend on du's pattern semantics matching
+   * tar's.
+   *
+   * Detached and swallowed: this walks the largest tree on the box, so it must never be on the path
+   * of a snapshot, least of all the shutdown flush. Once per box because that is enough to learn
+   * from and the walk isn't free.
+   */
+  private logCompositionOnce(): void {
+    if (this.loggedComposition) {
+      return;
+    }
+    this.loggedComposition = true;
+    void (async () => {
+      try {
+        const { stdout: found } = await run('find', [
+          this.homeDir,
+          '-name',
+          'node_modules',
+          '-prune',
+          '-print',
+        ]);
+        const paths = [
+          ...SNAPSHOT_EXCLUDES.anchored.map((p) =>
+            path.join(this.homeDir, p.slice(2)),
+          ),
+          ...found.split('\n').filter(Boolean),
+        ];
+        const present = paths.filter((p) => fs.existsSync(p));
+        if (present.length === 0) {
+          log.info('Snapshot composition: nothing excluded');
+          return;
+        }
+        const { stdout } = await run('du', ['-sk', ...present]);
+        const rows = stdout
+          .split('\n')
+          .map((line) => line.split('\t'))
+          .filter((parts) => parts.length === 2)
+          .map(([kb, p]) => ({ bytes: Number(kb) * 1024, path: p }))
+          .sort((a, b) => b.bytes - a.bytes);
+        const total = rows.reduce((sum, r) => sum + r.bytes, 0);
+        const detail = rows
+          .map((r) => `${path.relative(this.homeDir, r.path)} ${mib(r.bytes)}`)
+          .join(', ');
+        log.info(`Snapshot composition: skipped ${mib(total)} — ${detail}`);
+      } catch (err) {
+        log.debug(`Composition probe failed: ${err}`);
+      }
+    })();
+  }
+
   private async changedSinceMarker(): Promise<boolean> {
     if (!fs.existsSync(CHANGE_MARKER)) {
       return true;
     }
-    // `-print -quit` stops at the first hit, so a quiet tree costs one walk of
-    // stats and a busy one costs almost nothing.
+    // Prunes SNAPSHOT_EXCLUDES, because "did anything change" has to mean "did anything change that
+    // we would store". An `npm install` rewrites 50,000 files under node_modules and none of them
+    // are in the archive: without the prune every install schedules a snapshot of nothing. It also
+    // stops the walk descending into the largest tree on the box for a question it can't answer.
+    //
+    // `-print -quit` stops at the first hit, so a quiet tree costs one walk of stats and a busy one
+    // costs almost nothing.
+    const prunes = [
+      // `./.npm` → `<home>/.npm`, matching the absolute paths `find` walks and prints.
+      ...SNAPSHOT_EXCLUDES.anchored.flatMap((p) => [
+        '-path',
+        path.join(this.homeDir, p.slice(2)),
+        '-prune',
+        '-o',
+      ]),
+      ...SNAPSHOT_EXCLUDES.anywhere.flatMap((p) => [
+        '-name',
+        p,
+        '-prune',
+        '-o',
+      ]),
+    ];
     const { stdout } = await run('find', [
       this.homeDir,
+      ...prunes,
       '-newer',
       CHANGE_MARKER,
       '-print',
@@ -468,16 +589,16 @@ export class HomeSnapshotManager {
         //
         // This is a DATA-LOSS budget, not a latency one. On the shutdown path the whole cycle has
         // to finish inside SHUTDOWN_SNAPSHOT_BUDGET_MS (75s) before CFES's 90s pod grace turns
-        // into a SIGKILL, and single-threaded zstd measured ~29 MB/s: fine for the 392 MiB home
-        // we first saw, ~70s of tarring alone at 2 GB, and homes only grow — the boundary
-        // deliberately includes node_modules, .git, ~/.npm-global and every cache. Losing the
-        // race means the user loses the session's work, and it arrives as a function of how long
-        // they have been building. A dev box has 4 cores, so this is ~3-4x for free.
+        // into a SIGKILL, and losing that race means the user loses the session's work. Kept even
+        // though SNAPSHOT_EXCLUDES took the typical archive down to single-digit MB: what remains
+        // is the user's own material, which is the part with no ceiling — a repo full of committed
+        // assets is one commit away — and 4 cores make this ~3-4x for free.
         //
         // Same compression level, so the tar is the same size and the restore is unaffected: the
         // output is an ordinary zstd stream that `tar --zstd -xf` reads. Decompression is NOT
         // sped up by this — a single frame decodes on one core either way.
         '--use-compress-program=zstd -T0',
+        ...TAR_EXCLUDE_ARGS,
         '--warning=no-file-changed',
         '-cf',
         SNAPSHOT_TAR,
