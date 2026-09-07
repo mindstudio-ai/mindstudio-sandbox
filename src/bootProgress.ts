@@ -35,7 +35,12 @@ export interface BootCounter {
    * inventing a denominator.
    */
   total?: number | null;
-  unit: 'bytes' | 'files';
+  /**
+   * `dirs` exists because the install phase has no finer measure honestly available — npm prints no
+   * machine-readable progress — and a phase that routinely runs 30s cannot be left with nothing on
+   * screen. Directories finished out of directories found is coarse, but both ends are observed.
+   */
+  unit: 'bytes' | 'files' | 'dirs';
   /** Units per second, so the overlay can interpolate between updates instead of freezing. */
   rate?: number;
   /** Short verb for the counter line: `Downloading`, `Unpacking`. */
