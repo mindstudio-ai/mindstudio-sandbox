@@ -72,16 +72,37 @@ const TSSERVER_EXITED_RE = /\[tsserver\] Exited\./;
  * which is what surfaces as `-32603 Could not find a valid TypeScript
  * installation` when the heuristics come up empty. Best-effort: returns null
  * (→ let the server resolve on its own) if the global copy can't be located.
+ *
+ * TWO prefixes, in PATH order, because the box has two. `npm root -g` reports only
+ * NPM_CONFIG_PREFIX, which the image points at a user-writable prefix under remy's home so that an
+ * agent can `npm install -g` — while the baked toolchain was installed before that ENV took effect
+ * and sits under node's own prefix. Asking npm alone therefore missed the pin on 100% of boots, and
+ * silently: the fallback path works, on whatever TypeScript major the language server bundles
+ * rather than the one the image pinned.
  */
 async function resolveGlobalTsserverPath(): Promise<string | null> {
+  const roots: string[] = [];
   try {
-    const root = execSync('npm root -g', { encoding: 'utf-8' }).trim();
-    const tsserver = path.join(root, 'typescript', 'lib', 'tsserver.js');
-    await fs.access(tsserver);
-    return tsserver;
+    roots.push(execSync('npm root -g', { encoding: 'utf-8' }).trim());
   } catch {
-    return null;
+    // npm unavailable or misconfigured; the default prefix below is still worth a look.
   }
+  // npm's default global prefix IS node's install prefix, so derive it from the running binary
+  // rather than naming a path the image is free to move.
+  roots.push(
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules'),
+  );
+
+  for (const root of new Set(roots)) {
+    const tsserver = path.join(root, 'typescript', 'lib', 'tsserver.js');
+    try {
+      await fs.access(tsserver);
+      return tsserver;
+    } catch {
+      // Not in this prefix; try the next.
+    }
+  }
+  return null;
 }
 
 export class LspClient {
