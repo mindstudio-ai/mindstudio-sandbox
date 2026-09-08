@@ -84,19 +84,42 @@ import { cacheVersions } from './server/versionCache.js';
 const log = createLogger('controller');
 
 // Shutdown flush budgets. SIGTERM is the one flush path: Kubernetes delivers it on every stop (the
-// platform's, the reaper's, a node drain) and the pod's terminationGracePeriodSeconds (90s, set by
-// CFES) bounds the whole shutdown, so these must sum to well under that.
-const SHUTDOWN_QUIESCE_BUDGET_MS = 8_000;
+// platform's, the reaper's, a node drain) and the pod's terminationGracePeriodSeconds bounds the
+// whole shutdown, so these must sum to well under it.
+//
+// INJECTED, not decided here. The grace period that bounds them belongs to whoever writes the pod
+// spec, so the budgets live beside it in CFES's `sandboxLifecycle.ts` (`dev.shutdown`, delivered by
+// `devLifecycleEnv()`). A box that keeps its own copy is a box whose margin can silently vanish
+// when the grace period moves — which is exactly what had happened: the comment here claimed a 60s
+// snapshot budget against an actual 75s, leaving ~3s of headroom rather than ~18s.
+//
+// The fallbacks are the shipped values, so a box on an image older than the injection still behaves
+// exactly as it did.
+const envMs = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const SHUTDOWN_QUIESCE_BUDGET_MS = envMs('SHUTDOWN_QUIESCE_BUDGET_MS', 8_000);
 // remy emits its cancel terminal BEFORE the (sync) session-file write — give the write a beat to
 // land once the agent reports idle.
-const SHUTDOWN_SETTLE_MS = 750;
-// The whole quiesce-settle-tar-upload sequence. A multi-GB home on a busy box needs most of this,
-// and it must stay clear of the pod's terminationGracePeriodSeconds (90s).
-const SHUTDOWN_SNAPSHOT_BUDGET_MS = 75_000;
+const SHUTDOWN_SETTLE_MS = envMs('SHUTDOWN_SETTLE_MS', 750);
+// The whole quiesce-settle-tar-upload sequence. A multi-GB home on a busy box needs most of this.
+const SHUTDOWN_SNAPSHOT_BUDGET_MS = envMs(
+  'SHUTDOWN_SNAPSHOT_BUDGET_MS',
+  75_000,
+);
 // Closing the server waits for every connection to drain, and a WS peer that never answers its
 // close frame (a laptop that shut its lid mid-session) holds its socket for the `ws` library's own
 // 30s timeout. The snapshot has already landed by then, so waiting protects nothing.
-const SHUTDOWN_SERVER_CLOSE_BUDGET_MS = 3_000;
+const SHUTDOWN_SERVER_CLOSE_BUDGET_MS = envMs(
+  'SHUTDOWN_SERVER_CLOSE_BUDGET_MS',
+  3_000,
+);
 
 // ---------------------------------------------------------------------------
 // State manager construction
@@ -502,6 +525,13 @@ async function main(): Promise<void> {
   ctx.specFileTreeManager = managers.specFileTreeManager;
   ctx.resourceMonitor = managers.resourceMonitor;
   log.info(`Server listening on port ${config.port}`);
+  // The only way to tell from outside whether the budgets were injected or fell back to the
+  // shipped defaults — and the sum is the number that has to stay under the pod's grace period.
+  log.info(
+    `Shutdown budgets: quiesce=${SHUTDOWN_QUIESCE_BUDGET_MS}ms settle=${SHUTDOWN_SETTLE_MS}ms ` +
+      `snapshot=${SHUTDOWN_SNAPSHOT_BUDGET_MS}ms close=${SHUTDOWN_SERVER_CLOSE_BUDGET_MS}ms ` +
+      `(total ${SHUTDOWN_QUIESCE_BUDGET_MS + SHUTDOWN_SETTLE_MS + SHUTDOWN_SNAPSHOT_BUDGET_MS + SHUTDOWN_SERVER_CLOSE_BUDGET_MS}ms)`,
+  );
 
   const progress = (step: string, message: string) => {
     log.info(`[${step}] ${message}`);
