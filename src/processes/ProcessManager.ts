@@ -68,11 +68,14 @@ export class ProcessManager {
    *
    * A container's SIGTERM reaches every process inside it, not just this one, so the children are
    * already exiting before the shutdown routine runs its first line — and their exits are expected,
-   * not crashes. Without this the supervisor reacts to its own shutdown: `devServer` gets a restart
-   * scheduled, and `agent` (maxRestarts 0, critical) turns a clean exit into `process.exit(1)`
-   * roughly a tenth of a second in, which kills the process while the final snapshot is still
-   * uploading. Must therefore be called BEFORE any of the slow shutdown work, not alongside
-   * `stopAll` at the end of it.
+   * not crashes. Without this the supervisor reacts to its own shutdown by scheduling restarts for
+   * processes that are never coming back. Called BEFORE any of the slow shutdown work rather than
+   * alongside `stopAll` at the end of it, so it is in force while the children are actually dying.
+   *
+   * Not the load-bearing guard, deliberately. A signal and a child's exit are unordered libuv
+   * callbacks, so this flag can always be read too late; the exit handler decides on the child's
+   * exit STATUS instead, which no race can invalidate. This one keeps a shutdown quiet, that one
+   * keeps it alive.
    */
   beginShutdown(): void {
     this.shuttingDown = true;
@@ -192,10 +195,34 @@ export class ProcessManager {
         return;
       }
 
-      this.registry.setState(config.name, 'crashed', {
+      // A clean exit is not a crash, and must never take the box down with it.
+      //
+      // Every `agent` exit on record is `code=0, signal=null` — 170 of 170 over a day — because a
+      // container's SIGTERM reaches the children directly and they leave politely. Reading that as
+      // a crash let `critical` fire `process.exit(1)` ~50ms into shutdown, killing this process
+      // while the final snapshot was still uploading. `beginShutdown()` covers the common case and
+      // cannot cover all of it: a signal and a child's exit are both libuv callbacks with no
+      // ordering between them, so the exit can be dispatched before this process's own SIGTERM
+      // handler has run, and no amount of calling `beginShutdown()` earlier wins that. Measured: 5
+      // of 23 stops still lost the race after the flag went in. Gating on the exit STATUS needs no
+      // race to be won.
+      //
+      // It also means the supervisor now reacts to crashes only, which is what `restartOnCrash`
+      // says. The residue is a critical process that exits 0 mid-life: the box stays up without it,
+      // degraded rather than recycled. Never observed — all 170 landed at their pod's last
+      // millisecond — and a visible degradation beats tearing down a live editor over a process
+      // that said it was finished.
+      const cleanExit = code === 0 && signal === null;
+
+      this.registry.setState(config.name, cleanExit ? 'stopped' : 'crashed', {
         exitCode: code,
         signal: signal ?? undefined,
       });
+
+      if (cleanExit) {
+        log.info(`"${config.name}" exited cleanly; not restarting`);
+        return;
+      }
 
       const restartCount =
         this.registry.getInfo(config.name)?.restartCount ?? 0;
