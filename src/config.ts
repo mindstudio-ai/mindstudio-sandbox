@@ -20,6 +20,17 @@ export interface Config {
    * youai-api only accepts writes from the app's newest session, so a
    * superseded box learns it has been replaced and stops. */
   sessionId: string;
+  /**
+   * The branch this box BOOTS on, chosen by the platform rather than by the clone.
+   *
+   * Only the boot. The working tree moves afterwards — the editor's branch switcher and a plain
+   * `git checkout` in the terminal both do it — and this value does not follow. Anything that needs
+   * the current branch asks git (`BranchWatcher`), which is also what tells the platform.
+   *
+   * Never guess it from anything else at boot: the platform's session row records this value, and a
+   * box that silently started somewhere else would make that record a lie without failing anywhere.
+   */
+  gitBranch: string;
   logLevel: LogLevel;
 }
 
@@ -82,6 +93,7 @@ export function loadConfig(): Config {
     port: parseInt(optional('PORT', '4387'), 10),
     sandboxToken,
     sessionId: required('MINDSTUDIO_SESSION_ID'),
+    gitBranch: required('MINDSTUDIO_GIT_BRANCH'),
     logLevel,
   };
 

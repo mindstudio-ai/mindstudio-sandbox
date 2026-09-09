@@ -103,12 +103,32 @@ export function setProxyTarget(port: number): void {
   log.info(`Preview proxy target set to localhost:${port}`);
 }
 
+/**
+ * Whether a request carries this box's own token.
+ *
+ * Fails OPEN when no token is configured, which is deliberate for the read-only routes: a box run
+ * locally without `SANDBOX_TOKEN` should still serve its own status and logs to whoever started it.
+ * The MUTATING routes use `verifyTokenStrict` instead — see there.
+ */
 function verifyToken(url: string | undefined): boolean {
   if (!sandboxToken) {
     return true;
   }
   const parsed = new URL(url || '/', 'http://localhost');
   return parsed.searchParams.get('token') === sandboxToken;
+}
+
+/**
+ * The same check, but with no token configured meaning NO.
+ *
+ * For the two routes that change something — `/flush` drives the platform's snapshot machinery and
+ * `/switch-branch` moves the working tree over uncommitted work. This port is also what the public
+ * preview host reaches, so failing open on them meant that on any box booted without the env var,
+ * anyone with a shared preview URL — or any script running in the app under development — could
+ * check out over somebody's work. A read is worth relaxing for local convenience; a write is not.
+ */
+function verifyTokenStrict(url: string | undefined): boolean {
+  return !!sandboxToken && verifyToken(url);
 }
 
 /** Paths handled by the C&C server (not proxied to HMR/preview). */
@@ -141,6 +161,7 @@ export function startServer(
         getProxyTarget: () => proxyTarget,
         getProxy: () => proxy,
         verifyToken,
+        verifyTokenStrict,
       }),
     );
 

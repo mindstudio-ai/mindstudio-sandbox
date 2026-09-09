@@ -29,6 +29,7 @@ import type { FileTreeManager } from './states/FileTreeManager.js';
 import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
 import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
 import type { LspClient } from '../lsp/client.js';
+import type { BranchWatcher } from '../projectStatus/BranchWatcher.js';
 import type {
   HomeSnapshotManager,
   SnapshotOutcome,
@@ -56,6 +57,12 @@ export interface ServerContext {
   specFileTreeManager: SpecFileTreeManager | null;
   lspClient: LspClient | null;
   snapshotManager: HomeSnapshotManager | null;
+  /**
+   * Watches HEAD and tells the platform which branch this box is on. Also what performs a checkout
+   * when the platform asks over `/switch-branch` — the request and the observation are the same
+   * object, so a switch cannot succeed without being reported.
+   */
+  branchWatcher: BranchWatcher | null;
   onFileChanged:
     | ((path: string, changeType: 'created' | 'modified' | 'deleted') => void)
     | null;
@@ -93,6 +100,7 @@ export const ctx: ServerContext = {
   specFileTreeManager: null,
   lspClient: null,
   snapshotManager: null,
+  branchWatcher: null,
   onFileChanged: null,
   onProjectStatusChanged: null,
   finalizeWorkspace: null,

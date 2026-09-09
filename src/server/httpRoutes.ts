@@ -94,10 +94,21 @@ interface HttpHandlerOpts {
   getProxy: () => httpProxy | null;
   /** Whether a request carries the box's own SANDBOX_TOKEN — see `/flush`. */
   verifyToken: (url: string | undefined) => boolean;
+  /**
+   * The same, but a box with no token configured refuses rather than allowing. For the two routes
+   * that CHANGE something, on a port the public preview host can reach.
+   */
+  verifyTokenStrict: (url: string | undefined) => boolean;
 }
 
 export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
-  const { workspaceDir, getProxyTarget, getProxy, verifyToken } = opts;
+  const {
+    workspaceDir,
+    getProxyTarget,
+    getProxy,
+    verifyToken,
+    verifyTokenStrict,
+  } = opts;
 
   return (req, res) => {
     // CORS preflight — allow everything
@@ -197,16 +208,17 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
     // surviving whatever issued the delete, or on anyone inferring success from a health probe.
     // SIGTERM stays the backstop for stops we DON'T initiate (node drain, eviction, deadline).
     //
-    // Token-gated, unlike the read-only routes above: this is the one mutating platform
-    // operation on this port, and this port is also what the PUBLIC preview host reaches (the
-    // sandbox-proxy deliberately doesn't list `/flush` as a control path, so a request for it on
-    // a preview host arrives here as ordinary traffic). Without the check, anything running in a
-    // user's own preview could drive the platform's snapshot machinery.
+    // Token-gated STRICTLY, unlike the read-only routes above: it mutates, and this port is also
+    // what the PUBLIC preview host reaches. `verifyTokenStrict` rather than `verifyToken` because
+    // the latter allows everything when no token is configured, which on a box booted without
+    // SANDBOX_TOKEN would let anything running in a user's own preview drive the platform's
+    // snapshot machinery. The sandbox-proxy also lists this path as control now, so preview traffic
+    // is refused a hop earlier — this is the second layer, not the only one.
     if (
       req.method === 'POST' &&
       new URL(req.url ?? '/', 'http://localhost').pathname === '/flush'
     ) {
-      if (!verifyToken(req.url)) {
+      if (!verifyTokenStrict(req.url)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
@@ -255,6 +267,85 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
+    // POST /switch-branch — the platform asking this box to check a branch out.
+    //
+    // Token-gated for the same reason `/flush` is: this port is also what the public preview host
+    // reaches, and neither route is on the sandbox-proxy's control-path list, so without the check
+    // anything running in a user's own preview could move their working tree.
+    //
+    // The platform does not write the branch itself — this runs the checkout and the watcher reports
+    // where HEAD ended up, which is the same road a person typing `git switch` in the terminal takes.
+    if (
+      req.method === 'POST' &&
+      new URL(req.url ?? '/', 'http://localhost').pathname === '/switch-branch'
+    ) {
+      if (!verifyTokenStrict(req.url)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      const watcher = ctx.branchWatcher;
+      if (!watcher) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'not_ready' }));
+        return;
+      }
+      readJsonBody(req)
+        .then((body) => {
+          const branch = (body as { branch?: unknown }).branch;
+          if (typeof branch !== 'string' || !branch) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'invalid_branch' }));
+            return;
+          }
+          return watcher.checkout(branch).then((outcome) => {
+            res.writeHead(outcome.ok ? 200 : 500, {
+              'Content-Type': 'application/json',
+            });
+            res.end(JSON.stringify(outcome));
+          });
+        })
+        .catch((err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        });
+      return;
+    }
+
+    // POST /internal/head-changed — the workspace's `post-checkout` hook, telling us HEAD moved.
+    //
+    // Loopback ONLY, and no token: the hook is a shell script git runs, and handing it a credential
+    // to hold would put the box's own token in a file inside the workspace the agent edits. Binding
+    // to the loopback address instead means the only thing that can reach this is a process already
+    // inside the box — which is exactly the trust boundary the hook sits on.
+    if (
+      req.method === 'POST' &&
+      new URL(req.url ?? '/', 'http://localhost').pathname ===
+        '/internal/head-changed'
+    ) {
+      const remote = req.socket.remoteAddress ?? '';
+      if (
+        remote !== '127.0.0.1' &&
+        remote !== '::1' &&
+        remote !== '::ffff:127.0.0.1'
+      ) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden' }));
+        return;
+      }
+      // Answered immediately: git is waiting on this hook, and a checkout should not sit behind a
+      // round trip to the platform. The report is the watcher's business, not the hook's.
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      void ctx.branchWatcher?.poke();
+      return;
+    }
+
     const proxy = getProxy();
     if (!proxy) {
       sendPreviewPlaceholder(req, res, 'starting');
@@ -265,6 +356,27 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       sendPreviewPlaceholder(req, res, 'unavailable');
     });
   };
+}
+
+/** Read a JSON request body. */
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf-8').trim();
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new Error('invalid_json'));
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
 function redactCommand(command: string): string {

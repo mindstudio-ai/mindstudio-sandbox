@@ -180,7 +180,9 @@ export type RestoreResult =
  * - `committed`: a new snapshot is durable in S3 and is now the app's current one.
  * - `unchanged`: nothing under home changed since the last one, which is already current.
  * - `failed`: the tar, the upload or the commit did not succeed. `lastError` says why.
- * - `fenced`: a newer session has committed a snapshot, so this box must never write again.
+ * - `fenced`: another box took this BRANCH after us and has committed on it, so its snapshots are
+ *   no longer ours to write. Per branch and recoverable, unlike a terminal state: checking out
+ *   somewhere else clears it (see `isFenced`).
  *
  * The first two are both success for a caller asking "is the user's work safe" —
  * see `isSafe`.
@@ -198,6 +200,15 @@ export interface HomeSnapshotManagerOptions {
   sessionId: string;
   apiBaseUrl: string;
   apiKey: string;
+  /**
+   * The branch HEAD is on right now, read at snapshot time rather than captured once.
+   *
+   * A snapshot belongs to a branch, and the branch moves during a session — so asking at the moment
+   * of the write is the only way to file it correctly. Passed in rather than read from the server
+   * context so this class keeps taking its dependencies explicitly. Optional, and absent means
+   * "platform, use what you have recorded".
+   */
+  getBranch?: () => string | null;
   /** Fired on health transitions (failing / recovered / fenced) so the C&C
    * server can broadcast fresh status to editor clients. */
   onStatusChange?: () => void;
@@ -226,6 +237,7 @@ export class HomeSnapshotManager {
   private readonly sessionId: string;
   private readonly apiBaseUrl: string;
   private readonly apiKey: string;
+  private readonly getBranch: (() => string | null) | null;
   private readonly onStatusChange: (() => void) | null;
 
   private intervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -247,9 +259,19 @@ export class HomeSnapshotManager {
   /** Epoch ms before which no upload is attempted (exponential backoff with
    * jitter after a failure). A degraded endpoint is not hammered every tick. */
   private pushBackoffUntil: number | null = null;
-  /** Permanently disabled: youai-api answered 409, so a newer session owns the
-   * app. A fenced box must never write again. */
-  private fenced = false;
+  /**
+   * The branch this box has been fenced OFF, or null.
+   *
+   * Per branch, not per box. A 409 means "another box took this branch after you", which is a fact
+   * about one branch rather than about this process — and it is recoverable, because a box that
+   * switches back to a branch it still owns may write again. As a permanent per-box latch it meant
+   * losing one branch silently disabled saving for the box's whole life, including its SIGTERM
+   * flush: the save that matters most, on work the user could still see on screen.
+   *
+   * Cleared when HEAD lands somewhere else (see `noteBranch`), which is also what makes the
+   * "another box owns this branch" state in the editor go away on its own.
+   */
+  private fencedBranch: string | null = null;
   /** Content hash of the presentation sources at the last commit that carried
    * them; they are re-sent only when it changes. */
   private lastPresentationHash: string | null = null;
@@ -271,7 +293,33 @@ export class HomeSnapshotManager {
     this.sessionId = opts.sessionId;
     this.apiBaseUrl = opts.apiBaseUrl.replace(/\/$/, '');
     this.apiKey = opts.apiKey;
+    this.getBranch = opts.getBranch ?? null;
     this.onStatusChange = opts.onStatusChange ?? null;
+  }
+
+  /**
+   * Whether the branch HEAD is on right now is one another box has taken from us.
+   *
+   * Compared against live HEAD rather than remembered as a flag, so a checkout back to a branch this
+   * box still owns clears it with no further plumbing — the platform's answer for that branch has
+   * not changed, and asking again is the only way to find out. A null `getBranch` (no watcher) reads
+   * as fenced only if we were fenced with no branch to attribute it to, which cannot happen once the
+   * watcher is wired.
+   */
+  private isFenced(): boolean {
+    if (!this.fencedBranch) {
+      return false;
+    }
+    const head = this.getBranch?.() ?? null;
+    if (head && head !== this.fencedBranch) {
+      log.info(
+        `HEAD moved to ${head}; ${this.fencedBranch} is somebody else's but this one is ours`,
+      );
+      this.fencedBranch = null;
+      this.onStatusChange?.();
+      return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -323,7 +371,9 @@ export class HomeSnapshotManager {
       lastRestoreOutcome: this.lastRestoreOutcome,
       consecutivePushFailures: this.consecutivePushFailures,
       pushBackoffUntil: this.pushBackoffUntil,
-      fenced: this.fenced,
+      fenced: this.isFenced(),
+      /** Which branch was lost, so the editor can name it rather than saying "backups are off". */
+      fencedBranch: this.fencedBranch,
     };
   }
 
@@ -337,8 +387,10 @@ export class HomeSnapshotManager {
    * Returns whether the user's work is durable (see `isSafe`).
    */
   async snapshot(): Promise<boolean> {
-    if (this.fenced) {
-      log.debug('Fenced by a newer session; refusing to snapshot');
+    if (this.isFenced()) {
+      log.debug(
+        `Another box owns ${this.fencedBranch}; refusing to snapshot it`,
+      );
       return false;
     }
     if (this.inFlight) {
@@ -368,8 +420,8 @@ export class HomeSnapshotManager {
    * `failed`, which is the answer the platform must not mistake for success.
    */
   async flushNow(): Promise<SnapshotOutcome> {
-    if (this.fenced) {
-      log.warn('Fenced by a newer session; refusing to flush');
+    if (this.isFenced()) {
+      log.warn(`Another box owns ${this.fencedBranch}; refusing to flush it`);
       return 'fenced';
     }
     if (this.inFlight) {
@@ -400,6 +452,12 @@ export class HomeSnapshotManager {
     // Touch before tarring so writes that land mid-tar are caught next cycle.
     await this.touchMarker();
 
+    // The branch HEAD is on RIGHT NOW, which is the history this snapshot joins. Read from the
+    // watcher rather than left to the platform's record of it: a checkout since the last report
+    // would otherwise file this work under the branch the box has just left, where nothing looks
+    // for it. Read out here so the catch below can name the branch a 409 was about.
+    const branch = this.getBranch?.() ?? null;
+
     try {
       log.info('Starting snapshot...');
       const { bytes, sha256 } = await this.tarHome();
@@ -411,10 +469,23 @@ export class HomeSnapshotManager {
         snapshotId: string;
         uploadUrl: string;
         usageLedgerUploadUrl: string;
-      }>('POST', '/begin', { sessionId: this.sessionId });
+      }>('POST', '/begin', {
+        sessionId: this.sessionId,
+        ...(branch ? { branch } : {}),
+      });
 
       await putFile(begun.uploadUrl, SNAPSHOT_TAR, 'application/zstd');
-      await this.uploadUsageLedgerIfChanged(begun.usageLedgerUploadUrl);
+      // Best-effort, and deliberately so: the ledger is telemetry for a dashboard, and `putFile`
+      // throws on any non-2xx. Awaited bare, one transient failure on it aborted the run between a
+      // successful tar upload and its commit — so the uploaded object was swept as an abandoned
+      // pending row. On the interval that costs a retry; on the SIGTERM flush it cost the session's
+      // work, for a cost figure.
+      await this.uploadUsageLedgerIfChanged(begun.usageLedgerUploadUrl).catch(
+        (err) =>
+          log.warn(
+            `Usage ledger upload failed; keeping the snapshot: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+      );
       this.logCompositionOnce();
 
       const presentation = await this.presentationIfChanged();
@@ -453,12 +524,15 @@ export class HomeSnapshotManager {
       return 'committed';
     } catch (err) {
       if (err instanceof SupersededError) {
+        // Scoped to the branch we were trying to write, and the interval keeps running: switching
+        // back to a branch this box still owns has to be able to recover, and the editor needs the
+        // next tick to notice when it does.
+        const lost = branch ?? this.getBranch?.() ?? null;
         log.error(
-          `Superseded by a newer sandbox session for ${this.appId}; fencing all future snapshots`,
+          `Another box took ${lost ?? 'this branch'} for ${this.appId}; not writing its snapshots until HEAD moves`,
         );
-        this.fenced = true;
+        this.fencedBranch = lost;
         this.lastError = err.message;
-        this.stop();
         this.onStatusChange?.();
         return 'fenced';
       }
@@ -846,8 +920,12 @@ export class HomeSnapshotManager {
     }
   }
 
-  /** The current snapshot, null when the app has none, 'error' when youai-api
-   * could not be asked after retries. */
+  /** The current snapshot for THIS BOX'S BRANCH, null when that branch has none
+   * (clone instead), 'error' when youai-api could not be asked after retries.
+   *
+   * The session id is what names the branch: an app can hold a box per branch,
+   * and the platform resolves ours from the session row it gave us rather than
+   * from anything we could claim about our own workspace. */
   private async fetchCurrentWithRetry(): Promise<
     CurrentSnapshot | null | 'error'
   > {
@@ -857,6 +935,8 @@ export class HomeSnapshotManager {
         const body = await this.api<{ snapshot: CurrentSnapshot | null }>(
           'GET',
           '',
+          undefined,
+          { sessionId: this.sessionId },
         );
         return body.snapshot;
       } catch (err) {
@@ -885,8 +965,10 @@ export class HomeSnapshotManager {
     method: 'GET' | 'POST',
     subpath: '' | '/begin' | '/commit',
     body?: unknown,
+    query?: Record<string, string>,
   ): Promise<T> {
-    const url = `${this.apiBaseUrl}/_internal/v2/apps/${this.appId}/dev/manage/workspace-snapshot${subpath}`;
+    const search = query ? `?${new URLSearchParams(query)}` : '';
+    const url = `${this.apiBaseUrl}/_internal/v2/apps/${this.appId}/dev/manage/workspace-snapshot${subpath}${search}`;
     const res = await fetch(url, {
       method,
       headers: {

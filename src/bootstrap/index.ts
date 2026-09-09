@@ -279,10 +279,28 @@ export async function cloneAppRepo(
   // assume a normal checkout, and a detached HEAD would break pushing without failing here.
   const scratchDir = path.join(config.homeDir, '.app-clone');
   await fs.rm(scratchDir, { recursive: true, force: true });
-  log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
-  run(`git clone --depth 1 --no-checkout ${gitRepoUrl} ${scratchDir}`, {
-    label: 'git clone (metadata only)',
-  });
+  // `--branch`, which is what makes the session row's branch and this working tree the same fact
+  // rather than two that happen to agree. It still yields a local branch tracking `origin/<branch>`
+  // rather than a detached HEAD, so everything the comment above depends on holds.
+  //
+  // But the branch may not be ON the remote: somebody can pick a brand new branch in the editor, and
+  // `--branch` fails outright for one that does not exist. So ask first, and clone origin's default
+  // when it is new — the `checkout -b` below then creates it locally, and its first push is what puts
+  // it on the remote (where `postReceive` mints its preview like any other).
+  const wantsBranch = config.gitBranch;
+  const remoteHasBranch = remoteBranchExists(gitRepoUrl, wantsBranch);
+  const branchArg = remoteHasBranch ? ` --branch ${wantsBranch}` : '';
+  log.info(
+    `Cloning ${gitRepoUrl} → ${workspaceDir} (${
+      remoteHasBranch
+        ? wantsBranch
+        : `origin default, then creating ${wantsBranch}`
+    })`,
+  );
+  run(
+    `git clone --depth 1 --no-checkout${branchArg} ${gitRepoUrl} ${scratchDir}`,
+    { label: 'git clone (metadata only)' },
+  );
   // `-T`: treat the destination as the thing to become, not a directory to move into. Without it a
   // pre-existing `.git` in the workspace would silently become `.git/.git` and the reset below would
   // fail somewhere less obvious. Nothing should put one there — this path runs only when there was
@@ -297,6 +315,34 @@ export async function cloneAppRepo(
     cwd: workspaceDir,
     label: 'git reset --hard (materialise tree)',
   });
+
+  // Make this a normal clone's refspec before anything else uses the remote.
+  //
+  // `--depth` implies `--single-branch`, so the clone above wrote
+  // `+refs/heads/<branch>:refs/remotes/origin/<branch>` — one ref, forever. Every other branch is
+  // then invisible in a way that LOOKS like it worked: `git fetch origin main` exits 0, writes
+  // FETCH_HEAD, and never creates `refs/remotes/origin/main`, so the publish flow's
+  // `git merge origin/main` fails with "not something we can merge" no matter how many times it is
+  // retried. And the recovery git's error text invites — `--allow-unrelated-histories` — merges
+  // against an empty base, which silently resurrects deleted files and drops the other publisher's
+  // hunks.
+  //
+  // Widening the refspec fixes it once, here, for every branch this box will ever touch, rather than
+  // asking the agent to remember a longer fetch command. The clone stays shallow; `unshallowAsync`
+  // deepens it in the background, and publish makes sure of it before merging.
+  run('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"', {
+    cwd: workspaceDir,
+    label: 'git config remote.origin.fetch (all branches)',
+  });
+
+  // A branch that does not exist on the remote yet: create it here, off origin's default, which is
+  // the same thing `git checkout -b` on a laptop does before a first push.
+  if (!remoteHasBranch) {
+    run(`git checkout -b ${wantsBranch}`, {
+      cwd: workspaceDir,
+      label: `git checkout -b ${wantsBranch}`,
+    });
+  }
 
   // Verify workspace has a manifest
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
@@ -319,11 +365,120 @@ export async function cloneAppRepo(
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether the remote already has `refs/heads/<branch>`.
+ *
+ * Asked rather than inferred from a flag the platform could send, because the remote is the thing
+ * that actually decides whether `--branch` will work — a flag would be a second copy of that answer,
+ * computed a moment earlier somewhere else. One in-VPC round trip on the cold-boot path only.
+ *
+ * Treats a failure as "no": the clone that follows then uses origin's default, which boots. Assuming
+ * yes would make an unreachable remote into a failed clone and a box that never comes up.
+ */
+function remoteBranchExists(gitRepoUrl: string, branch: string): boolean {
+  try {
+    const out = run(
+      `git ls-remote --heads ${gitRepoUrl} refs/heads/${branch}`,
+      { label: `git ls-remote (${branch})` },
+    );
+    return out.trim().length > 0;
+  } catch (err) {
+    log.warn(
+      `Could not ask the remote about ${branch}: ${err instanceof Error ? err.message : String(err)} — cloning origin's default`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Put a RESTORED workspace on the branch this session was told to boot on.
+ *
+ * Snapshots are keyed per branch, so a restored tree is normally already there and this does
+ * nothing. Two cases where it is not:
+ *
+ *   the branch exists in the restored `.git` but is not checked out. Someone's snapshot was taken
+ *   mid-something; check it out. Warned about, because it means an assumption elsewhere stopped
+ *   holding, and the mismatch costs no error — it just serves a different tree than the platform
+ *   believes it is serving.
+ *
+ *   the branch is not in the restored `.git` at ALL, which is the expected shape of a branch's very
+ *   first boot: the platform seeded it from the default branch's snapshot because the app had no
+ *   per-branch history yet (youai-api `inheritedSnapshot`). Create it here, off exactly what was
+ *   restored — which is what carries the uncommitted work, untracked files and installed
+ *   dependencies over, the same way `git checkout -b` does on a laptop.
+ *
+ * Never fatal, and that is enforced rather than intended: every git call below is guarded, because
+ * the workspace in front of the user is real work and a dirty tree that refuses to check out must
+ * not become a box that never boots.
+ */
+function assertRestoredBranch(config: Config): void {
+  const { workspaceDir, gitBranch } = config;
+  let actual: string;
+  try {
+    actual = run('git rev-parse --abbrev-ref HEAD', {
+      cwd: workspaceDir,
+      label: 'git rev-parse (restored branch)',
+    }).trim();
+  } catch {
+    // A repo with no commits yet, or a `.git` we cannot read. Nothing to align against.
+    return;
+  }
+  if (!actual || actual === gitBranch) {
+    return;
+  }
+
+  // Does the restored `.git` know this branch at all?
+  let exists = false;
+  try {
+    run(`git show-ref --verify --quiet refs/heads/${gitBranch}`, {
+      cwd: workspaceDir,
+      label: `git show-ref (${gitBranch})`,
+    });
+    exists = true;
+  } catch {
+    exists = false;
+  }
+
+  if (exists) {
+    log.warn(
+      `Restored workspace is on "${actual}" but this session is for "${gitBranch}" — checking out ${gitBranch}`,
+    );
+  } else {
+    // Info, not a warning: this is the normal first boot of a branch seeded from another one's
+    // snapshot, and the whole point is that the tree comes with it.
+    log.info(
+      `Restored workspace is on "${actual}" and has no "${gitBranch}" — creating it here, carrying the workspace over`,
+    );
+  }
+
+  // Caught, which is what makes the "never fatal" above true. `run` rethrows, this is called from
+  // `refreshGitRemote` inside the boot try, and the boot catch ends in `process.exit(1)` — so an
+  // unguarded checkout here took the whole box down. Deterministically, too: the same snapshot is
+  // restored on every retry, so it was a crash loop over a workspace holding real uncommitted work.
+  //
+  // And this is the LIKELY failure, not an edge: nothing commits until publish, so a Remy workspace
+  // is almost always dirty, and `git checkout` refuses whenever a modified file differs between the
+  // two branches. Staying on the wrong branch is recoverable — the watcher reports where we actually
+  // are, so the platform follows and the editor says so — whereas not booting strands everything.
+  try {
+    run(`git checkout ${exists ? '' : '-b '}${gitBranch}`, {
+      cwd: workspaceDir,
+      label: `git checkout (${exists ? 'align' : 'create'} ${gitBranch})`,
+    });
+  } catch (err) {
+    log.warn(
+      `Could not move the restored workspace to "${gitBranch}" (staying on "${actual}"): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * Point a restored workspace's `origin` at this session's repo URL and refresh
- * it in the background. The URL embeds a per-session git token and the platform
- * revokes the previous one at each start, so the credential inside a restored
- * `.git/config` is always dead. Best-effort: a workspace without `.git` (the
- * user removed it) is left alone.
+ * it in the background. The URL embeds a per-session git token, and a session's
+ * token is revoked when that session stops, so the credential inside a restored
+ * `.git/config` belongs to a box that is gone. Best-effort: a workspace without
+ * `.git` (the user removed it) is left alone.
  */
 export function refreshGitRemote(config: Config): void {
   const { workspaceDir, gitRepoUrl } = config;
@@ -335,6 +490,14 @@ export function refreshGitRemote(config: Config): void {
     cwd: workspaceDir,
     label: 'git remote set-url',
   });
+  // A restored `.git` carries whatever refspec its original clone wrote, which for anything cloned
+  // with `--depth`/`--branch` is a single branch. Same one-line widening as the fresh-clone path, and
+  // for the same reason: without it `git merge origin/<default>` can never work in this workspace.
+  run('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"', {
+    cwd: workspaceDir,
+    label: 'git config remote.origin.fetch (all branches)',
+  });
+  assertRestoredBranch(config);
   const start = Date.now();
   exec(
     'git fetch origin',
@@ -375,6 +538,73 @@ export function unshallowAsync(workspaceDir: string): void {
         log.info(`git fetch --unshallow completed in ${elapsed}ms`);
       }
     },
+  );
+}
+
+/**
+ * Write one git hook into the workspace repo, executable.
+ *
+ * Rewritten on every boot rather than created if missing: a restored snapshot brings back the
+ * previous session's `.git`, hooks and all, so the one on disk may predate this build. Cheap enough
+ * to be unconditional.
+ *
+ * The explicit `chmod` is the point of having this in one place — `writeFileSync`'s `mode` applies
+ * only when it CREATES the file, so on the restore path (where the hook already exists) the mode is
+ * whatever the snapshot carried, and a hook git cannot execute is a hook that silently does nothing.
+ *
+ * Never fatal. A box that cannot install a hook is still a working box, and both hooks are
+ * conveniences rather than correctness.
+ */
+function writeHook(
+  workspaceDir: string,
+  name: string,
+  script: string,
+): boolean {
+  const hooksDir = path.join(workspaceDir, '.git', 'hooks');
+  if (!fsSync.existsSync(path.join(workspaceDir, '.git'))) {
+    log.warn(`No .git in workspace; skipping ${name} hook`);
+    return false;
+  }
+  const hookPath = path.join(hooksDir, name);
+  try {
+    fsSync.mkdirSync(hooksDir, { recursive: true });
+    fsSync.writeFileSync(hookPath, script, { mode: 0o755 });
+    fsSync.chmodSync(hookPath, 0o755);
+    log.info(`Installed ${name} hook`);
+    return true;
+  } catch (err) {
+    log.warn(
+      `Could not install ${name} hook: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Install the `post-checkout` hook that tells this box's own server HEAD moved.
+ *
+ * The branch a box is on decides which dev release its methods run against, which branch's history
+ * its next snapshot joins, and what the editor previews — and it changes whenever anyone runs
+ * `git checkout`, whether that is the user in a terminal, the agent mid-task, or the platform asking
+ * over `/switch-branch`. This is what makes all three the same event.
+ *
+ * It posts to LOOPBACK and carries no credential, deliberately. Anything else would mean a secret in
+ * a file inside the workspace the agent freely edits; the server accepts this route only from
+ * 127.0.0.1, which is the same trust boundary a hook already sits on. It also cannot fail a
+ * checkout: `|| true` and a hard timeout, because a hook that errors makes git report the checkout
+ * as failed, and the report is not worth costing somebody their branch switch.
+ */
+export function installBranchHook(workspaceDir: string): void {
+  const port = process.env['PORT'] ?? '4387';
+  writeHook(
+    workspaceDir,
+    'post-checkout',
+    `#!/bin/sh
+# Managed by mindstudio-sandbox (bootstrap/installBranchHook). Rewritten on every boot.
+# Tells the local server HEAD moved so it can report the branch to the platform.
+curl -s -m 2 -X POST "http://127.0.0.1:${port}/internal/head-changed" >/dev/null 2>&1 || true
+exit 0
+`,
   );
 }
 
@@ -423,24 +653,21 @@ export function configureGit(workspaceDir: string): void {
     label: 'git config safe.directory',
   });
 
-  // Install commit-msg hook to add Remy as coauthor on all commits
-  const hooksDir = path.join(workspaceDir, '.git', 'hooks');
-  const hookPath = path.join(hooksDir, 'commit-msg');
-  const hook = [
-    '#!/bin/sh',
-    '# Added by sandbox — tag Remy as coauthor on all commits',
-    'if ! grep -q "^Co-Authored-By: Remy" "$1"; then',
-    '  echo "" >> "$1"',
-    '  echo "Co-Authored-By: Remy <remy@mindstudio.ai>" >> "$1"',
-    'fi',
-  ].join('\n');
-  try {
-    fsSync.mkdirSync(hooksDir, { recursive: true });
-    fsSync.writeFileSync(hookPath, hook, { mode: 0o755 });
-    log.info('Installed commit-msg hook (Remy coauthor)');
-  } catch (err) {
-    log.warn(`Failed to install commit-msg hook: ${err}`);
-  }
+  installBranchHook(workspaceDir);
+
+  // Tag Remy as coauthor on every commit made in the box.
+  writeHook(
+    workspaceDir,
+    'commit-msg',
+    [
+      '#!/bin/sh',
+      '# Added by sandbox — tag Remy as coauthor on all commits',
+      'if ! grep -q "^Co-Authored-By: Remy" "$1"; then',
+      '  echo "" >> "$1"',
+      '  echo "Co-Authored-By: Remy <remy@mindstudio.ai>" >> "$1"',
+      'fi',
+    ].join('\n'),
+  );
 }
 
 // ---------------------------------------------------------------------------
