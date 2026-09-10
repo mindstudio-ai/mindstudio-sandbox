@@ -148,6 +148,12 @@ export function startTunnel(
       // and falls through to the user-browser path if Chrome isn't
       // available in the container.
       '--sandbox-browser',
+      // Which of this person's two dev workspaces the platform files this session under: the box,
+      // not their laptop. Without it a developer with a local `mindstudio dev` running would share
+      // one dev release, one data plane and one poll queue with their box, and the two would race
+      // for every request. See `getDevRelease` in youai-api.
+      '--dev-origin',
+      'sandbox',
       '--log-level',
       'info',
     ],

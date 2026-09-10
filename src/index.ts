@@ -67,7 +67,6 @@ import {
 import { createLogger, onLog } from './logger.js';
 import { bootPhase } from './bootProgress.js';
 import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.js';
-import { BranchWatcher } from './projectStatus/BranchWatcher.js';
 import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.js';
 import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
 import {
@@ -414,38 +413,9 @@ async function main(): Promise<void> {
 
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
-  // Constructed before the snapshot manager because the snapshot manager reads from it: which branch
-  // a snapshot belongs to is whatever HEAD says at the moment of the write, and this is what knows.
-  // Not STARTED here — the workspace has no `.git` until bootstrap has run, so it begins below.
-  const branchWatcher = new BranchWatcher({
-    workspaceDir: config.workspaceDir,
-    appId: config.appId,
-    sessionId: config.sessionId,
-    apiKey: config.apiKey,
-    apiBaseUrl: config.apiBaseUrl,
-    initialBranch: config.gitBranch,
-    sandboxToken: config.sandboxToken,
-    // The agent checks out mid-task and a user can in the terminal, so the editor is told rather
-    // than left to notice on its next reconnect.
-    //
-    // And the tunnel is restarted, which is what makes the DEV RELEASE follow the branch. It
-    // registers its dev session once at startup from the branch it finds, and nothing else
-    // re-registers it — so without this the platform's row says one branch while the tunnel keeps
-    // serving the previous branch's compiled methods and its databases. On restart it resumes that
-    // branch's dev release, or creates one with its own databases if the branch has never had a
-    // session. Fire-and-forget: a restart that fails leaves the tunnel's own crash supervision to
-    // it, and the branch report has already landed.
-    onChange: (branch) => {
-      broadcast('branchChanged', { branch });
-      log.info(`Restarting the tunnel so its dev release follows ${branch}`);
-      void managers.processManager
-        .restart('tunnel')
-        .catch((err) =>
-          log.warn(`Tunnel restart after a branch change failed: ${err}`),
-        );
-    },
-  });
-  ctx.branchWatcher = branchWatcher;
+  // A `BranchWatcher` sat here, polling HEAD and reporting it upstream so the platform's record,
+  // the dev release and the next snapshot all followed a checkout. Nothing keys on the branch now,
+  // so a checkout is local to this box and the tunnel keeps its own dev release across one.
   const snapshotManager = new HomeSnapshotManager({
     homeDir: config.homeDir,
     workspaceDir: config.workspaceDir,
@@ -453,7 +423,6 @@ async function main(): Promise<void> {
     sessionId: config.sessionId,
     apiBaseUrl: config.apiBaseUrl,
     apiKey: config.apiKey,
-    getBranch: () => branchWatcher.current,
     // Health transitions (uploads failing / recovered / fenced) go straight to
     // editor clients so "your work isn't backed up" is visible, not a counter
     // nobody polls.
@@ -520,7 +489,6 @@ async function main(): Promise<void> {
     ]);
     log.info(`Shutdown snapshot: ${outcome}`);
     snapshotManager.stop();
-    branchWatcher.stop();
     closeAllPty();
     stopWatcher();
     await managers.processManager.stopAll();
@@ -661,9 +629,6 @@ async function main(): Promise<void> {
     // to reopen against the live inode.
     managers.registry.closeAllLogStreams();
     snapshotManager.markBooted();
-    // After `configureGit`, which installs the `post-checkout` hook — so the first thing the watcher
-    // does (report HEAD) describes a workspace whose hook is already armed for the next checkout.
-    branchWatcher.start();
 
     // The restore's own counters have stopped by here. `resumed` is an in-place server restart on a
     // box whose filesystem never went away, and saying "restored" for it would be a small lie in

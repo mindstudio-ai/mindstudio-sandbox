@@ -279,28 +279,15 @@ export async function cloneAppRepo(
   // assume a normal checkout, and a detached HEAD would break pushing without failing here.
   const scratchDir = path.join(config.homeDir, '.app-clone');
   await fs.rm(scratchDir, { recursive: true, force: true });
-  // `--branch`, which is what makes the session row's branch and this working tree the same fact
-  // rather than two that happen to agree. It still yields a local branch tracking `origin/<branch>`
-  // rather than a detached HEAD, so everything the comment above depends on holds.
-  //
-  // But the branch may not be ON the remote: somebody can pick a brand new branch in the editor, and
-  // `--branch` fails outright for one that does not exist. So ask first, and clone origin's default
-  // when it is new — the `checkout -b` below then creates it locally, and its first push is what puts
-  // it on the remote (where `postReceive` mints its preview like any other).
-  const wantsBranch = config.gitBranch;
-  const remoteHasBranch = remoteBranchExists(gitRepoUrl, wantsBranch);
-  const branchArg = remoteHasBranch ? ` --branch ${wantsBranch}` : '';
-  log.info(
-    `Cloning ${gitRepoUrl} → ${workspaceDir} (${
-      remoteHasBranch
-        ? wantsBranch
-        : `origin default, then creating ${wantsBranch}`
-    })`,
-  );
-  run(
-    `git clone --depth 1 --no-checkout${branchArg} ${gitRepoUrl} ${scratchDir}`,
-    { label: 'git clone (metadata only)' },
-  );
+  // Origin's default branch, like any clone. The platform used to name one with `--branch` (a
+  // per-person `user/{id}` ref, created here when it did not exist yet) because a branch keyed the
+  // box, its snapshots and its dev release. It keys none of them now, so where this box goes from
+  // here is git's business: the agent creates and switches branches when somebody asks, and nothing
+  // upstream has to be told.
+  log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
+  run(`git clone --depth 1 --no-checkout ${gitRepoUrl} ${scratchDir}`, {
+    label: 'git clone (metadata only)',
+  });
   // `-T`: treat the destination as the thing to become, not a directory to move into. Without it a
   // pre-existing `.git` in the workspace would silently become `.git/.git` and the reset below would
   // fail somewhere less obvious. Nothing should put one there — this path runs only when there was
@@ -335,15 +322,6 @@ export async function cloneAppRepo(
     label: 'git config remote.origin.fetch (all branches)',
   });
 
-  // A branch that does not exist on the remote yet: create it here, off origin's default, which is
-  // the same thing `git checkout -b` on a laptop does before a first push.
-  if (!remoteHasBranch) {
-    run(`git checkout -b ${wantsBranch}`, {
-      cwd: workspaceDir,
-      label: `git checkout -b ${wantsBranch}`,
-    });
-  }
-
   // Verify workspace has a manifest
   const manifestPath = path.join(workspaceDir, 'mindstudio.json');
   try {
@@ -364,114 +342,12 @@ export async function cloneAppRepo(
 // Git configuration
 // ---------------------------------------------------------------------------
 
-/**
- * Whether the remote already has `refs/heads/<branch>`.
- *
- * Asked rather than inferred from a flag the platform could send, because the remote is the thing
- * that actually decides whether `--branch` will work — a flag would be a second copy of that answer,
- * computed a moment earlier somewhere else. One in-VPC round trip on the cold-boot path only.
- *
- * Treats a failure as "no": the clone that follows then uses origin's default, which boots. Assuming
- * yes would make an unreachable remote into a failed clone and a box that never comes up.
- */
-function remoteBranchExists(gitRepoUrl: string, branch: string): boolean {
-  try {
-    const out = run(
-      `git ls-remote --heads ${gitRepoUrl} refs/heads/${branch}`,
-      { label: `git ls-remote (${branch})` },
-    );
-    return out.trim().length > 0;
-  } catch (err) {
-    log.warn(
-      `Could not ask the remote about ${branch}: ${err instanceof Error ? err.message : String(err)} — cloning origin's default`,
-    );
-    return false;
-  }
-}
-
-/**
- * Put a RESTORED workspace on the branch this session was told to boot on.
- *
- * Snapshots are keyed per branch, so a restored tree is normally already there and this does
- * nothing. Two cases where it is not:
- *
- *   the branch exists in the restored `.git` but is not checked out. Someone's snapshot was taken
- *   mid-something; check it out. Warned about, because it means an assumption elsewhere stopped
- *   holding, and the mismatch costs no error — it just serves a different tree than the platform
- *   believes it is serving.
- *
- *   the branch is not in the restored `.git` at ALL, which is the expected shape of a branch's very
- *   first boot: the platform seeded it from the default branch's snapshot because the app had no
- *   per-branch history yet (youai-api `inheritedSnapshot`). Create it here, off exactly what was
- *   restored — which is what carries the uncommitted work, untracked files and installed
- *   dependencies over, the same way `git checkout -b` does on a laptop.
- *
- * Never fatal, and that is enforced rather than intended: every git call below is guarded, because
- * the workspace in front of the user is real work and a dirty tree that refuses to check out must
- * not become a box that never boots.
- */
-function assertRestoredBranch(config: Config): void {
-  const { workspaceDir, gitBranch } = config;
-  let actual: string;
-  try {
-    actual = run('git rev-parse --abbrev-ref HEAD', {
-      cwd: workspaceDir,
-      label: 'git rev-parse (restored branch)',
-    }).trim();
-  } catch {
-    // A repo with no commits yet, or a `.git` we cannot read. Nothing to align against.
-    return;
-  }
-  if (!actual || actual === gitBranch) {
-    return;
-  }
-
-  // Does the restored `.git` know this branch at all?
-  let exists = false;
-  try {
-    run(`git show-ref --verify --quiet refs/heads/${gitBranch}`, {
-      cwd: workspaceDir,
-      label: `git show-ref (${gitBranch})`,
-    });
-    exists = true;
-  } catch {
-    exists = false;
-  }
-
-  if (exists) {
-    log.warn(
-      `Restored workspace is on "${actual}" but this session is for "${gitBranch}" — checking out ${gitBranch}`,
-    );
-  } else {
-    // Info, not a warning: this is the normal first boot of a branch seeded from another one's
-    // snapshot, and the whole point is that the tree comes with it.
-    log.info(
-      `Restored workspace is on "${actual}" and has no "${gitBranch}" — creating it here, carrying the workspace over`,
-    );
-  }
-
-  // Caught, which is what makes the "never fatal" above true. `run` rethrows, this is called from
-  // `refreshGitRemote` inside the boot try, and the boot catch ends in `process.exit(1)` — so an
-  // unguarded checkout here took the whole box down. Deterministically, too: the same snapshot is
-  // restored on every retry, so it was a crash loop over a workspace holding real uncommitted work.
-  //
-  // And this is the LIKELY failure, not an edge: nothing commits until publish, so a Remy workspace
-  // is almost always dirty, and `git checkout` refuses whenever a modified file differs between the
-  // two branches. Staying on the wrong branch is recoverable — the watcher reports where we actually
-  // are, so the platform follows and the editor says so — whereas not booting strands everything.
-  try {
-    run(`git checkout ${exists ? '' : '-b '}${gitBranch}`, {
-      cwd: workspaceDir,
-      label: `git checkout (${exists ? 'align' : 'create'} ${gitBranch})`,
-    });
-  } catch (err) {
-    log.warn(
-      `Could not move the restored workspace to "${gitBranch}" (staying on "${actual}"): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}
+// A restored workspace is left on whatever branch it was on, which is the same answer git gives
+// anywhere: your tree comes back as you left it. `assertRestoredBranch` used to force it onto the
+// branch the platform had told this session to be on — necessary while snapshots were keyed per
+// branch, and the source of its own hazard, since nothing commits until publish so a Remy workspace
+// is almost always dirty and `git checkout` refuses whenever a modified file differs between the
+// two. Snapshots are keyed per PERSON now, so there is nothing to align to.
 
 /**
  * Point a restored workspace's `origin` at this session's repo URL and refresh
@@ -497,7 +373,6 @@ export function refreshGitRemote(config: Config): void {
     cwd: workspaceDir,
     label: 'git config remote.origin.fetch (all branches)',
   });
-  assertRestoredBranch(config);
   const start = Date.now();
   exec(
     'git fetch origin',
@@ -580,33 +455,11 @@ function writeHook(
   }
 }
 
-/**
- * Install the `post-checkout` hook that tells this box's own server HEAD moved.
- *
- * The branch a box is on decides which dev release its methods run against, which branch's history
- * its next snapshot joins, and what the editor previews — and it changes whenever anyone runs
- * `git checkout`, whether that is the user in a terminal, the agent mid-task, or the platform asking
- * over `/switch-branch`. This is what makes all three the same event.
- *
- * It posts to LOOPBACK and carries no credential, deliberately. Anything else would mean a secret in
- * a file inside the workspace the agent freely edits; the server accepts this route only from
- * 127.0.0.1, which is the same trust boundary a hook already sits on. It also cannot fail a
- * checkout: `|| true` and a hard timeout, because a hook that errors makes git report the checkout
- * as failed, and the report is not worth costing somebody their branch switch.
- */
-export function installBranchHook(workspaceDir: string): void {
-  const port = process.env['PORT'] ?? '4387';
-  writeHook(
-    workspaceDir,
-    'post-checkout',
-    `#!/bin/sh
-# Managed by mindstudio-sandbox (bootstrap/installBranchHook). Rewritten on every boot.
-# Tells the local server HEAD moved so it can report the branch to the platform.
-curl -s -m 2 -X POST "http://127.0.0.1:${port}/internal/head-changed" >/dev/null 2>&1 || true
-exit 0
-`,
-  );
-}
+// A `post-checkout` hook lived here, posting to this box's own server so it could report HEAD to the
+// platform: the branch decided which dev release methods ran against, which history the next
+// snapshot joined, and what the editor previewed, so every checkout had to be an event. None of
+// those hang off the branch now — a box, its snapshots and its dev release are keyed on the person —
+// so a checkout is just a checkout and nothing has to hear about it.
 
 export function configureGit(workspaceDir: string): void {
   const metadataEnv: {
@@ -652,8 +505,6 @@ export function configureGit(workspaceDir: string): void {
   run('git config --global safe.directory "*"', {
     label: 'git config safe.directory',
   });
-
-  installBranchHook(workspaceDir);
 
   // Tag Remy as coauthor on every commit made in the box.
   writeHook(

@@ -267,84 +267,11 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    // POST /switch-branch — the platform asking this box to check a branch out.
-    //
-    // Token-gated for the same reason `/flush` is: this port is also what the public preview host
-    // reaches, and neither route is on the sandbox-proxy's control-path list, so without the check
-    // anything running in a user's own preview could move their working tree.
-    //
-    // The platform does not write the branch itself — this runs the checkout and the watcher reports
-    // where HEAD ended up, which is the same road a person typing `git switch` in the terminal takes.
-    if (
-      req.method === 'POST' &&
-      new URL(req.url ?? '/', 'http://localhost').pathname === '/switch-branch'
-    ) {
-      if (!verifyTokenStrict(req.url)) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unauthorized' }));
-        return;
-      }
-      const watcher = ctx.branchWatcher;
-      if (!watcher) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'not_ready' }));
-        return;
-      }
-      readJsonBody(req)
-        .then((body) => {
-          const branch = (body as { branch?: unknown }).branch;
-          if (typeof branch !== 'string' || !branch) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'invalid_branch' }));
-            return;
-          }
-          return watcher.checkout(branch).then((outcome) => {
-            res.writeHead(outcome.ok ? 200 : 500, {
-              'Content-Type': 'application/json',
-            });
-            res.end(JSON.stringify(outcome));
-          });
-        })
-        .catch((err) => {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        });
-      return;
-    }
-
-    // POST /internal/head-changed — the workspace's `post-checkout` hook, telling us HEAD moved.
-    //
-    // Loopback ONLY, and no token: the hook is a shell script git runs, and handing it a credential
-    // to hold would put the box's own token in a file inside the workspace the agent edits. Binding
-    // to the loopback address instead means the only thing that can reach this is a process already
-    // inside the box — which is exactly the trust boundary the hook sits on.
-    if (
-      req.method === 'POST' &&
-      new URL(req.url ?? '/', 'http://localhost').pathname ===
-        '/internal/head-changed'
-    ) {
-      const remote = req.socket.remoteAddress ?? '';
-      if (
-        remote !== '127.0.0.1' &&
-        remote !== '::1' &&
-        remote !== '::ffff:127.0.0.1'
-      ) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'forbidden' }));
-        return;
-      }
-      // Answered immediately: git is waiting on this hook, and a checkout should not sit behind a
-      // round trip to the platform. The report is the watcher's business, not the hook's.
-      res.writeHead(202, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-      void ctx.branchWatcher?.poke();
-      return;
-    }
+    // `POST /switch-branch` and `POST /internal/head-changed` lived here: the platform asking this
+    // box to check a branch out, and the workspace's `post-checkout` hook telling the box HEAD had
+    // moved so it could report upstream. Both existed because the branch keyed the box, its
+    // snapshots and its dev release. It keys none of them now, so a checkout is a local git
+    // operation the agent performs and nobody outside the box needs to know about.
 
     const proxy = getProxy();
     if (!proxy) {
