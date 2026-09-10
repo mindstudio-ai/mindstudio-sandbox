@@ -267,12 +267,6 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    // `POST /switch-branch` and `POST /internal/head-changed` lived here: the platform asking this
-    // box to check a branch out, and the workspace's `post-checkout` hook telling the box HEAD had
-    // moved so it could report upstream. Both existed because the branch keyed the box, its
-    // snapshots and its dev release. It keys none of them now, so a checkout is a local git
-    // operation the agent performs and nobody outside the box needs to know about.
-
     const proxy = getProxy();
     if (!proxy) {
       sendPreviewPlaceholder(req, res, 'starting');

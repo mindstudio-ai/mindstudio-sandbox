@@ -121,11 +121,11 @@ function verifyToken(url: string | undefined): boolean {
 /**
  * The same check, but with no token configured meaning NO.
  *
- * For the two routes that change something — `/flush` drives the platform's snapshot machinery and
- * `/switch-branch` moves the working tree over uncommitted work. This port is also what the public
- * preview host reaches, so failing open on them meant that on any box booted without the env var,
- * anyone with a shared preview URL — or any script running in the app under development — could
- * check out over somebody's work. A read is worth relaxing for local convenience; a write is not.
+ * For the routes that change something — `/flush` drives the platform's snapshot machinery. This
+ * port is also what the public preview host reaches, so failing open meant that on any box booted
+ * without the env var, anyone with a shared preview URL — or any script running in the app under
+ * development — could drive that machinery over somebody's work. A read is worth relaxing for local
+ * convenience; a write is not.
  */
 function verifyTokenStrict(url: string | undefined): boolean {
   return !!sandboxToken && verifyToken(url);

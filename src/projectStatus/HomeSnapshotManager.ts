@@ -865,12 +865,12 @@ export class HomeSnapshotManager {
     }
   }
 
-  /** The current snapshot for THIS BOX'S BRANCH, null when that branch has none
+  /** The current snapshot for THIS BOX'S OWNER, null when they have none yet
    * (clone instead), 'error' when youai-api could not be asked after retries.
    *
-   * The session id is what names the branch: an app can hold a box per branch,
-   * and the platform resolves ours from the session row it gave us rather than
-   * from anything we could claim about our own workspace. */
+   * The session id is all we send: an app can hold a box per person, and the
+   * platform resolves whose this is from the session row it gave us rather than
+   * from anything we could claim about ourselves. */
   private async fetchCurrentWithRetry(): Promise<
     CurrentSnapshot | null | 'error'
   > {
