@@ -27,6 +27,16 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  * `displayText` (the copy to render, with `[label](suggest:…)` chip links
  * removed) and `suggestions` reach the editor without a change here.
  */
+/**
+ * Sentinels remy sweeps into a turn as hidden context rather than as anything a
+ * person said or asked for. They carry no pill and no bubble, so passing them
+ * through would render raw envelope markup in the transcript.
+ */
+const INTERNAL_SWEEP_SENTINELS = [
+  '@@automated::background_results@@',
+  '@@automated::workspace_status@@',
+];
+
 export function transformHistory(
   raw: unknown[],
   parentToolId?: string,
@@ -47,13 +57,14 @@ export function transformHistory(
     }
 
     if (m.role === 'user') {
-      // Hidden passive background sweeps are internal plumbing — never shown.
-      // Targeted on the background_results sentinel: hidden user messages in
+      // Hidden passive sweeps are internal plumbing — never shown. Targeted on
+      // the specific sentinels rather than on `hidden`: hidden user messages in
       // general still pass through (legacy runCommand pills render off them).
+      const content = m.content;
       if (
         m.hidden &&
-        typeof m.content === 'string' &&
-        m.content.startsWith('@@automated::background_results@@')
+        typeof content === 'string' &&
+        INTERNAL_SWEEP_SENTINELS.some((s) => content.startsWith(s))
       ) {
         continue;
       }
