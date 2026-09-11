@@ -1,0 +1,119 @@
+name: Release
+
+# Merge = release. The version in package.json IS the trigger: land a PR that bumps it, and merging
+# publishes. Nothing to click afterwards, and no bot commit pushed back to main — the version is
+# already there, reviewed, in the same diff as the code it describes.
+#
+# `check-version` is what makes running on every push safe: a merge that did not move the version is
+# a no-op rather than a failed publish. A missed bump is caught earlier, on the PR, by
+# pr-checks.yml's `version-bumped` job; this gate is the backstop for anything that reaches main
+# another way.
+#
+# `workflow_dispatch` stays as a manual escape hatch and deliberately bypasses the gate, so
+# dispatching with nothing to release fails loudly at `npm publish` (E403) instead of quietly
+# doing nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# `id-token: write` is the npm CREDENTIAL — do not remove it as leftover provenance plumbing.
+# There is no NODE_AUTH_TOKEN or NPM_TOKEN anywhere in this repo: publishing goes through npm's
+# OIDC trusted publishing, which mints the credential from this token (and adds provenance
+# implicitly, which is why there is no explicit `--provenance` flag). Without it `npm publish`
+# fails as `E404 Not Found - PUT https://registry.npmjs.org/@scope%2fname`, because the registry
+# answers 404 rather than 401 for an unauthorized write to a scoped package.
+#
+# `contents: write` is for pushing the tag.
+permissions:
+  id-token: write
+  contents: write
+
+# Never cancel. Two merges landing close together are two DIFFERENT versions (pr-checks.yml
+# guarantees the second is strictly greater), so both have to publish — and interrupting a release
+# mid-flight leaves npm, the git tag and the GitHub release disagreeing about what shipped.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version is read ONCE, here, and every job below consumes this output — the npm publish,
+      # the git tag and the GitHub release title, which have to agree.
+      - name: Check if version is already published
+        id: check
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view @madewithremy/sandbox version 2>/dev/null || echo "0.0.0")
+          echo "version=${LOCAL_VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "$LOCAL_VERSION" != "$PUBLISHED" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Version $LOCAL_VERSION not yet published (npm has $PUBLISHED)"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Version $LOCAL_VERSION already published, skipping release"
+          fi
+
+  publish-npm:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci --ignore-scripts
+
+      # `build` is `tsc`, which typechecks as it emits, so this is not strictly a separate gate —
+      # but it is the fast no-emit form and it keeps this workflow identical to the other three.
+      - run: npm run typecheck
+
+      # Kept even though `prepublishOnly` would build anyway: failing here points at the build,
+      # rather than surfacing as a failure inside `npm publish`. And `files: ["dist"]` means an
+      # unbuilt tree would publish an empty package.
+      - run: npm run build
+
+      - run: npm publish --access public
+
+      # Tag only — under merge = release the version is already on main, so there is nothing to
+      # commit. Tagged after the publish so a tag only ever names something that reached npm.
+      #
+      # continue-on-error because the package is already live by this point, and failing the job
+      # would skip `release` below. `gh release create` recreates the tag if it is missing. The step
+      # still shows as failed in the run, so it stays visible.
+      - name: Tag the release
+        continue-on-error: true
+        run: |
+          VERSION="v${{ needs.check-version.outputs.version }}"
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+  release:
+    needs: [check-version, publish-npm]
+    runs-on: ubuntu-latest
+    steps:
+      # `gh` resolves the repository from the git remote, so the checkout is load-bearing here.
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ needs.check-version.outputs.version }}"
+
+          # The tag already exists — publish-npm created it once the package was live.
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes

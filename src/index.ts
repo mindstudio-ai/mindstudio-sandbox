@@ -1,3 +1,7 @@
+#!/usr/bin/env node
+// The shebang is what makes the `remy-sandbox` bin work: npm symlinks the bin name straight at this
+// emitted file and sets the executable bit, so without an interpreter line the kernel hands it to
+// /bin/sh, which fails on the first `import`. tsc preserves a leading shebang into the emit.
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';

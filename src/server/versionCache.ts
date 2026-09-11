@@ -2,10 +2,21 @@
  * Caches binary versions at boot so /status doesn't shell out per request.
  */
 
+import { createRequire } from 'node:module';
+
 import { createLogger } from '../logger.js';
 import { findGlobalPackage } from '../utils/globalPackages.js';
 
 const log = createLogger('versions');
+
+// Our own version, read from package.json rather than restated as a literal — this used to be a
+// hardcoded '0.1.0' that happened to agree with package.json and would have silently diverged the
+// first time the package was released. `../../package.json` resolves to the package root from both
+// dist/server/ (published) and src/server/ (tsx dev), and npm always ships package.json in the
+// tarball regardless of the `files` list.
+const ownVersion: string = (
+  createRequire(import.meta.url)('../../package.json') as { version: string }
+).version;
 
 interface BinaryInfo {
   version: string;
@@ -23,7 +34,7 @@ interface Versions {
 
 const cached: Versions = {
   node: process.version,
-  sandbox: '0.1.0',
+  sandbox: ownVersion,
   remy: {
     version: 'unknown',
     devBranch: process.env['AGENT_DEV_BRANCH'] ?? null,
