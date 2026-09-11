@@ -14,11 +14,10 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  *
  * What we do:
  *   1. Drop user tool-result messages (results are already on the tool blocks)
- *   2. Pass through hidden user messages (@@automated prefixed — frontend matches by sentinel)
- *   3. Drop hidden assistant messages (internal prompts)
- *   4. Filter out server-handled tools (editsFinished, markBuildComplete, etc.)
- *   5. Recurse into subAgentMessages on tool blocks
- *   6. Preserve per-message model attribution (`model`, `modelOverride`)
+ *   2. Drop every `hidden` message, whatever its role — internal plumbing
+ *   3. Filter out server-handled tools (editsFinished, markBuildComplete, etc.)
+ *   4. Recurse into subAgentMessages on tool blocks
+ *   5. Preserve per-message model attribution (`model`, `modelOverride`)
  *
  * Note the assistant envelope is rebuilt field-by-field rather than spread, to
  * keep remy's internal fields out of the frontend payload. Anything new that
@@ -27,16 +26,6 @@ import { SERVER_HANDLED_TOOLS } from './index.js';
  * `displayText` (the copy to render, with `[label](suggest:…)` chip links
  * removed) and `suggestions` reach the editor without a change here.
  */
-/**
- * Sentinels remy sweeps into a turn as hidden context rather than as anything a
- * person said or asked for. They carry no pill and no bubble, so passing them
- * through would render raw envelope markup in the transcript.
- */
-const INTERNAL_SWEEP_SENTINELS = [
-  '@@automated::background_results@@',
-  '@@automated::workspace_status@@',
-];
-
 export function transformHistory(
   raw: unknown[],
   parentToolId?: string,
@@ -51,23 +40,20 @@ export function transformHistory(
       continue;
     }
 
-    // Skip hidden assistant messages (internal prompts)
-    if (m.hidden && m.role !== 'user') {
+    // Hidden means internal plumbing, whoever it is attributed to — never shown.
+    //
+    // Blanket, including user-role messages, which is what the live path already does (the editor
+    // drops `hidden` on the `agentUserMessage` event), so this keeps a reload rendering the same
+    // transcript as the session that produced it. Everything wearing the flag is machinery: the
+    // platform's passive sweeps (background results, the workspace-behind note) and the loop
+    // guard's nudges, which are instructions to the model and read absurdly as something a person
+    // said. Automated actions are NOT hidden — the editor renders those as pills off their
+    // `@@automated::` prefix — so suppressing by the flag cannot swallow one.
+    if (m.hidden) {
       continue;
     }
 
     if (m.role === 'user') {
-      // Hidden passive sweeps are internal plumbing — never shown. Targeted on
-      // the specific sentinels rather than on `hidden`: hidden user messages in
-      // general still pass through (legacy runCommand pills render off them).
-      const content = m.content;
-      if (
-        m.hidden &&
-        typeof content === 'string' &&
-        INTERNAL_SWEEP_SENTINELS.some((s) => content.startsWith(s))
-      ) {
-        continue;
-      }
       const userMsg: Record<string, unknown> = {
         role: 'user',
         content: m.content,
