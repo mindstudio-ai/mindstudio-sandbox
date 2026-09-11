@@ -1,8 +1,22 @@
 {
-  "name": "@mindstudio/sandbox-server",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@madewithremy/sandbox",
+  "version": "0.1.1",
+  "description": "Command-and-control server for Remy dev sandboxes",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mindstudio-ai/mindstudio-sandbox.git"
+  },
   "type": "module",
+  "bin": {
+    "remy-sandbox": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -10,11 +24,12 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx --env-file=.env src/index.ts",
+    "typecheck": "tsc --noEmit",
     "lint:fix": "prettier --write ./src",
-    "prepare": "husky"
+    "prepare": "husky",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@mindstudio-ai/agent": "^0.1.124",
     "chokidar": "^5.0.0",
     "http-proxy": "^1.18.1",
     "json5": "^2.2.3",
@@ -38,7 +53,6 @@
   "allowScripts": {
     "node-pty@1.1.0": true,
     "esbuild@0.27.7": true,
-    "@mindstudio-ai/agent@0.1.118": true,
     "fsevents@2.3.3": true
   }
 }

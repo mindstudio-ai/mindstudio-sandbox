@@ -16,6 +16,16 @@ const log = createLogger('spec-tree');
 
 const REBUILD_DEBOUNCE_MS = 50;
 
+/**
+ * How much of a markdown file to read looking for its frontmatter block.
+ *
+ * Has to clear the largest real block by a margin: a block that overruns the
+ * window has no closing fence in view, so the file silently loses EVERY field
+ * rather than losing one. Real roadmap items (long quoted names plus a
+ * paragraph-length description) have been measured up to ~850 bytes.
+ */
+const FRONTMATTER_HEAD_BYTES = 2048;
+
 export interface SpecFileTreeManagerOpts {
   workspaceDir: string;
   onChange: (tree: TreeEntry[]) => void;
@@ -83,15 +93,26 @@ export class SpecFileTreeManager {
    * Parse YAML frontmatter from a markdown file.
    * Returns null if no frontmatter block found.
    * Uses lightweight line-by-line parsing (no YAML library dependency).
+   *
+   * Two sibling implementations must stay in sync with these semantics:
+   *   - remy-frontend `app/resources/helpers/parseFrontmatter.ts`
+   *   - youai-api `src/common/Db/v2Apps/_helpers/presentationArtifacts.ts`
+   *     (`parseFrontmatter`)
+   * Separate repos, so the code can't be shared. Change all three together.
    */
   private async readFrontmatter(
     fullPath: string,
   ): Promise<Record<string, unknown> | null> {
     try {
-      // Read just the first 1KB — frontmatter is always at the top
+      // Frontmatter is always at the top, so only the head is read.
       const handle = await fs.open(fullPath, 'r');
-      const buf = Buffer.alloc(1024);
-      const { bytesRead } = await handle.read(buf, 0, 1024, 0);
+      const buf = Buffer.alloc(FRONTMATTER_HEAD_BYTES);
+      const { bytesRead } = await handle.read(
+        buf,
+        0,
+        FRONTMATTER_HEAD_BYTES,
+        0,
+      );
       await handle.close();
       const head = buf.toString('utf-8', 0, bytesRead);
 
@@ -134,6 +155,13 @@ export class SpecFileTreeManager {
               .split(',')
               .map((s) => s.trim().replace(/^["']|["']$/g, ''))
               .filter(Boolean);
+          } else {
+            // Scalar. Anything containing a colon gets quoted by whoever
+            // authored it (`name: "Registry: Phase 2"`), and the quotes are
+            // not part of the value — without this they reach the UI verbatim.
+            value = (value as string)
+              .replace(/^"(.*)"$/s, '$1')
+              .replace(/^'(.*)'$/s, '$1');
           }
         }
 
