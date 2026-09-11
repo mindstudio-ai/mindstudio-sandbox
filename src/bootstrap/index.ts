@@ -279,6 +279,11 @@ export async function cloneAppRepo(
   // assume a normal checkout, and a detached HEAD would break pushing without failing here.
   const scratchDir = path.join(config.homeDir, '.app-clone');
   await fs.rm(scratchDir, { recursive: true, force: true });
+  // Origin's default branch, like any clone. The platform used to name one with `--branch` (a
+  // per-person `user/{id}` ref, created here when it did not exist yet) because a branch keyed the
+  // box, its snapshots and its dev release. It keys none of them now, so where this box goes from
+  // here is git's business: the agent creates and switches branches when somebody asks, and nothing
+  // upstream has to be told.
   log.info(`Cloning ${gitRepoUrl} → ${workspaceDir}`);
   run(`git clone --depth 1 --no-checkout ${gitRepoUrl} ${scratchDir}`, {
     label: 'git clone (metadata only)',
@@ -296,6 +301,25 @@ export async function cloneAppRepo(
   run('git reset --hard HEAD', {
     cwd: workspaceDir,
     label: 'git reset --hard (materialise tree)',
+  });
+
+  // Make this a normal clone's refspec before anything else uses the remote.
+  //
+  // `--depth` implies `--single-branch`, so the clone above wrote
+  // `+refs/heads/<branch>:refs/remotes/origin/<branch>` — one ref, forever. Every other branch is
+  // then invisible in a way that LOOKS like it worked: `git fetch origin main` exits 0, writes
+  // FETCH_HEAD, and never creates `refs/remotes/origin/main`, so the publish flow's
+  // `git merge origin/main` fails with "not something we can merge" no matter how many times it is
+  // retried. And the recovery git's error text invites — `--allow-unrelated-histories` — merges
+  // against an empty base, which silently resurrects deleted files and drops the other publisher's
+  // hunks.
+  //
+  // Widening the refspec fixes it once, here, for every branch this box will ever touch, rather than
+  // asking the agent to remember a longer fetch command. The clone stays shallow; `unshallowAsync`
+  // deepens it in the background, and publish makes sure of it before merging.
+  run('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"', {
+    cwd: workspaceDir,
+    label: 'git config remote.origin.fetch (all branches)',
   });
 
   // Verify workspace has a manifest
@@ -318,12 +342,19 @@ export async function cloneAppRepo(
 // Git configuration
 // ---------------------------------------------------------------------------
 
+// A restored workspace is left on whatever branch it was on, which is the same answer git gives
+// anywhere: your tree comes back as you left it. `assertRestoredBranch` used to force it onto the
+// branch the platform had told this session to be on — necessary while snapshots were keyed per
+// branch, and the source of its own hazard, since nothing commits until publish so a Remy workspace
+// is almost always dirty and `git checkout` refuses whenever a modified file differs between the
+// two. Snapshots are keyed per PERSON now, so there is nothing to align to.
+
 /**
  * Point a restored workspace's `origin` at this session's repo URL and refresh
- * it in the background. The URL embeds a per-session git token and the platform
- * revokes the previous one at each start, so the credential inside a restored
- * `.git/config` is always dead. Best-effort: a workspace without `.git` (the
- * user removed it) is left alone.
+ * it in the background. The URL embeds a per-session git token, and a session's
+ * token is revoked when that session stops, so the credential inside a restored
+ * `.git/config` belongs to a box that is gone. Best-effort: a workspace without
+ * `.git` (the user removed it) is left alone.
  */
 export function refreshGitRemote(config: Config): void {
   const { workspaceDir, gitRepoUrl } = config;
@@ -334,6 +365,13 @@ export function refreshGitRemote(config: Config): void {
   run(`git remote set-url origin ${gitRepoUrl}`, {
     cwd: workspaceDir,
     label: 'git remote set-url',
+  });
+  // A restored `.git` carries whatever refspec its original clone wrote, which for anything cloned
+  // with `--depth`/`--branch` is a single branch. Same one-line widening as the fresh-clone path, and
+  // for the same reason: without it `git merge origin/<default>` can never work in this workspace.
+  run('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"', {
+    cwd: workspaceDir,
+    label: 'git config remote.origin.fetch (all branches)',
   });
   const start = Date.now();
   exec(
@@ -377,6 +415,51 @@ export function unshallowAsync(workspaceDir: string): void {
     },
   );
 }
+
+/**
+ * Write one git hook into the workspace repo, executable.
+ *
+ * Rewritten on every boot rather than created if missing: a restored snapshot brings back the
+ * previous session's `.git`, hooks and all, so the one on disk may predate this build. Cheap enough
+ * to be unconditional.
+ *
+ * The explicit `chmod` is the point of having this in one place — `writeFileSync`'s `mode` applies
+ * only when it CREATES the file, so on the restore path (where the hook already exists) the mode is
+ * whatever the snapshot carried, and a hook git cannot execute is a hook that silently does nothing.
+ *
+ * Never fatal. A box that cannot install a hook is still a working box, and both hooks are
+ * conveniences rather than correctness.
+ */
+function writeHook(
+  workspaceDir: string,
+  name: string,
+  script: string,
+): boolean {
+  const hooksDir = path.join(workspaceDir, '.git', 'hooks');
+  if (!fsSync.existsSync(path.join(workspaceDir, '.git'))) {
+    log.warn(`No .git in workspace; skipping ${name} hook`);
+    return false;
+  }
+  const hookPath = path.join(hooksDir, name);
+  try {
+    fsSync.mkdirSync(hooksDir, { recursive: true });
+    fsSync.writeFileSync(hookPath, script, { mode: 0o755 });
+    fsSync.chmodSync(hookPath, 0o755);
+    log.info(`Installed ${name} hook`);
+    return true;
+  } catch (err) {
+    log.warn(
+      `Could not install ${name} hook: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
+// A `post-checkout` hook lived here, posting to this box's own server so it could report HEAD to the
+// platform: the branch decided which dev release methods ran against, which history the next
+// snapshot joined, and what the editor previewed, so every checkout had to be an event. None of
+// those hang off the branch now — a box, its snapshots and its dev release are keyed on the person —
+// so a checkout is just a checkout and nothing has to hear about it.
 
 export function configureGit(workspaceDir: string): void {
   const metadataEnv: {
@@ -423,24 +506,19 @@ export function configureGit(workspaceDir: string): void {
     label: 'git config safe.directory',
   });
 
-  // Install commit-msg hook to add Remy as coauthor on all commits
-  const hooksDir = path.join(workspaceDir, '.git', 'hooks');
-  const hookPath = path.join(hooksDir, 'commit-msg');
-  const hook = [
-    '#!/bin/sh',
-    '# Added by sandbox — tag Remy as coauthor on all commits',
-    'if ! grep -q "^Co-Authored-By: Remy" "$1"; then',
-    '  echo "" >> "$1"',
-    '  echo "Co-Authored-By: Remy <remy@mindstudio.ai>" >> "$1"',
-    'fi',
-  ].join('\n');
-  try {
-    fsSync.mkdirSync(hooksDir, { recursive: true });
-    fsSync.writeFileSync(hookPath, hook, { mode: 0o755 });
-    log.info('Installed commit-msg hook (Remy coauthor)');
-  } catch (err) {
-    log.warn(`Failed to install commit-msg hook: ${err}`);
-  }
+  // Tag Remy as coauthor on every commit made in the box.
+  writeHook(
+    workspaceDir,
+    'commit-msg',
+    [
+      '#!/bin/sh',
+      '# Added by sandbox — tag Remy as coauthor on all commits',
+      'if ! grep -q "^Co-Authored-By: Remy" "$1"; then',
+      '  echo "" >> "$1"',
+      '  echo "Co-Authored-By: Remy <remy@mindstudio.ai>" >> "$1"',
+      'fi',
+    ].join('\n'),
+  );
 }
 
 // ---------------------------------------------------------------------------

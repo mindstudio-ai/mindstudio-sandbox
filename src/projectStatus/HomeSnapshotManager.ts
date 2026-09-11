@@ -180,7 +180,8 @@ export type RestoreResult =
  * - `committed`: a new snapshot is durable in S3 and is now the app's current one.
  * - `unchanged`: nothing under home changed since the last one, which is already current.
  * - `failed`: the tar, the upload or the commit did not succeed. `lastError` says why.
- * - `fenced`: a newer session has committed a snapshot, so this box must never write again.
+ * - `fenced`: a NEWER box of this person's has committed a snapshot, so this workspace's history is
+ *   no longer ours to write. Terminal — nothing makes a superseded box the newest again.
  *
  * The first two are both success for a caller asking "is the user's work safe" —
  * see `isSafe`.
@@ -247,8 +248,14 @@ export class HomeSnapshotManager {
   /** Epoch ms before which no upload is attempted (exponential backoff with
    * jitter after a failure). A degraded endpoint is not hammered every tick. */
   private pushBackoffUntil: number | null = null;
-  /** Permanently disabled: youai-api answered 409, so a newer session owns the
-   * app. A fenced box must never write again. */
+  /**
+   * Whether a NEWER box of this person's has already saved, which fences this one off for good.
+   *
+   * Terminal, and correctly so: the 409 means somebody's next box has committed a snapshot, and
+   * nothing this box can do makes it the newest again. It was per BRANCH and recoverable, back when
+   * a box could hand a branch back and forth with another — that is gone with the branch key, and
+   * with it the case where a per-box latch would have been wrong.
+   */
   private fenced = false;
   /** Content hash of the presentation sources at the last commit that carried
    * them; they are re-sent only when it changes. */
@@ -338,7 +345,7 @@ export class HomeSnapshotManager {
    */
   async snapshot(): Promise<boolean> {
     if (this.fenced) {
-      log.debug('Fenced by a newer session; refusing to snapshot');
+      log.debug('A newer box owns this workspace; refusing to snapshot');
       return false;
     }
     if (this.inFlight) {
@@ -369,7 +376,7 @@ export class HomeSnapshotManager {
    */
   async flushNow(): Promise<SnapshotOutcome> {
     if (this.fenced) {
-      log.warn('Fenced by a newer session; refusing to flush');
+      log.warn('A newer box owns this workspace; refusing to flush');
       return 'fenced';
     }
     if (this.inFlight) {
@@ -414,7 +421,17 @@ export class HomeSnapshotManager {
       }>('POST', '/begin', { sessionId: this.sessionId });
 
       await putFile(begun.uploadUrl, SNAPSHOT_TAR, 'application/zstd');
-      await this.uploadUsageLedgerIfChanged(begun.usageLedgerUploadUrl);
+      // Best-effort, and deliberately so: the ledger is telemetry for a dashboard, and `putFile`
+      // throws on any non-2xx. Awaited bare, one transient failure on it aborted the run between a
+      // successful tar upload and its commit — so the uploaded object was swept as an abandoned
+      // pending row. On the interval that costs a retry; on the SIGTERM flush it cost the session's
+      // work, for a cost figure.
+      await this.uploadUsageLedgerIfChanged(begun.usageLedgerUploadUrl).catch(
+        (err) =>
+          log.warn(
+            `Usage ledger upload failed; keeping the snapshot: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+      );
       this.logCompositionOnce();
 
       const presentation = await this.presentationIfChanged();
@@ -453,12 +470,14 @@ export class HomeSnapshotManager {
       return 'committed';
     } catch (err) {
       if (err instanceof SupersededError) {
+        // Terminal for this box. A newer one of the same person's has committed, and nothing this
+        // process can do makes it the newest again — so stop trying rather than burning a tar and
+        // an upload every interval to be refused.
         log.error(
-          `Superseded by a newer sandbox session for ${this.appId}; fencing all future snapshots`,
+          `A newer box owns this workspace for ${this.appId}; not writing its snapshots again`,
         );
         this.fenced = true;
         this.lastError = err.message;
-        this.stop();
         this.onStatusChange?.();
         return 'fenced';
       }
@@ -846,8 +865,12 @@ export class HomeSnapshotManager {
     }
   }
 
-  /** The current snapshot, null when the app has none, 'error' when youai-api
-   * could not be asked after retries. */
+  /** The current snapshot for THIS BOX'S OWNER, null when they have none yet
+   * (clone instead), 'error' when youai-api could not be asked after retries.
+   *
+   * The session id is all we send: an app can hold a box per person, and the
+   * platform resolves whose this is from the session row it gave us rather than
+   * from anything we could claim about ourselves. */
   private async fetchCurrentWithRetry(): Promise<
     CurrentSnapshot | null | 'error'
   > {
@@ -857,6 +880,8 @@ export class HomeSnapshotManager {
         const body = await this.api<{ snapshot: CurrentSnapshot | null }>(
           'GET',
           '',
+          undefined,
+          { sessionId: this.sessionId },
         );
         return body.snapshot;
       } catch (err) {
@@ -885,8 +910,10 @@ export class HomeSnapshotManager {
     method: 'GET' | 'POST',
     subpath: '' | '/begin' | '/commit',
     body?: unknown,
+    query?: Record<string, string>,
   ): Promise<T> {
-    const url = `${this.apiBaseUrl}/_internal/v2/apps/${this.appId}/dev/manage/workspace-snapshot${subpath}`;
+    const search = query ? `?${new URLSearchParams(query)}` : '';
+    const url = `${this.apiBaseUrl}/_internal/v2/apps/${this.appId}/dev/manage/workspace-snapshot${subpath}${search}`;
     const res = await fetch(url, {
       method,
       headers: {

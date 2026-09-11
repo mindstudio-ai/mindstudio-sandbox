@@ -94,10 +94,21 @@ interface HttpHandlerOpts {
   getProxy: () => httpProxy | null;
   /** Whether a request carries the box's own SANDBOX_TOKEN — see `/flush`. */
   verifyToken: (url: string | undefined) => boolean;
+  /**
+   * The same, but a box with no token configured refuses rather than allowing. For the two routes
+   * that CHANGE something, on a port the public preview host can reach.
+   */
+  verifyTokenStrict: (url: string | undefined) => boolean;
 }
 
 export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
-  const { workspaceDir, getProxyTarget, getProxy, verifyToken } = opts;
+  const {
+    workspaceDir,
+    getProxyTarget,
+    getProxy,
+    verifyToken,
+    verifyTokenStrict,
+  } = opts;
 
   return (req, res) => {
     // CORS preflight — allow everything
@@ -197,16 +208,17 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
     // surviving whatever issued the delete, or on anyone inferring success from a health probe.
     // SIGTERM stays the backstop for stops we DON'T initiate (node drain, eviction, deadline).
     //
-    // Token-gated, unlike the read-only routes above: this is the one mutating platform
-    // operation on this port, and this port is also what the PUBLIC preview host reaches (the
-    // sandbox-proxy deliberately doesn't list `/flush` as a control path, so a request for it on
-    // a preview host arrives here as ordinary traffic). Without the check, anything running in a
-    // user's own preview could drive the platform's snapshot machinery.
+    // Token-gated STRICTLY, unlike the read-only routes above: it mutates, and this port is also
+    // what the PUBLIC preview host reaches. `verifyTokenStrict` rather than `verifyToken` because
+    // the latter allows everything when no token is configured, which on a box booted without
+    // SANDBOX_TOKEN would let anything running in a user's own preview drive the platform's
+    // snapshot machinery. The sandbox-proxy also lists this path as control now, so preview traffic
+    // is refused a hop earlier — this is the second layer, not the only one.
     if (
       req.method === 'POST' &&
       new URL(req.url ?? '/', 'http://localhost').pathname === '/flush'
     ) {
-      if (!verifyToken(req.url)) {
+      if (!verifyTokenStrict(req.url)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
@@ -265,6 +277,27 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       sendPreviewPlaceholder(req, res, 'unavailable');
     });
   };
+}
+
+/** Read a JSON request body. */
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf-8').trim();
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new Error('invalid_json'));
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
 function redactCommand(command: string): string {

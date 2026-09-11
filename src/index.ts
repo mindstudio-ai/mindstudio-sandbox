@@ -413,6 +413,9 @@ async function main(): Promise<void> {
 
   // 3. Graceful shutdown
   let lspClientRef: LspClient | null = null;
+  // A `BranchWatcher` sat here, polling HEAD and reporting it upstream so the platform's record,
+  // the dev release and the next snapshot all followed a checkout. Nothing keys on the branch now,
+  // so a checkout is local to this box and the tunnel keeps its own dev release across one.
   const snapshotManager = new HomeSnapshotManager({
     homeDir: config.homeDir,
     workspaceDir: config.workspaceDir,
