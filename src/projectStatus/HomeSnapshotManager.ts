@@ -32,6 +32,12 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createLogger } from '../logger.js';
 import { makeCounterEmitter } from '../bootProgress.js';
+import {
+  getOnboardingState,
+  isProjectOnboardingState,
+  isProjectStatusInitialized,
+  type ProjectOnboardingState,
+} from './ProjectStatusManager.js';
 
 const log = createLogger('snapshot');
 
@@ -213,6 +219,20 @@ interface CurrentSnapshot {
   downloadUrl: string;
 }
 
+/**
+ * What the snapshot read answers, beyond the snapshot itself.
+ *
+ * `onboardingState` is the platform's durable copy of the phase this app is in,
+ * or null/absent when it has no opinion — every app predating the column, and any
+ * that has not snapshotted since. It rides THIS call because this is the one the
+ * box makes before deciding whether to clone, and onboarding state is one of the
+ * two things a clone destroys. See `getPlatformOnboardingState`.
+ */
+interface CurrentSnapshotResponse {
+  snapshot: CurrentSnapshot | null;
+  onboardingState?: ProjectOnboardingState | null;
+}
+
 class SupersededError extends Error {
   constructor() {
     super('superseded by a newer sandbox session');
@@ -237,6 +257,10 @@ export class HomeSnapshotManager {
   /** Upload even when the change walk finds nothing — set after a legacy
    * `_draft` restore so the first snapshot seeds S3 for this app. */
   private forceUpload = false;
+  /** The platform's onboarding phase for this app, as of the snapshot read.
+   * Null until that read happens, and null after it when the platform has no
+   * opinion — the two are not distinguished because no caller needs to. */
+  private platformOnboardingState: ProjectOnboardingState | null = null;
   private lastAttemptAt: number | null = null;
   private lastSuccessAt: number | null = null;
   private lastDurationMs: number | null = null;
@@ -307,6 +331,22 @@ export class HomeSnapshotManager {
   /** Upload on the next snapshot even if nothing changed. */
   forceNextUpload(): void {
     this.forceUpload = true;
+  }
+
+  /**
+   * The platform's onboarding phase for this app, or null when it has none.
+   *
+   * Read by `initProjectStatus` as the default when the workspace carries no
+   * `.project-status.json` — which is every box on the clone path. Without it
+   * that case falls through to `intake` and opens an established app in
+   * onboarding, which is the whole reason the platform stores this.
+   *
+   * Only meaningful after `prepareHome` has run. An in-place restart returns
+   * `resumed` without a read, and correctly so: the filesystem never went away,
+   * so the local file is still the authority.
+   */
+  getPlatformOnboardingState(): ProjectOnboardingState | null {
+    return this.platformOnboardingState;
   }
 
   /** Record that this container has completed a boot, so a later in-place
@@ -448,6 +488,21 @@ export class HomeSnapshotManager {
           : {}),
         manifest: await this.readManifestFields(),
         ...(presentation ? { presentation: presentation.sources } : {}),
+        // Mirror the phase we are actually in, so a future box that has to clone
+        // can be told. Sent on every commit rather than through a call of its own
+        // at the moment it changes: that gives it exactly the durability of the
+        // snapshot it travels with, and a flip the box never managed to snapshot
+        // is one no restore would have carried either. `setOnboardingState`
+        // forces the next upload so the mirror is prompt, and the route's write
+        // is forward-only so a box running on older restored state cannot walk an
+        // app backwards.
+        //
+        // Omitted before the boot has loaded it, for the same reason
+        // `uncompressedBytes` is: a SIGTERM flush can land first, and the
+        // placeholder is not a fact about this app.
+        ...(isProjectStatusInitialized()
+          ? { onboardingState: getOnboardingState() }
+          : {}),
       });
       if (presentation) {
         this.lastPresentationHash = presentation.hash;
@@ -877,12 +932,20 @@ export class HomeSnapshotManager {
     const totalAttempts = RESTORE_RETRY_BACKOFFS_MS.length + 1;
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
       try {
-        const body = await this.api<{ snapshot: CurrentSnapshot | null }>(
+        const body = await this.api<CurrentSnapshotResponse>(
           'GET',
           '',
           undefined,
           { sessionId: this.sessionId },
         );
+        // Captured whether or not there is a snapshot, because the case that
+        // needs it most is the one where there ISN'T: a box about to clone is a
+        // box about to lose `.project-status.json`.
+        this.platformOnboardingState = isProjectOnboardingState(
+          body.onboardingState,
+        )
+          ? body.onboardingState
+          : null;
         return body.snapshot;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
