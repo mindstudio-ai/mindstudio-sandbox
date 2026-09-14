@@ -78,6 +78,7 @@ import {
   getProjectStatus,
   getOnboardingState,
   setOnboardingState,
+  setOnboardingChangeListener,
 } from './projectStatus/ProjectStatusManager.js';
 import { readForkSource } from './projectStatus/forkDetection.js';
 import type { AppConfig } from './types.js';
@@ -437,6 +438,12 @@ async function main(): Promise<void> {
   });
   ctx.snapshotManager = snapshotManager;
 
+  // Mirror an onboarding transition to the platform promptly. The state rides every snapshot commit
+  // anyway; this only stops it waiting on an unrelated edit to trigger a cycle, which matters
+  // because the platform's copy is what a later box on the clone path reads instead of defaulting
+  // to `intake`.
+  setOnboardingChangeListener(() => snapshotManager.forceNextUpload());
+
   // The one "settle and save" routine — see ctx.finalizeWorkspace. Quiesce so the tar isn't of a
   // workspace the agent is halfway through writing, give remy's final (synchronous) session write
   // a beat to land, then snapshot. Called by SIGTERM below and by the platform's `/flush`.
@@ -661,8 +668,13 @@ async function main(): Promise<void> {
     // it describes the tooling the box will actually run. Cheap now (a package.json read each).
     await cacheVersions();
 
-    // 7. Init project status (after the restore so the file is available)
-    initProjectStatus(config.workspaceDir);
+    // 7. Init project status (after the restore so the file is available, and after the snapshot
+    // read so the platform's durable copy is available as the fallback when it is not — which is
+    // every box on the clone path).
+    initProjectStatus(
+      config.workspaceDir,
+      snapshotManager.getPlatformOnboardingState(),
+    );
 
     // 7b. Forked-app onboarding stamp. A fork is a main-only git copy of its
     // source, so it carries no workspace snapshot — where .project-status.json
@@ -672,6 +684,14 @@ async function main(): Promise<void> {
     // lives in history forever) → one-time on first boot, then self-heals (the
     // stamped status rides the next snapshot, so later boots restore finished
     // and skip).
+    //
+    // A FALLBACK now rather than the only answer: `initProjectStatus` above
+    // adopts the platform's durable onboarding state, and `handleFork` carries
+    // the source app's phase onto the fork — which is more accurate than this
+    // hook, since it inherits `intake` for a fork of an app still in onboarding
+    // instead of asserting finished. This stays for forks made before that
+    // existed, whose apps have no recorded state, and can retire once none are
+    // left.
     if (getOnboardingState() !== 'onboardingFinished') {
       const forkSource = await readForkSource(config.workspaceDir);
       if (forkSource) {
