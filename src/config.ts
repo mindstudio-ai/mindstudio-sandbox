@@ -1,4 +1,9 @@
-import { createLogger, setLogLevel, type LogLevel } from './logger.js';
+import {
+  createLogger,
+  setLogLevel,
+  setStdoutLogLevel,
+  type LogLevel,
+} from './logger.js';
 
 const log = createLogger('config');
 
@@ -24,16 +29,34 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  // Bootstrap log level first so all subsequent logging respects it
+  // Bootstrap log level first so all subsequent logging respects it.
+  //
+  // TWO levels, and the defaults differ deliberately — see logger.ts's header.
+  // `debug` here is right: these entries reach the editor's log pane, which is
+  // read by somebody debugging this very box. `info` for stdout is also right:
+  // that sink is scraped and shipped off-box, where one debug line per agent
+  // event was 57% of the whole platform's log volume.
   const rawLogLevel = process.env['LOG_LEVEL']?.toLowerCase() ?? 'debug';
   const logLevel: LogLevel = VALID_LOG_LEVELS.includes(rawLogLevel as LogLevel)
     ? (rawLogLevel as LogLevel)
     : 'info';
   setLogLevel(logLevel);
 
+  const rawStdoutLevel =
+    process.env['STDOUT_LOG_LEVEL']?.toLowerCase() ?? 'info';
+  const stdoutLogLevel: LogLevel = VALID_LOG_LEVELS.includes(
+    rawStdoutLevel as LogLevel,
+  )
+    ? (rawStdoutLevel as LogLevel)
+    : 'info';
+  setStdoutLogLevel(stdoutLogLevel);
+
   log.info('Loading environment variables...');
   log.info(
     `  LOG_LEVEL = ${logLevel}${rawLogLevel !== logLevel ? ` (invalid "${rawLogLevel}", using default)` : ''}`,
+  );
+  log.info(
+    `  STDOUT_LOG_LEVEL = ${stdoutLogLevel}${rawStdoutLevel !== stdoutLogLevel ? ` (invalid "${rawStdoutLevel}", using default)` : ''}`,
   );
 
   const missing: string[] = [];
