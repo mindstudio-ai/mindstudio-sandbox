@@ -203,8 +203,11 @@ export function startAgent(
   pm.start({
     name: 'agent',
     command: 'remy',
+    // No `--headless`: the stdin/stdout JSON protocol is remy's only mode as of
+    // Sep 2026, so the flag stopped meaning anything. remy still tolerates it
+    // (unrecognized args are ignored), which is what let this drop land
+    // without pinning the devbox image to a remy version.
     args: [
-      '--headless',
       '--api-key',
       config.apiKey,
       '--base-url',

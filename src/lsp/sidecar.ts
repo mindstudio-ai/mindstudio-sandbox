@@ -277,7 +277,7 @@ export class LspSidecar {
               break;
             case '/export-recording':
               // Render a QA replay to an mp4 and answer with where it landed.
-              // This is what `remy-admin recordings export` calls, which is how
+              // This is what `remy-admin qa-recordings export` calls, which is how
               // the agent reaches it — the capability is a CLI command rather
               // than a tool, so it costs nothing in the prompt.
               //

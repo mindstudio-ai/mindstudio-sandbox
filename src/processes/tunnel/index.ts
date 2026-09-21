@@ -140,7 +140,7 @@ export interface RecordingExportRequest {
 
 /**
  * Render a replay window to an mp4 on the box. Shared by the editor's Export
- * button (over WS) and the agent's `remy-admin recordings export` (over the
+ * button (over WS) and the agent's `remy-admin qa-recordings export` (over the
  * sidecar), which differ in exactly two ways.
  *
  * `requireIdleAgent` — the render shares Chrome and two cores with everything
