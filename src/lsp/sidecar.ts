@@ -8,7 +8,11 @@
 import http from 'node:http';
 import type { LspClient } from './client.js';
 import type { ProcessManager } from '../processes/ProcessManager.js';
-import { sendCommand as sendTunnelCommand } from '../processes/tunnel/index.js';
+import {
+  sendCommand as sendTunnelCommand,
+  startRecordingExport,
+} from '../processes/tunnel/index.js';
+import type { RecordingExportRequest } from '../processes/tunnel/index.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('lsp/sidecar');
@@ -36,6 +40,7 @@ interface DiagnosticItem {
 //   full-page capture      90s   <  120s             <  135s
 //   setup-browser          15s   <  25s              <  30s
 //   whole browser command  100s  <  120s                 (no timer; owned here)
+//   replay export          450s  <  600s             <  660s (remy-admin CLI)
 //
 // See mindstudio-local-model-tunnel/src/dev/browser/screenshot.ts and
 // src/dev/stdin-commands/browser.ts for the inner values. The setup-browser
@@ -47,6 +52,11 @@ const SCREENSHOT_FULLPAGE_TIMEOUT_MS = 120_000;
 const SETUP_BROWSER_TIMEOUT_MS = 25_000;
 // Exceeds the 15s page.reload inside the supervisor's setPreviewMode.
 const SET_VIEWPORT_TIMEOUT_MS = 20_000;
+// A replay render plays the clip in real time, then encodes and uploads it.
+// `startRecordingExport` applies its own 600s rung to the stdin command, so
+// this only has to be no tighter than that; it also sets the server's
+// `requestTimeout` above.
+const EXPORT_RECORDING_TIMEOUT_MS = 600_000;
 
 const SEVERITY_MAP: Record<number, string> = {
   1: 'error',
@@ -265,6 +275,23 @@ export class LspSidecar {
                   )
                 : { success: false, error: 'tunnel not available' };
               break;
+            case '/export-recording':
+              // Render a QA replay to an mp4 and answer with where it landed.
+              // This is what `remy-admin recordings export` calls, which is how
+              // the agent reaches it — the capability is a CLI command rather
+              // than a tool, so it costs nothing in the prompt.
+              //
+              // Unlike the editor's WS path this does NOT refuse while the
+              // agent is busy: the agent is the caller, and it is blocked here
+              // for the duration (see startRecordingExport).
+              result = this.pm
+                ? await startRecordingExport(
+                    this.pm,
+                    params as unknown as RecordingExportRequest,
+                    { requireIdleAgent: false, awaitResult: true },
+                  )
+                : { success: false, error: 'tunnel not available' };
+              break;
             case '/set-viewport':
               // Reuse the `browser` command with a single setViewport step so
               // there's no separate tunnel handler. `mode` is 'desktop' |
@@ -305,6 +332,12 @@ export class LspSidecar {
           );
         }
       });
+
+      // Node's default `requestTimeout` is 5 minutes, which is shorter than a
+      // replay render is allowed to take (`/export-recording` holds its request
+      // open for the whole job). Raise it past that rung of the ladder so the
+      // tunnel's own error is what the caller sees, never a severed socket.
+      this.server.requestTimeout = EXPORT_RECORDING_TIMEOUT_MS + 30_000;
 
       this.server.listen(port, () => {
         log.info(`Listening on port ${port}`);

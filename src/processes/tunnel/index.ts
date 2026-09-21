@@ -83,7 +83,11 @@ export interface RecordingExportStatus {
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   startedAt: number;
   finishedAt?: number;
+  /** Absent when the mp4 was written to a private store — `store`/`key` locate
+   *  it in that case, and the caller signs a link for it. */
   url?: string;
+  store?: string;
+  key?: string;
   width?: number;
   height?: number;
   durationMs?: number;
@@ -119,6 +123,156 @@ function finishRecordingExport(next: RecordingExportStatus): void {
 // The server's broadcast, captured at startup so the export handler can
 // announce completion outside a stdout callback.
 let broadcastFn: TunnelCallbacks['broadcast'] | null = null;
+
+export interface RecordingExportRequest {
+  /** The rrweb recording session, and the window of it to render. */
+  recordingSessionId: string;
+  startTs: number;
+  endTs: number;
+  /** Brand wallpaper + window styling, resolved by whoever is asking (the
+   *  tunnel has no brand data). Opaque here; the tunnel validates its
+   *  contents. */
+  stage?: Record<string, unknown>;
+  /** App store for the finished mp4, and its access. Defaulted tunnel-side. */
+  store?: string;
+  access?: 'public' | 'private';
+}
+
+/**
+ * Render a replay window to an mp4 on the box. Shared by the editor's Export
+ * button (over WS) and the agent's `remy-admin recordings export` (over the
+ * sidecar), which differ in exactly two ways.
+ *
+ * `requireIdleAgent` — the render shares Chrome and two cores with everything
+ * else, so a *human* must not be able to start one in the middle of a turn.
+ * That check is meaningless for the agent, which is busy by definition while
+ * asking: when the agent is the caller it is blocked awaiting this render, so
+ * the box is otherwise idle (its own model call is remote). The real mutual
+ * exclusion is the tunnel's `exportGate` + `enqueueBrowserWork`, which applies
+ * to both paths either way.
+ *
+ * `awaitResult` — the editor gets a jobId immediately and watches progress
+ * events; the CLI blocks and wants the URL.
+ */
+export async function startRecordingExport(
+  pm: ProcessManager,
+  req: RecordingExportRequest,
+  opts: { requireIdleAgent: boolean; awaitResult: boolean },
+): Promise<{ jobId: string; export?: RecordingExportStatus }> {
+  if (
+    typeof req.recordingSessionId !== 'string' ||
+    !/^[a-f0-9]{32}$/.test(req.recordingSessionId)
+  ) {
+    throw new Error('Missing "recordingSessionId" (32 hex characters)');
+  }
+  if (!Number.isFinite(req.startTs) || !Number.isFinite(req.endTs)) {
+    throw new Error('Missing "startTs"/"endTs" (epoch milliseconds)');
+  }
+  if (
+    req.stage !== undefined &&
+    (typeof req.stage !== 'object' ||
+      req.stage === null ||
+      JSON.stringify(req.stage).length > 8192)
+  ) {
+    throw new Error('Invalid "stage" parameter');
+  }
+  if (opts.requireIdleAgent && getAgentActivity().busy) {
+    throw new Error(
+      'Remy is working right now — wait for the current turn to finish before exporting.',
+    );
+  }
+  if (recordingExport?.status === 'running') {
+    throw new Error('A video export is already running.');
+  }
+
+  const jobId = randomBytes(16).toString('hex');
+  const startedAt = Date.now();
+  if (recordingExportExpiry) {
+    clearTimeout(recordingExportExpiry);
+    recordingExportExpiry = null;
+  }
+  recordingExport = { jobId, status: 'running', startedAt };
+  log.info(`Replay export started: ${jobId}`);
+
+  const run = sendCommand(
+    pm,
+    'export-recording',
+    {
+      jobId,
+      recordingSessionId: req.recordingSessionId,
+      startTs: req.startTs,
+      endTs: req.endTs,
+      ...(req.stage ? { stage: req.stage } : {}),
+      ...(req.store ? { store: req.store } : {}),
+      ...(req.access ? { access: req.access } : {}),
+    },
+    RECORDING_EXPORT_TIMEOUT_MS,
+  ).then(
+    (res) => {
+      if (recordingExport?.jobId !== jobId) {
+        return null;
+      }
+      const finishedAt = Date.now();
+      if (res.success) {
+        finishRecordingExport({
+          jobId,
+          status: 'completed',
+          startedAt,
+          finishedAt,
+          ...(typeof res.url === 'string' ? { url: res.url } : {}),
+          ...(typeof res.store === 'string' ? { store: res.store } : {}),
+          ...(typeof res.key === 'string' ? { key: res.key } : {}),
+          width: res.width as number,
+          height: res.height as number,
+          durationMs: res.durationMs as number,
+        });
+      } else {
+        const errorCode =
+          typeof res.errorCode === 'string' ? res.errorCode : undefined;
+        finishRecordingExport({
+          jobId,
+          status: errorCode === 'CANCELLED' ? 'cancelled' : 'failed',
+          startedAt,
+          finishedAt,
+          error: typeof res.error === 'string' ? res.error : 'Export failed',
+          ...(errorCode ? { errorCode } : {}),
+        });
+      }
+      return announceRecordingExport(jobId);
+    },
+    // A rejection is the command itself failing to answer — a tunnel restart,
+    // or the timeout above. Without this the job stayed 'running' forever and
+    // every later export was refused as "already running", since a running job
+    // sets no retention timer.
+    (err: unknown) => {
+      if (recordingExport?.jobId !== jobId) {
+        return null;
+      }
+      finishRecordingExport({
+        jobId,
+        status: 'failed',
+        startedAt,
+        finishedAt: Date.now(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return announceRecordingExport(jobId);
+    },
+  );
+
+  if (!opts.awaitResult) {
+    void run;
+    return { jobId };
+  }
+  const finished = await run;
+  return { jobId, ...(finished ? { export: finished } : {}) };
+}
+
+function announceRecordingExport(jobId: string): RecordingExportStatus | null {
+  const status = getRecordingExportStatus();
+  log.info(`Replay export finished: ${jobId} (${status?.status})`);
+  broadcastFn?.('recordingExportCompleted', { export: status });
+  return status;
+}
 
 export interface TunnelCallbacks {
   onSessionStarted: (session: TunnelSessionState) => void;
@@ -508,83 +662,13 @@ export function createTunnelActions(
     // awaited here. Progress arrives as `recordingExportProgress`, the result
     // as `recordingExportCompleted`, and the init frame carries the status.
     tunnelExportRecording: async (p) => {
-      const { eventsUrl, stage } = p as {
-        eventsUrl?: string;
-        stage?: Record<string, unknown>;
-      };
-      if (typeof eventsUrl !== 'string' || !eventsUrl.startsWith('https://')) {
-        throw new Error(
-          'Missing "eventsUrl" parameter (https URL of the recording)',
-        );
-      }
-      // The stage (brand wallpaper + window styling the editor resolved) is
-      // opaque here; the tunnel validates its contents. Just bound its size.
-      if (
-        stage !== undefined &&
-        (typeof stage !== 'object' ||
-          stage === null ||
-          JSON.stringify(stage).length > 8192)
-      ) {
-        throw new Error('Invalid "stage" parameter');
-      }
-      // The render shares Chrome and CPU with everything else on the box, so
-      // it never starts while the agent (or the QA browser it drives) works.
-      if (getAgentActivity().busy) {
-        throw new Error(
-          'Remy is working right now — wait for the current turn to finish before exporting.',
-        );
-      }
-      if (recordingExport?.status === 'running') {
-        throw new Error('A video export is already running.');
-      }
-      const jobId = randomBytes(16).toString('hex');
-      const startedAt = Date.now();
-      if (recordingExportExpiry) {
-        clearTimeout(recordingExportExpiry);
-        recordingExportExpiry = null;
-      }
-      recordingExport = { jobId, status: 'running', startedAt };
-      log.info(`Replay export started: ${jobId}`);
-      void sendCommand(
+      const { jobId } = await startRecordingExport(
         pm,
-        'export-recording',
-        { jobId, eventsUrl, ...(stage ? { stage } : {}) },
-        RECORDING_EXPORT_TIMEOUT_MS,
-      ).then((res) => {
-        if (recordingExport?.jobId !== jobId) {
-          return;
-        }
-        const finishedAt = Date.now();
-        if (res.success) {
-          finishRecordingExport({
-            jobId,
-            status: 'completed',
-            startedAt,
-            finishedAt,
-            url: res.url as string,
-            width: res.width as number,
-            height: res.height as number,
-            durationMs: res.durationMs as number,
-          });
-        } else {
-          const errorCode =
-            typeof res.errorCode === 'string' ? res.errorCode : undefined;
-          finishRecordingExport({
-            jobId,
-            status: errorCode === 'CANCELLED' ? 'cancelled' : 'failed',
-            startedAt,
-            finishedAt,
-            error: typeof res.error === 'string' ? res.error : 'Export failed',
-            ...(errorCode ? { errorCode } : {}),
-          });
-        }
-        log.info(
-          `Replay export finished: ${jobId} (${getRecordingExportStatus()?.status})`,
-        );
-        broadcastFn?.('recordingExportCompleted', {
-          export: getRecordingExportStatus(),
-        });
-      });
+        p as unknown as RecordingExportRequest,
+        // A human clicked Export: refuse mid-turn, and answer with the jobId
+        // rather than holding the request open for the whole render.
+        { requireIdleAgent: true, awaitResult: false },
+      );
       return { jobId };
     },
     tunnelCancelExportRecording: async (p) => {
