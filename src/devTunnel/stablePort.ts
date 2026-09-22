@@ -1,6 +1,5 @@
-// Shared utilities for dev mode — used by both headless and TUI orchestrators.
-
-import { execSync } from 'node:child_process';
+// The proxy's port, derived from the app id so the preview URL is the same
+// across restarts.
 
 // Chromium's kRestrictedPorts — ports the browser refuses to connect to over
 // HTTP, failing navigation with net::ERR_UNSAFE_PORT. The sandbox automation
@@ -40,18 +39,4 @@ export function stablePort(appId: string): number {
     }
   }
   return STABLE_PORT_RANGE_START + offset; // unreachable — range is not fully restricted
-}
-
-/** Detect current git branch, or undefined if not in a git repo. */
-export function detectGitBranch(): string | undefined {
-  try {
-    return (
-      execSync('git rev-parse --abbrev-ref HEAD', {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim() || undefined
-    );
-  } catch {
-    return undefined;
-  }
 }

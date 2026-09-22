@@ -189,7 +189,3 @@ export function initIframeBridge(): void {
 
   window.addEventListener('message', s.messages.handler);
 }
-
-export function isPipMode(): boolean {
-  return getState().zoom.pipMode;
-}

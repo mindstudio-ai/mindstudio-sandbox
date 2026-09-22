@@ -28,10 +28,10 @@ import { ProcessRegistry } from './processes/ProcessRegistry.ts';
 import { ProcessManager } from './processes/ProcessManager.ts';
 import {
   startTunnel,
-  createTunnelActions,
   failPendingCommands,
   sendCommand as sendTunnelCommand,
 } from './processes/tunnel/index.ts';
+import { createTunnelActions } from './processes/tunnel/actions.ts';
 import {
   startAgent,
   sendAgentCommand,
@@ -96,7 +96,8 @@ const log = createLogger('controller');
 // whole shutdown, so these must sum to well under it.
 //
 // INJECTED, not decided here. The grace period that bounds them belongs to whoever writes the pod
-// spec, so the budgets live beside it in CFES's `sandboxLifecycle.ts` (`dev.shutdown`, delivered by
+// spec, so the budgets live beside it in the orchestrator —
+// `youai-api/src/sandboxOrchestrator/Config/sandboxLifecycle.ts` (`dev.shutdown`, delivered by
 // `devLifecycleEnv()`). A box that keeps its own copy is a box whose margin can silently vanish
 // when the grace period moves — which is exactly what had happened: the comment here claimed a 60s
 // snapshot budget against an actual 75s, leaving ~3s of headroom rather than ~18s.
@@ -530,8 +531,8 @@ async function main(): Promise<void> {
     broadcast('bootstrapProgress', { step, message });
   };
 
-  // The control server is up, which is the first thing this process can honestly claim. CFES has
-  // already reported everything before it (schedule, image, VM) from outside.
+  // The control server is up, which is the first thing this process can honestly claim. The
+  // orchestrator has already reported everything before it (schedule, image, VM) from outside.
   bootPhase(`Control server listening on ${config.port}`, {
     phase: 'server',
     state: 'done',

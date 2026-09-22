@@ -8,7 +8,8 @@
 // scoping: methods execute concurrently, fire-and-forget background tasks retain
 // their auth context, and mindstudio.waitUntil() registrations are tracked so an
 // interrupted-on-teardown annotation lands in the request log — matching prod
-// sandbox behavior (CFES worker/src/{execution,background}.ts). runWithContext
+// sandbox behavior (youai-api/services/sandbox-images/worker/src/
+// {execution,background}.ts). runWithContext
 // requires @mindstudio-ai/agent >= 0.1.46; an older SDK fails loudly at spawn (see
 // assertAgentSupportsAls) rather than silently misbehaving.
 //

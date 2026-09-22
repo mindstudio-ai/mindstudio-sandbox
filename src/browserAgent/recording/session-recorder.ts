@@ -93,11 +93,6 @@ export function flushSessionRecording(): {
   return { events, runId: s.runId };
 }
 
-/** The current run's id, or null if the recorder hasn't started. */
-export function getRunId(): string | null {
-  return getState().sessionRecording.runId;
-}
-
 /** Whether the continuous session recorder is currently running. */
 export function isRecording(): boolean {
   return getState().sessionRecording.active;

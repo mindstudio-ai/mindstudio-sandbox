@@ -8,11 +8,12 @@
 import http from 'node:http';
 import type { LspClient } from './client.ts';
 import type { ProcessManager } from '../processes/ProcessManager.ts';
+import { sendCommand as sendTunnelCommand } from '../processes/tunnel/index.ts';
 import {
-  sendCommand as sendTunnelCommand,
   startRecordingExport,
-} from '../processes/tunnel/index.ts';
-import type { RecordingExportRequest } from '../processes/tunnel/index.ts';
+  type RecordingExportRequest,
+} from '../processes/tunnel/recording.ts';
+import { restartProcess } from '../server/restartProcess.ts';
 import { createLogger } from '../logger.ts';
 
 const log = createLogger('lsp/sidecar');
@@ -419,33 +420,8 @@ export class LspSidecar {
     if (!this.pm) {
       throw new Error('Process manager not available');
     }
-    log.info('Restarting process', { name });
-    // The methods worker is forked inside the tunnel, not a ProcessManager
-    // process — relay to the tunnel, which kills it; the next method run
-    // respawns it fresh (picking up e.g. a newly installed SDK).
-    if (name === 'methodsWorker') {
-      const result = await sendTunnelCommand(
-        this.pm,
-        'restart-worker',
-        {},
-        10_000,
-      );
-      if (result.success === false) {
-        throw new Error(
-          `Failed to restart methods worker: ${result.error ?? 'unknown error'}`,
-        );
-      }
-      return { ok: true };
-    }
-    if (name === 'devServer') {
-      await sendTunnelCommand(this.pm!, 'dev-server-restarting', {}, 5_000);
-    }
-    const restarted = await this.pm.restart(name);
-    if (!restarted) {
-      throw new Error(
-        `Unknown process "${name}" — known: devServer, methodsWorker`,
-      );
-    }
+    // Same operation the editor's WS action runs — see server/restartProcess.ts.
+    await restartProcess(this.pm, name);
     return { ok: true };
   }
 

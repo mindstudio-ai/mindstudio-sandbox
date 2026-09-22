@@ -1,8 +1,9 @@
 /**
  * Structured boot progress, for the editor's loading overlay.
  *
- * This rides the LOG LINE, not the C&C socket. CFES follows the pod's stdout, batches it every
- * 500ms and posts it to youai-api, which re-emits it to the editor's platform socket — and that is
+ * This rides the LOG LINE, not the C&C socket. The sandbox orchestrator
+ * (`youai-api/src/sandboxOrchestrator`) follows the pod's stdout, batches it every 500ms and hands
+ * it to the API, which re-emits it to the editor's platform socket — and that is
  * the only channel open during a boot, because `waitForReady` gates on `/health` reporting `ready`,
  * so the platform has no pod address and the editor has no C&C connection until the boot is already
  * over. `broadcast('bootstrapProgress', ...)` during boot reaches nobody.
@@ -68,7 +69,7 @@ export interface BootProgress {
 }
 
 /** The log-line field the payload travels in. Mirrored in remy-frontend's overlay parser. */
-export const BOOT_FIELD = 'boot';
+const BOOT_FIELD = 'boot';
 
 const log = createLogger('boot');
 

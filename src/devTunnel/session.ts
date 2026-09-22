@@ -43,7 +43,7 @@ import {
   setLogLevel,
   setSinkLogLevel,
 } from './logging/logger.ts';
-import { stablePort } from './utils.ts';
+import { stablePort } from './stablePort.ts';
 import {
   resolveConfigSnapshot,
   hasLoopCriticalGap,

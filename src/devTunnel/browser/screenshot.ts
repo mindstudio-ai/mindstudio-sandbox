@@ -97,7 +97,7 @@ const VIEWPORT_PAINT_SETTLE_MS = 32;
 // (viewport 30s, full-page 120s) so the tunnel fails first and the agent sees a
 // real error, not an opaque client abort. Exported so launcher.ts can derive the
 // connection-wide protocolTimeout backstop from them.
-export const VIEWPORT_CAPTURE_TIMEOUT_MS = 20_000;
+const VIEWPORT_CAPTURE_TIMEOUT_MS = 20_000;
 export const FULLPAGE_CAPTURE_TIMEOUT_MS = 90_000;
 // Upload of the captured JPEG to the presigned S3 URL.
 const UPLOAD_TIMEOUT_MS = 20_000;

@@ -120,10 +120,6 @@ export function setSinkLogLevel(level: LogLevel): void {
   sinkLevel = level;
 }
 
-export function getSinkLogLevel(): LogLevel {
-  return sinkLevel;
-}
-
 /** Replace the default stdout sink. Listeners are unaffected. */
 export function setLogSink(next: LogSink): void {
   sink = next;

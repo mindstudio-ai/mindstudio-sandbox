@@ -13,7 +13,7 @@ import { refreshAppConfig } from '../server/refreshAppConfig.ts';
 import {
   notifyConfigFileChanged,
   notifyTableFileChanged,
-} from '../processes/tunnel/index.ts';
+} from '../processes/tunnel/notify.ts';
 import { startWatcher } from './watcher.ts';
 export {
   stopWatcher,

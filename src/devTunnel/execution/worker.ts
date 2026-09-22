@@ -3,9 +3,10 @@
 // the wire contract). Compiled by tsup to dist/dev-worker.js, then copied into the
 // project's transpiler output dir and forked from there.
 //
-// Top-level `import { runWithContext }` is correct here: unlike the prod CFES
-// worker (which extracts a release's dependency artifact over node_modules at
-// /configure — AFTER startup — and must therefore lazy-load the SDK), the dev
+// Top-level `import { runWithContext }` is correct here: unlike the prod worker
+// (`youai-api/services/sandbox-images/worker/src/`, which extracts a release's
+// dependency artifact over node_modules at /configure — AFTER startup — and
+// must therefore lazy-load the SDK), the dev
 // worker's @mindstudio-ai/agent is the project's already-installed copy and is
 // stable for the worker's whole life (the worker respawns when the project root
 // changes). Do NOT cargo-cult a lazy import from prod: there is no artifact swap to
@@ -145,7 +146,8 @@ let _activeSecretKeys: string[] = [];
 // work EXISTS (not just its stdout). We track a per-request pending count and
 // mirror open/idle transitions to the parent over IPC, so a teardown while work is
 // in flight can be annotated in the request log even though the worker is killed
-// by then. Mirrors the prod hook in CFES worker/src/background.ts.
+// by then. Mirrors the prod hook in
+// youai-api/services/sandbox-images/worker/src/background.ts.
 globalThis.__msWaitUntil = (promise: Promise<unknown>) => {
   const req = consoleAls.getStore();
   if (!req || typeof promise?.finally !== 'function') {

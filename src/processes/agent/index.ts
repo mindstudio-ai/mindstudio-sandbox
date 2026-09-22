@@ -115,7 +115,10 @@ const INTERNAL_TOOLS = new Set([
 
 /**
  * External tools handled by the sandbox server that are HIDDEN from frontend.
- * Suppressed from broadcast and filtered from chat history.
+ * Suppressed from broadcast and filtered from chat history. Every other
+ * server-handled tool (runScenario, runMethod, testJewel, browserCommand,
+ * queryDatabase, …) stays visible: the server sends the tool_result, but the
+ * events are broadcast and the blocks appear in history.
  */
 export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
@@ -124,18 +127,6 @@ export const SERVER_HANDLED_TOOLS = new Set([
   // Legacy name of markBuildComplete — never called anymore, kept only so
   // the history filter keeps hiding the blocks persisted in older sessions.
   'setProjectOnboardingState',
-]);
-
-/**
- * External tools handled by the sandbox server that are VISIBLE to frontend.
- * The sandbox sends tool_result, but events are still broadcast and shown in history.
- */
-export const SERVER_VISIBLE_TOOLS = new Set([
-  'runScenario',
-  'runMethod',
-  'testJewel',
-  'browserCommand',
-  'queryDatabase',
 ]);
 
 // ---------------------------------------------------------------------------

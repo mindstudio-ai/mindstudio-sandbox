@@ -15,10 +15,8 @@ import { createLogger } from '../logger.ts';
 import type { ServerStatus } from '../types.ts';
 import type { AppConfig } from '../appConfig/types.ts';
 import type { TunnelSessionState } from '../processes/tunnel/index.ts';
-import {
-  getSandboxBrowserState,
-  getRecordingExportStatus,
-} from '../processes/tunnel/index.ts';
+import { getSandboxBrowserState } from '../processes/tunnel/browserState.ts';
+import { getRecordingExportStatus } from '../processes/tunnel/recording.ts';
 import type { InstallFailure } from '../bootstrap/index.ts';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
 import type { ProcessManager } from '../processes/ProcessManager.ts';

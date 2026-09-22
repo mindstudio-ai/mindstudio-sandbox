@@ -8,7 +8,7 @@ import type httpProxy from 'http-proxy';
 import { ctx } from './context.ts';
 import { getVersions } from './versionCache.ts';
 import { getAgentActivity } from '../processes/agent/activity.ts';
-import { getSandboxBrowserState } from '../processes/tunnel/index.ts';
+import { getSandboxBrowserState } from '../processes/tunnel/browserState.ts';
 import { getProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
 import { sendPreviewPlaceholder } from './previewPlaceholder.ts';
 

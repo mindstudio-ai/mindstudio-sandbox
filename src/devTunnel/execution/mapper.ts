@@ -39,7 +39,7 @@ const log = createLogger('mapper');
 export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 export const SYSTEM_ROLE = 'system';
 
-export const SYSTEM_AUTH: DevSession['auth'] = {
+const SYSTEM_AUTH: DevSession['auth'] = {
   userId: SYSTEM_USER_ID,
   roleAssignments: [{ userId: SYSTEM_USER_ID, roleName: SYSTEM_ROLE }],
 };

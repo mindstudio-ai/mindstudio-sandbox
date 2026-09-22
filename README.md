@@ -82,7 +82,8 @@ src/
     ProcessRegistry.ts  — process metadata + per-process .logs/<name>.ndjson
     ResourceMonitor.ts  — memory/CPU metrics;  parseJsonEvent.ts
     agent/              — remy process + IPC, typed events, activity, history, actions
-    tunnel/             — dev tunnel process + IPC; imports devTunnel/protocol.ts
+    tunnel/             — dev tunnel process: spawn + IPC (index), WS actions, replay export,
+                          sandbox-browser state, watcher notifications; imports devTunnel/protocol.ts
     devServer/          — dev server process management
 
   agentTools/           — remy's external tools; most relay to a tunnel command

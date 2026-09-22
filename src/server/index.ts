@@ -37,10 +37,6 @@ let lspWss: WebSocketServer;
 let hmrWss: WebSocketServer;
 const hmrRelayManager = new HmrRelayManager();
 
-export function getStatus(): ServerStatus {
-  return ctx.status;
-}
-
 export function setStatus(s: ServerStatus): void {
   log.info(`Status: ${ctx.status} → ${s}`);
   ctx.status = s;

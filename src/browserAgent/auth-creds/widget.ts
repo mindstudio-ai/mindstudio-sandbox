@@ -12,8 +12,8 @@ import { fillAndSubmit, fillOtp } from './fill';
 
 const HOST_ID = '__mindstudio-auth-creds-host';
 
-export const DEV_EMAIL = 'remy@mindstudio.ai';
-export const DEV_PHONE = '+15555555555';
+const DEV_EMAIL = 'remy@mindstudio.ai';
+const DEV_PHONE = '+15555555555';
 export const DEV_OTP_CODE = '123456';
 
 export interface WidgetState {

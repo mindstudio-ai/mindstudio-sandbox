@@ -1,16 +1,17 @@
 /**
- * Tunnel process — manages the dev tunnel child (`src/devTunnel/`, this
- * package's second bin).
+ * Tunnel process — spawns the dev tunnel child (`src/devTunnel/`, this
+ * package's second bin) and speaks its stdin/stdout protocol.
  *
- * Handles startup config, stdout event parsing, and WS action handlers.
- * Uses requestId-based correlation for all stdin commands.
+ * This file is the process and the wire: spawn, requestId-correlated commands,
+ * and the stdout event loop. The rest of the directory is what rides on it —
+ * `actions.ts` (the editor's WS actions), `recording.ts` (replay export),
+ * `browserState.ts` (the sandbox Chrome's lifecycle), `notify.ts` (the
+ * workspace watcher's notifications) — the same split `../agent/` has.
  */
 
-import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { ProcessManager } from '../ProcessManager.ts';
-import { getAgentActivity } from '../agent/activity.ts';
 import { parseJsonEvent } from '../parseJsonEvent.ts';
 import { createLogger } from '../../logger.ts';
 // The tunnel owns the protocol it speaks; this side imports it rather than
@@ -18,14 +19,14 @@ import { createLogger } from '../../logger.ts';
 // three fields it had wrong — `branch`, `platform-method-started.method`, and
 // the browser state's nullability — are why it does not any more.
 import type {
-  BrowserStep,
-  SandboxBrowserStateEvent,
   TunnelAction,
   TunnelCommandParams,
   TunnelCommandResult,
   TunnelEvent,
   TunnelMessage,
 } from '../../devTunnel/protocol.ts';
+import { handleSandboxBrowserState } from './browserState.ts';
+import { setRecordingExportBroadcast } from './recording.ts';
 
 const log = createLogger('tunnel');
 
@@ -33,263 +34,11 @@ const log = createLogger('tunnel');
 const parseTunnelMessage = (line: string) =>
   parseJsonEvent<TunnelMessage>(line);
 
-type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
-
 export interface TunnelSessionState {
   sessionId: string;
   releaseId: string;
   proxyPort: number | null;
   proxyUrl: string | null;
-}
-
-export interface SandboxBrowserState {
-  state:
-    | 'starting'
-    | 'running'
-    | 'crashed'
-    | 'restarting'
-    | 'degraded'
-    | 'stopped'
-    | 'unknown';
-  pid: number | null;
-  previewMode: 'desktop' | 'mobile' | null;
-  viewport: string | null;
-  executablePath: string | null;
-  /** Timestamp of most recent `running` transition. */
-  startedAt: number | null;
-  /** Timestamp of most recent `crashed` transition. */
-  lastCrashAt: number | null;
-  lastCrashExitCode: number | null;
-  lastCrashSignal: string | null;
-  /** Cumulative within session; reset to 0 on every `running`. */
-  consecutiveFailures: number;
-  /** Total `running` transitions after the first. */
-  restartCount: number;
-  degradedReason: 'repeated-crashes' | 'no-executable' | null;
-}
-
-function initialSandboxBrowserState(): SandboxBrowserState {
-  return {
-    state: 'unknown',
-    pid: null,
-    previewMode: null,
-    viewport: null,
-    executablePath: null,
-    startedAt: null,
-    lastCrashAt: null,
-    lastCrashExitCode: null,
-    lastCrashSignal: null,
-    consecutiveFailures: 0,
-    restartCount: 0,
-    degradedReason: null,
-  };
-}
-
-let sandboxBrowserState: SandboxBrowserState = initialSandboxBrowserState();
-
-export function getSandboxBrowserState(): SandboxBrowserState {
-  return { ...sandboxBrowserState };
-}
-
-// ---------------------------------------------------------------------------
-// Replay video export — one job at a time, tracked here so a reconnecting
-// editor picks the result back up from the init frame.
-// ---------------------------------------------------------------------------
-
-export interface RecordingExportStatus {
-  jobId: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
-  startedAt: number;
-  finishedAt?: number;
-  /** Absent when the mp4 was written to a private store — `store`/`key` locate
-   *  it in that case, and the caller signs a link for it. */
-  url?: string;
-  store?: string;
-  key?: string;
-  width?: number;
-  height?: number;
-  durationMs?: number;
-  error?: string;
-  errorCode?: string;
-}
-
-let recordingExport: RecordingExportStatus | null = null;
-let recordingExportExpiry: ReturnType<typeof setTimeout> | null = null;
-// Keep a finished job long enough for an editor that reloaded mid-render to
-// still see the result.
-const RECORDING_EXPORT_RETENTION_MS = 10 * 60_000;
-// Above the tunnel's own budget (6-minute replay cap plus ready/encode/upload
-// margin) so the tunnel's error code, not a bare timeout, is what we report.
-const RECORDING_EXPORT_TIMEOUT_MS = 600_000;
-
-export function getRecordingExportStatus(): RecordingExportStatus | null {
-  return recordingExport ? { ...recordingExport } : null;
-}
-
-function finishRecordingExport(next: RecordingExportStatus): void {
-  recordingExport = next;
-  if (recordingExportExpiry) {
-    clearTimeout(recordingExportExpiry);
-  }
-  recordingExportExpiry = setTimeout(() => {
-    if (recordingExport?.jobId === next.jobId) {
-      recordingExport = null;
-    }
-  }, RECORDING_EXPORT_RETENTION_MS);
-}
-
-// The server's broadcast, captured at startup so the export handler can
-// announce completion outside a stdout callback.
-let broadcastFn: TunnelCallbacks['broadcast'] | null = null;
-
-export interface RecordingExportRequest {
-  /** The rrweb recording session, and the window of it to render. */
-  recordingSessionId: string;
-  startTs: number;
-  endTs: number;
-  /** Brand wallpaper + window styling, resolved by whoever is asking (the
-   *  tunnel has no brand data). Opaque here; the tunnel validates its
-   *  contents. */
-  stage?: Record<string, unknown>;
-  /** App store for the finished mp4, and its access. Defaulted tunnel-side. */
-  store?: string;
-  access?: 'public' | 'private';
-}
-
-/**
- * Render a replay window to an mp4 on the box. Shared by the editor's Export
- * button (over WS) and the agent's `remy-admin qa-recordings export` (over the
- * sidecar), which differ in exactly two ways.
- *
- * `requireIdleAgent` — the render shares Chrome and two cores with everything
- * else, so a *human* must not be able to start one in the middle of a turn.
- * That check is meaningless for the agent, which is busy by definition while
- * asking: when the agent is the caller it is blocked awaiting this render, so
- * the box is otherwise idle (its own model call is remote). The real mutual
- * exclusion is the tunnel's `exportGate` + `enqueueBrowserWork`, which applies
- * to both paths either way.
- *
- * `awaitResult` — the editor gets a jobId immediately and watches progress
- * events; the CLI blocks and wants the URL.
- */
-export async function startRecordingExport(
-  pm: ProcessManager,
-  req: RecordingExportRequest,
-  opts: { requireIdleAgent: boolean; awaitResult: boolean },
-): Promise<{ jobId: string; export?: RecordingExportStatus }> {
-  if (
-    typeof req.recordingSessionId !== 'string' ||
-    !/^[a-f0-9]{32}$/.test(req.recordingSessionId)
-  ) {
-    throw new Error('Missing "recordingSessionId" (32 hex characters)');
-  }
-  if (!Number.isFinite(req.startTs) || !Number.isFinite(req.endTs)) {
-    throw new Error('Missing "startTs"/"endTs" (epoch milliseconds)');
-  }
-  if (
-    req.stage !== undefined &&
-    (typeof req.stage !== 'object' ||
-      req.stage === null ||
-      JSON.stringify(req.stage).length > 8192)
-  ) {
-    throw new Error('Invalid "stage" parameter');
-  }
-  if (opts.requireIdleAgent && getAgentActivity().busy) {
-    throw new Error(
-      'Remy is working right now — wait for the current turn to finish before exporting.',
-    );
-  }
-  if (recordingExport?.status === 'running') {
-    throw new Error('A video export is already running.');
-  }
-
-  const jobId = randomBytes(16).toString('hex');
-  const startedAt = Date.now();
-  if (recordingExportExpiry) {
-    clearTimeout(recordingExportExpiry);
-    recordingExportExpiry = null;
-  }
-  recordingExport = { jobId, status: 'running', startedAt };
-  log.info(`Replay export started: ${jobId}`);
-
-  const run = sendCommand(
-    pm,
-    'export-recording',
-    {
-      jobId,
-      recordingSessionId: req.recordingSessionId,
-      startTs: req.startTs,
-      endTs: req.endTs,
-      ...(req.stage ? { stage: req.stage } : {}),
-      ...(req.store ? { store: req.store } : {}),
-      ...(req.access ? { access: req.access } : {}),
-    },
-    RECORDING_EXPORT_TIMEOUT_MS,
-  ).then(
-    (res) => {
-      if (recordingExport?.jobId !== jobId) {
-        return null;
-      }
-      const finishedAt = Date.now();
-      if (res.success) {
-        finishRecordingExport({
-          jobId,
-          status: 'completed',
-          startedAt,
-          finishedAt,
-          ...(typeof res.url === 'string' ? { url: res.url } : {}),
-          ...(typeof res.store === 'string' ? { store: res.store } : {}),
-          ...(typeof res.key === 'string' ? { key: res.key } : {}),
-          width: res.width as number,
-          height: res.height as number,
-          durationMs: res.durationMs as number,
-        });
-      } else {
-        const errorCode =
-          typeof res.errorCode === 'string' ? res.errorCode : undefined;
-        finishRecordingExport({
-          jobId,
-          status: errorCode === 'CANCELLED' ? 'cancelled' : 'failed',
-          startedAt,
-          finishedAt,
-          error: typeof res.error === 'string' ? res.error : 'Export failed',
-          ...(errorCode ? { errorCode } : {}),
-        });
-      }
-      return announceRecordingExport(jobId);
-    },
-    // A rejection is the command itself failing to answer — a tunnel restart,
-    // or the timeout above. Without this the job stayed 'running' forever and
-    // every later export was refused as "already running", since a running job
-    // sets no retention timer.
-    (err: unknown) => {
-      if (recordingExport?.jobId !== jobId) {
-        return null;
-      }
-      finishRecordingExport({
-        jobId,
-        status: 'failed',
-        startedAt,
-        finishedAt: Date.now(),
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return announceRecordingExport(jobId);
-    },
-  );
-
-  if (!opts.awaitResult) {
-    void run;
-    return { jobId };
-  }
-  const finished = await run;
-  return { jobId, ...(finished ? { export: finished } : {}) };
-}
-
-function announceRecordingExport(jobId: string): RecordingExportStatus | null {
-  const status = getRecordingExportStatus();
-  log.info(`Replay export finished: ${jobId} (${status?.status})`);
-  broadcastFn?.('recordingExportCompleted', { export: status });
-  return status;
 }
 
 export interface TunnelCallbacks {
@@ -327,7 +76,7 @@ export function startTunnel(
   workspaceDir: string,
   callbacks: TunnelCallbacks,
 ): void {
-  broadcastFn = callbacks.broadcast;
+  setRecordingExportBroadcast(callbacks.broadcast);
 
   if (!existsSync(TUNNEL_ENTRY)) {
     // Almost always `npm run dev` without a prior build: tsx compiles THIS file
@@ -440,66 +189,6 @@ export function failPendingCommands(reason: string): void {
     pending.delete(requestId);
     entry.resolve({ success: false, error: reason });
   }
-}
-
-// ---------------------------------------------------------------------------
-// Workspace change notifications
-// ---------------------------------------------------------------------------
-
-/**
- * The C&C's workspace watcher fires once per chokidar event, and a build
- * rewrites many files in a burst. These coalesce a burst into one command —
- * trailing-edge, with the 500 ms the tunnel's own watchers used before this
- * replaced them. A failure is logged and dropped on purpose: the tunnel re-reads
- * everything on each session start, so a notification it never received is
- * caught up on the next one.
- */
-const NOTIFY_DEBOUNCE_MS = 500;
-/** A full session restart on a slow platform — teardown, `/manage/start`, schema sync. */
-const NOTIFY_TIMEOUT_MS = 60_000;
-
-let configFileChangedTimer: ReturnType<typeof setTimeout> | null = null;
-let tableFileChangedTimer: ReturnType<typeof setTimeout> | null = null;
-
-function warnIfNotApplied(
-  action: 'config-file-changed' | 'table-file-changed',
-  result: { success: boolean; error?: string },
-): void {
-  if (!result.success) {
-    log.warn(`Tunnel did not act on ${action}: ${result.error}`);
-  }
-}
-
-/** `mindstudio.json`, or an interface config it references, changed. */
-export function notifyConfigFileChanged(
-  pm: ProcessManager,
-  absPath: string,
-): void {
-  if (configFileChangedTimer) {
-    clearTimeout(configFileChangedTimer);
-  }
-  configFileChangedTimer = setTimeout(() => {
-    configFileChangedTimer = null;
-    void sendCommand(
-      pm,
-      'config-file-changed',
-      { path: absPath },
-      NOTIFY_TIMEOUT_MS,
-    ).then((result) => warnIfNotApplied('config-file-changed', result));
-  }, NOTIFY_DEBOUNCE_MS);
-}
-
-/** A declared table source file changed. */
-export function notifyTableFileChanged(pm: ProcessManager): void {
-  if (tableFileChangedTimer) {
-    clearTimeout(tableFileChangedTimer);
-  }
-  tableFileChangedTimer = setTimeout(() => {
-    tableFileChangedTimer = null;
-    void sendCommand(pm, 'table-file-changed', {}, NOTIFY_TIMEOUT_MS).then(
-      (result) => warnIfNotApplied('table-file-changed', result),
-    );
-  }, NOTIFY_DEBOUNCE_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -634,203 +323,4 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       handleSandboxBrowserState(tunnelEvent, cb);
       break;
   }
-}
-
-/**
- * Apply a sandbox-browser-state transition to module state, notify the
- * ResourceMonitor about PID add/remove, and broadcast the new state so
- * the frontend can render Chrome's lifecycle without polling.
- */
-function handleSandboxBrowserState(
-  event: Extract<TunnelEvent, { event: 'sandbox-browser-state' }>,
-  cb: TunnelCallbacks,
-): void {
-  const prev = sandboxBrowserState;
-  const next: SandboxBrowserState = { ...prev };
-
-  switch (event.state) {
-    case 'starting':
-      next.state = 'starting';
-      if (event.previewMode !== undefined) {
-        next.previewMode = event.previewMode ?? null;
-      }
-      break;
-    case 'running':
-      next.state = 'running';
-      next.pid = event.pid;
-      next.previewMode = event.previewMode ?? null;
-      next.viewport = event.viewport;
-      next.executablePath = event.executablePath;
-      next.startedAt = Date.now();
-      next.consecutiveFailures = 0;
-      next.degradedReason = null;
-      // Count subsequent `running` transitions as restarts (the very first
-      // one is the initial launch).
-      if (prev.state !== 'unknown' && prev.state !== 'starting') {
-        next.restartCount = prev.restartCount + 1;
-      } else if (prev.startedAt !== null) {
-        next.restartCount = prev.restartCount + 1;
-      }
-      cb.onSandboxBrowserPid(event.pid);
-      break;
-    case 'crashed':
-      next.state = 'crashed';
-      next.pid = null;
-      next.lastCrashAt = Date.now();
-      next.lastCrashExitCode = event.exitCode;
-      next.lastCrashSignal = event.signal;
-      next.consecutiveFailures = event.consecutiveFailures;
-      cb.onSandboxBrowserPid(null);
-      log.warn('Sandbox Chrome crashed', {
-        exitCode: event.exitCode,
-        signal: event.signal,
-        consecutiveFailures: event.consecutiveFailures,
-      });
-      break;
-    case 'restarting':
-      next.state = 'restarting';
-      break;
-    case 'degraded':
-      next.state = 'degraded';
-      next.pid = null;
-      next.degradedReason = event.reason;
-      // Narrowed on `reason`, not on `typeof event.consecutiveFailures`: only
-      // the repeated-crashes variant carries a count, and saying so through the
-      // discriminant means the compiler proves the field is there instead of
-      // the code testing whether it turned up.
-      if (event.reason === 'repeated-crashes') {
-        next.consecutiveFailures = event.consecutiveFailures;
-      }
-      cb.onSandboxBrowserPid(null);
-      log.error('Sandbox Chrome degraded — automation disabled for session', {
-        reason: event.reason,
-      });
-      break;
-    case 'stopped':
-      // Full reset — counters are per-session, not per-sandbox-lifetime.
-      Object.assign(next, initialSandboxBrowserState(), { state: 'stopped' });
-      cb.onSandboxBrowserPid(null);
-      break;
-  }
-
-  sandboxBrowserState = next;
-  cb.broadcast('sandboxBrowserStateChanged', { sandboxBrowser: next });
-}
-
-// ---------------------------------------------------------------------------
-// WS action handlers
-// ---------------------------------------------------------------------------
-
-/** Create WS action handlers for tunnel commands. */
-export function createTunnelActions(
-  pm: ProcessManager,
-): Record<string, ActionHandler> {
-  return {
-    tunnelRunScenario: async (p) => {
-      const { scenarioId, skipTruncate } = p as {
-        scenarioId: string;
-        skipTruncate?: boolean;
-      };
-      if (!scenarioId) {
-        throw new Error('Missing "scenarioId" parameter');
-      }
-      log.info(`Running scenario: ${scenarioId}`);
-      // Matches the agent-tool path's bound — seeds routinely outlive 30s,
-      // and a shorter timeout reports failure while the tunnel finishes the
-      // run (and its role assignment) anyway.
-      return await sendCommand(
-        pm,
-        'run-scenario',
-        { scenarioId, ...(skipTruncate ? { skipTruncate } : {}) },
-        300_000,
-      );
-    },
-    tunnelRunMethod: async (p) => {
-      const { method, input, roles, userId } = p as {
-        method: string;
-        input?: Record<string, unknown>;
-        roles?: string[];
-        userId?: string;
-      };
-      if (!method) {
-        throw new Error('Missing "method" parameter');
-      }
-      log.info(`Running method: ${method}`);
-      return await sendCommand(
-        pm,
-        'run-method',
-        {
-          method,
-          input: input ?? {},
-          ...(roles ? { roles } : {}),
-          ...(userId ? { userId } : {}),
-        },
-        30_000,
-      );
-    },
-    tunnelBrowser: async (p) => {
-      // The editor supplies these over WS, so they are unknown until checked.
-      // `BrowserStep` keeps an index signature for exactly this: the tunnel
-      // validates each step's `command` itself, and this side must not have to
-      // grow a case per browser verb to pass one through.
-      const { steps } = p as { steps?: BrowserStep[] };
-      if (!steps) {
-        throw new Error('Missing "steps" parameter');
-      }
-      return await sendCommand(pm, 'browser', { steps }, 120_000);
-    },
-    tunnelScreenshot: async (p) => {
-      const { path } = p as { path?: string };
-      return await sendCommand(
-        pm,
-        'screenshotFullPage',
-        path ? { path } : {},
-        120_000,
-      );
-    },
-    // Set the dev test user's roles — a real write to the user's row via the
-    // platform (upsert + role update + users-table sync), hence a timeout
-    // sized for a platform round-trip.
-    tunnelSetTestUserRoles: async (p) => {
-      const { roles } = p as { roles: string[] };
-      if (!Array.isArray(roles)) {
-        throw new Error('Missing "roles" parameter (array of role IDs)');
-      }
-      log.info(`Setting test user roles: ${roles.join(', ') || '(none)'}`);
-      return await sendCommand(pm, 'set-test-user-roles', { roles }, 15_000);
-    },
-    // Find-or-create the dev test user and return it with its current roles.
-    tunnelGetTestUser: async () => {
-      return await sendCommand(pm, 'get-test-user', {}, 15_000);
-    },
-    listDatabases: async () => {
-      return await sendCommand(pm, 'list-databases', {}, 30_000);
-    },
-    // Render a browser-test replay to an mp4 on the box. Answers at once with
-    // a jobId — the editor's request has no timeout, so the render is never
-    // awaited here. Progress arrives as `recordingExportProgress`, the result
-    // as `recordingExportCompleted`, and the init frame carries the status.
-    tunnelExportRecording: async (p) => {
-      const { jobId } = await startRecordingExport(
-        pm,
-        p as unknown as RecordingExportRequest,
-        // A human clicked Export: refuse mid-turn, and answer with the jobId
-        // rather than holding the request open for the whole render.
-        { requireIdleAgent: true, awaitResult: false },
-      );
-      return { jobId };
-    },
-    tunnelCancelExportRecording: async (p) => {
-      const { jobId } = p as { jobId?: string };
-      if (typeof jobId !== 'string' || !jobId) {
-        throw new Error('Missing "jobId" parameter');
-      }
-      return await sendCommand(
-        pm,
-        'cancel-export-recording',
-        { jobId },
-        15_000,
-      );
-    },
-  };
 }
