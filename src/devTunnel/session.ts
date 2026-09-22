@@ -1,15 +1,13 @@
 /**
- * Headless Dev Mode
+ * The dev tunnel's session lifecycle.
  *
- * Runs the MindStudio dev tunnel without a TUI. Designed for programmatic
- * control by a parent process (e.g., a sandbox C&C server or CI pipeline).
+ * Driven by the C&C server, which spawns this process and is its only client
+ * (`processes/tunnel/`). Outputs structured JSON events to stdout (one per
+ * line, newline-delimited); the C&C reads these to track session state, method
+ * execution, errors, and connection health.
  *
- * Outputs structured JSON events to stdout (one per line, newline-delimited).
- * The parent process reads these to track session state, method execution,
- * errors, and connection health.
- *
- * Does NOT start a dev server — the parent process manages that separately.
- * The tunnel just needs to know which port to proxy to.
+ * Does NOT start a dev server — the C&C manages that. The port to proxy to is
+ * read from the web interface's config on every session start.
  *
  * @module
  */
@@ -22,45 +20,38 @@ import {
   sessionDataSourcesPayload,
   sessionMethodsPayload,
 } from './api.ts';
-import {
-  detectAppConfig,
-  getWebInterfaceConfig,
-  readTableSources,
-} from './config/app-config.ts';
+import { detectAppConfig, readTableSources } from './config/app-config.ts';
+import { findWebInterface, getWebInterfaceConfig } from '../appConfig/read.ts';
 import { initRequestLog, closeRequestLog } from './logging/request-log.ts';
 import { initBrowserLog, closeBrowserLog } from './logging/browser-log.ts';
 import { subscribeDevEvents } from './ipc/session-events.ts';
 import {
   setupStdinCommands,
+  type LifecycleHooks,
   type SessionState,
 } from './stdin-commands/index.ts';
 import { emitEvent } from './ipc/ipc.ts';
-import { getApiKey, getApiBaseUrl, getUserId, getDbWsUrl } from './config.ts';
-import { initLoggerHeadless, log, type LogLevel } from './logging/logger.ts';
+import {
+  getApiKey,
+  getApiBaseUrl,
+  getUserId,
+  getDbWsUrl,
+  getLogLevel,
+} from './config.ts';
+import {
+  createLogger,
+  setLogLevel,
+  setSinkLogLevel,
+} from './logging/logger.ts';
 import { stablePort } from './utils.ts';
-import { watchTableFiles } from './config/table-watcher.ts';
-import { watchManifestFiles } from './config/config-watcher.ts';
 import {
   resolveConfigSnapshot,
   hasLoopCriticalGap,
 } from './interfaces/read-config.ts';
 import { join } from 'node:path';
 
-/**
- * Options for headless dev mode.
- */
-export interface HeadlessOptions {
-  /** Working directory containing mindstudio.json. Defaults to process.cwd(). */
-  cwd?: string;
-  /** Port the dev server is running on. If omitted, reads from web.json. If neither, proxy is skipped. */
-  devPort?: number;
-  /** Preferred port for the local proxy. Defaults to a stable port derived from the app ID. */
-  proxyPort?: number;
-  /** Log level for stderr output. Defaults to 'info'. */
-  logLevel?: LogLevel;
-  /** Launch a sandbox-side headless Chrome that participates as a WS client. */
-  sandboxBrowser?: boolean;
-}
+const log = createLogger('session');
+const browserLog = createLogger('browser');
 
 /**
  * The proxy binds to loopback, unconditionally.
@@ -102,12 +93,11 @@ const DEV_ORIGIN = 'sandbox' as const;
 
 async function startSession(
   cwd: string,
-  opts: HeadlessOptions,
   state: SessionState,
   shutdown: () => Promise<void>,
 ): Promise<boolean> {
   // Read fresh config
-  const initialConfig = detectAppConfig(cwd);
+  const initialConfig = await detectAppConfig(cwd);
   if (!initialConfig) {
     emitEvent({
       event: 'config-error',
@@ -139,7 +129,6 @@ async function startSession(
     // Don't publish a broken release. Return false so the boot-retry + 15s
     // degraded loop re-attempts a full start until the interface resolves.
     log.warn(
-      'session',
       'Config snapshot missing a declared agent/voice interface; deferring start',
       { unresolvedDeclared },
     );
@@ -148,13 +137,14 @@ async function startSession(
 
   state.appConfig = appConfig;
 
-  // Resolve dev port + cache the full web config snapshot for hot-apply diffing.
-  const webConfig = getWebInterfaceConfig(appConfig, cwd);
+  // Cache the web config snapshot for hot-apply diffing, and resolve the dev
+  // server's port from it — on EVERY start, so a `devPort` edit in web.json
+  // reaches the proxy on the restart it triggers. (This used to prefer a
+  // `--port` the C&C computed once at boot, which made that restart a no-op.)
+  // 5173 is Vite's default, for a web.json that leaves it unsaid.
+  const webConfig = getWebInterfaceConfig(appConfig);
   state.lastWebConfig = webConfig;
-  let devPort = opts.devPort ?? null;
-  if (devPort === null) {
-    devPort = webConfig?.devPort ?? null;
-  }
+  const devPort = webConfig?.devPort ?? 5173;
 
   emitEvent({
     event: 'session-starting',
@@ -196,13 +186,9 @@ async function startSession(
             errors: syncResult.errors,
           });
         } else {
-          log.warn(
-            'session',
-            'No table source files found, skipping schema sync',
-            {
-              expected: appConfig.tables.map((t) => t.path),
-            },
-          );
+          log.warn('No table source files found, skipping schema sync', {
+            expected: appConfig.tables.map((t) => t.path),
+          });
         }
       } catch (err) {
         emitEvent({
@@ -215,7 +201,7 @@ async function startSession(
     }
 
     // Start or reuse proxy
-    if (devPort !== null && session.clientContext) {
+    if (session.clientContext) {
       if (state.proxy) {
         // The proxy instance persists across restarts on purpose — restarting it
         // would drop every browser-agent WebSocket and the sandbox Chrome's
@@ -233,8 +219,7 @@ async function startSession(
           appConfig.appId,
           BIND_ADDRESS,
         );
-        const preferred = opts.proxyPort ?? stablePort(appConfig.appId);
-        const proxyPort = await proxy.start(preferred);
+        const proxyPort = await proxy.start(stablePort(appConfig.appId));
         state.proxy = proxy;
         state.proxyPort = proxyPort;
       }
@@ -253,12 +238,12 @@ async function startSession(
       runner.setProxyUrl(`http://${BIND_ADDRESS}:${state.proxyPort}`);
       runner.setProxy(state.proxy);
 
-      // Optional sandbox-side headless Chrome. Connects back to the proxy
-      // as just another WS client; the proxy registers it with mode='headless'
-      // and getCommandTarget() prefers it for automation. Viewport follows
-      // the web interface's defaultPreviewMode so mobile-first apps render
-      // at mobile dimensions in the sandbox Chrome too.
-      if (opts.sandboxBrowser && state.proxyPort !== null && !state.browser) {
+      // The sandbox-side headless Chrome. Connects back to the proxy as just
+      // another WS client; the proxy registers it with mode='headless' and
+      // getCommandTarget() prefers it for automation. Viewport follows the web
+      // interface's defaultPreviewMode so mobile-first apps render at mobile
+      // dimensions in the sandbox Chrome too.
+      if (state.proxyPort !== null && !state.browser) {
         const previewMode =
           state.lastWebConfig?.defaultPreviewMode ?? 'desktop';
         const proxy = state.proxy;
@@ -276,7 +261,7 @@ async function startSession(
         );
         state.browser = supervisor;
         supervisor.start().catch((err) => {
-          log.warn('browser', 'Sandbox browser failed to start', {
+          browserLog.warn('Sandbox browser failed to start', {
             error: err instanceof Error ? err.message : String(err),
           });
         });
@@ -308,12 +293,9 @@ async function startSession(
     // Subscribe to runner events
     state.unsubscribers.push(...subscribeDevEvents(shutdown));
 
-    // Watch table source files for changes — auto-sync without session restart
-    setupTableWatchers(cwd, state);
-
-    // Start polling for platform method requests now that schema sync,
-    // proxy, and watchers are all set up. Starting earlier would risk
-    // executing methods against stale session state (e.g. missing tables).
+    // Start polling for platform method requests now that schema sync and
+    // proxy are set up. Starting earlier would risk executing methods against
+    // stale session state (e.g. missing tables).
     runner.startPolling();
 
     return true;
@@ -326,64 +308,56 @@ async function startSession(
   }
 }
 
-function setupTableWatchers(cwd: string, state: SessionState): void {
-  if (!state.appConfig || state.appConfig.tables.length === 0) {
+/**
+ * A declared table source file changed — the C&C's workspace watcher says so.
+ * Re-read the sources and sync the schema; no session restart.
+ */
+async function resyncTables(cwd: string, state: SessionState): Promise<void> {
+  if (!state.runner || !state.appConfig?.appId) {
+    return;
+  }
+  const session = state.runner.getSession();
+  if (!session) {
     return;
   }
 
-  const cleanup = watchTableFiles(state.appConfig.tables, cwd, async () => {
-    if (!state.runner || !state.appConfig?.appId) {
-      return;
-    }
-    const session = state.runner.getSession();
-    if (!session) {
-      return;
-    }
+  emitEvent({ event: 'schema-sync-started' });
+  log.info('Table source file changed, syncing schema');
 
-    emitEvent({ event: 'schema-sync-started' });
-    log.info('session', 'Table source file changed, syncing schema');
-
-    try {
-      const tableSources = readTableSources(state.appConfig, cwd);
-      if (tableSources.length > 0) {
-        const result = await syncSchema(
-          state.appConfig.appId,
-          session.sessionId,
-          tableSources,
-        );
-        session.databases = result.databases;
-        emitEvent({
-          event: 'schema-sync-completed',
-          created: result.created,
-          altered: result.altered,
-          errors: result.errors,
-        });
-        log.info('session', 'Schema sync complete', {
-          created: result.created,
-          altered: result.altered,
-        });
-      } else {
-        log.warn(
-          'session',
-          'Table source file change detected but file(s) still missing',
-          {
-            expected: state.appConfig.tables.map((t) => t.path),
-          },
-        );
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Schema sync failed';
+  try {
+    const tableSources = readTableSources(state.appConfig, cwd);
+    if (tableSources.length > 0) {
+      const result = await syncSchema(
+        state.appConfig.appId,
+        session.sessionId,
+        tableSources,
+      );
+      session.databases = result.databases;
       emitEvent({
         event: 'schema-sync-completed',
-        created: [],
-        altered: [],
-        errors: [message],
+        created: result.created,
+        altered: result.altered,
+        errors: result.errors,
       });
-      log.warn('session', 'Schema sync failed', { error: message });
+      log.info('Schema sync complete', {
+        created: result.created,
+        altered: result.altered,
+      });
+    } else {
+      log.warn('Table source file change detected but file(s) still missing', {
+        expected: state.appConfig.tables.map((t) => t.path),
+      });
     }
-  });
-
-  state.unsubscribers.push(cleanup);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Schema sync failed';
+    emitEvent({
+      event: 'schema-sync-completed',
+      created: [],
+      altered: [],
+      errors: [message],
+    });
+    log.warn('Schema sync failed', { error: message });
+  }
 }
 
 /**
@@ -400,11 +374,12 @@ function setupTableWatchers(cwd: string, state: SessionState): void {
  *     `defaultPreviewMode`. devPort/devCommand changes still need a restart
  *     because they affect proxy upstream + sandbox-manager-spawned dev server.
  *
- * The restart that a devPort change falls through to now actually re-points the
- * proxy — `startSession` passes the new port to `DevProxy.updateSession`. It did
- * not before: the restart path reused the existing proxy and refreshed only the
- * client context, while `upstreamPort` was `readonly`, so the change this
- * function defers to a restart never reached the proxy at all.
+ * The restart a devPort change falls through to re-points the proxy:
+ * `startSession` resolves the port from the fresh web.json and passes it to
+ * `DevProxy.updateSession`. Both halves of that were once missing — the proxy's
+ * `upstreamPort` was `readonly`, and the port came from a `--port` flag the C&C
+ * computed once at boot — so the restart this function defers to changed
+ * nothing.
  */
 async function tryHotApplyWebConfigChange(
   state: SessionState,
@@ -415,18 +390,14 @@ async function tryHotApplyWebConfigChange(
     return false;
   }
 
-  const webIface = state.appConfig.interfaces.find(
-    (i) => i.type === 'web' && i.enabled !== false,
-  );
-  if (!webIface) {
-    return false;
-  }
-  const webPath = join(cwd, webIface.path);
-  if (changedPath !== webPath) {
+  const webIface = findWebInterface(state.appConfig);
+  if (!webIface?.path || changedPath !== join(cwd, webIface.path)) {
     return false;
   }
 
-  const newWeb = getWebInterfaceConfig(state.appConfig, cwd);
+  // Re-read: `state.appConfig` still carries web.json as it was at start.
+  const fresh = await detectAppConfig(cwd);
+  const newWeb = fresh ? getWebInterfaceConfig(fresh) : null;
   if (!newWeb) {
     return false;
   }
@@ -440,7 +411,7 @@ async function tryHotApplyWebConfigChange(
   }
 
   const nextMode = newWeb.defaultPreviewMode ?? 'desktop';
-  log.info('session', 'web.json change is preview-mode-only, hot-applying', {
+  log.info('web.json change is preview-mode-only, hot-applying', {
     from: state.lastWebConfig.defaultPreviewMode,
     to: nextMode,
   });
@@ -487,16 +458,20 @@ async function teardownAll(state: SessionState): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Start the dev tunnel in headless mode.
+ * Start the dev tunnel. Runs until the process is signalled.
  */
-export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
-  initLoggerHeadless(opts.logLevel ?? 'info');
+export async function startHeadless(): Promise<void> {
+  // No listeners in this process, so its two thresholds are one setting.
+  const logLevel = getLogLevel();
+  setLogLevel(logLevel);
+  setSinkLogLevel(logLevel);
 
-  const cwd = opts.cwd ?? process.cwd();
+  // The C&C spawns this process with the workspace as its cwd.
+  const cwd = process.cwd();
 
   const apiKey = getApiKey();
   const userId = getUserId();
-  log.info('session', 'Startup config', {
+  log.info('Startup config', {
     apiBaseUrl: getApiBaseUrl(),
     hasApiKey: !!apiKey,
     apiKeyPrefix: apiKey ? apiKey.slice(0, 8) + '...' : null,
@@ -520,8 +495,6 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
   };
 
   let restarting = false;
-  let cleanupConfigWatcher: (() => void) | undefined;
-
   let stopping = false;
   let degradedRetryTimer: ReturnType<typeof setInterval> | null = null;
   const shutdown = async () => {
@@ -534,7 +507,6 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
       degradedRetryTimer = null;
     }
     emitEvent({ event: 'session-stopping' });
-    cleanupConfigWatcher?.();
     await teardownAll(state);
     emitEvent({ event: 'session-stopped' });
   };
@@ -552,13 +524,13 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
   const MAX_START_RETRIES = 5;
   let started = false;
   for (let attempt = 1; attempt <= MAX_START_RETRIES && !stopping; attempt++) {
-    started = await startSession(cwd, opts, state, shutdown);
+    started = await startSession(cwd, state, shutdown);
     if (started) {
       break;
     }
     if (attempt < MAX_START_RETRIES) {
       const delay = Math.min(1000 * 2 ** (attempt - 1), 10_000);
-      log.info('session', `Start failed, retrying in ${delay}ms`, {
+      log.info(`Start failed, retrying in ${delay}ms`, {
         attempt,
         maxAttempts: MAX_START_RETRIES,
       });
@@ -573,7 +545,6 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
         'Config invalid or missing at boot. Waiting for valid mindstudio.json.',
     });
     log.warn(
-      'session',
       'Booting in degraded state — no valid config. Watching for changes.',
     );
 
@@ -589,14 +560,14 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
       }
       restarting = true;
       try {
-        log.info('session', 'Retrying session start from degraded state');
-        const ok = await startSession(cwd, opts, state, shutdown);
+        log.info('Retrying session start from degraded state');
+        const ok = await startSession(cwd, state, shutdown);
         if (ok) {
           emitEvent({
             event: 'degraded-state-resolved',
             appId: state.appConfig?.appId,
           });
-          log.info('session', 'Recovered from degraded state');
+          log.info('Recovered from degraded state');
           if (degradedRetryTimer) {
             clearInterval(degradedRetryTimer);
             degradedRetryTimer = null;
@@ -608,74 +579,82 @@ export async function startHeadless(opts: HeadlessOptions = {}): Promise<void> {
     }, 15_000);
   }
 
-  // Stdin command loop
-  setupStdinCommands(state, cwd);
-
-  // Watch mindstudio.json + every interface JSON it references. Most changes
-  // trigger a full session restart (validate before teardown so corrupt writes
-  // don't kill the running session). The only exception is web.json's
-  // `defaultPreviewMode` — that hot-applies via the supervisor without a
-  // restart, so rrweb continuity and cookies survive the swap.
-  cleanupConfigWatcher = watchManifestFiles(cwd, async (changedPath) => {
-    if (stopping || restarting) {
-      return;
-    }
-
-    // Try the hot-apply fast path first — only triggers when the changed
-    // file IS the active web.json AND the only field that differs is
-    // defaultPreviewMode. Anything else falls through to the restart path.
-    if (await tryHotApplyWebConfigChange(state, cwd, changedPath)) {
-      return;
-    }
-
-    restarting = true;
-    try {
-      emitEvent({ event: 'config-changed', path: changedPath });
-
-      // Validate BEFORE tearing down the running session
-      const newConfig = detectAppConfig(cwd);
-      if (!newConfig || !newConfig.appId) {
-        emitEvent({
-          event: 'config-error',
-          message: 'mindstudio.json is invalid — keeping current session',
-        });
-        log.warn(
-          'session',
-          'Config change detected but file is invalid, keeping current session',
-        );
+  // Workspace changes arrive from the C&C's watcher as stdin commands
+  // (`config-file-changed`, `table-file-changed`); these are what they run.
+  // This process used to watch the files itself — a second chokidar tree over
+  // the same workspace, which also saw the C&C's own JSON repairs as edits and
+  // restarted the session for them.
+  //
+  // Most config changes trigger a full session restart (validate before
+  // teardown so corrupt writes don't kill the running session). The one
+  // exception is web.json's `defaultPreviewMode` — that hot-applies via the
+  // supervisor without a restart, so rrweb continuity and cookies survive.
+  const lifecycle: LifecycleHooks = {
+    onTableFileChanged: () => resyncTables(cwd, state),
+    onConfigFileChanged: async (changedPath) => {
+      // A change landing mid-restart is not lost: that restart reads the disk.
+      if (stopping || restarting) {
         return;
       }
 
-      const wasDegraded = !state.runner;
-      await teardownRunner(state);
-      const ok = await startSession(cwd, opts, state, shutdown);
-      if (ok) {
-        if (wasDegraded) {
-          emitEvent({
-            event: 'degraded-state-resolved',
-            appId: newConfig.appId,
-          });
-          log.info('session', 'Recovered from degraded state');
-          if (degradedRetryTimer) {
-            clearInterval(degradedRetryTimer);
-            degradedRetryTimer = null;
-          }
-        }
-        if (state.proxy) {
-          state.proxy.broadcastToClients('reload');
-        }
-      } else {
-        emitEvent({
-          event: 'degraded-state',
-          reason:
-            'Session restart failed after config change. Will retry on next change.',
-        });
-        log.warn('session', 'Session restart failed, entering degraded state');
+      // Try the hot-apply fast path first — only triggers when the changed
+      // file IS the active web.json AND the only field that differs is
+      // defaultPreviewMode. Anything else falls through to the restart path.
+      if (await tryHotApplyWebConfigChange(state, cwd, changedPath)) {
+        return;
       }
-    } finally {
-      restarting = false;
-    }
-  });
+
+      restarting = true;
+      try {
+        emitEvent({ event: 'config-changed', path: changedPath });
+
+        // Validate BEFORE tearing down the running session
+        const newConfig = await detectAppConfig(cwd);
+        if (!newConfig || !newConfig.appId) {
+          emitEvent({
+            event: 'config-error',
+            message: 'mindstudio.json is invalid — keeping current session',
+          });
+          log.warn(
+            'Config change detected but file is invalid, keeping current session',
+          );
+          return;
+        }
+
+        const wasDegraded = !state.runner;
+        await teardownRunner(state);
+        const ok = await startSession(cwd, state, shutdown);
+        if (ok) {
+          if (wasDegraded) {
+            emitEvent({
+              event: 'degraded-state-resolved',
+              appId: newConfig.appId,
+            });
+            log.info('Recovered from degraded state');
+            if (degradedRetryTimer) {
+              clearInterval(degradedRetryTimer);
+              degradedRetryTimer = null;
+            }
+          }
+          if (state.proxy) {
+            state.proxy.broadcastToClients('reload');
+          }
+        } else {
+          emitEvent({
+            event: 'degraded-state',
+            reason:
+              'Session restart failed after config change. Will retry on next change.',
+          });
+          log.warn('Session restart failed, entering degraded state');
+        }
+      } finally {
+        restarting = false;
+      }
+    },
+  };
+
+  // Stdin command loop
+  setupStdinCommands(state, cwd, lifecycle);
 
   // Keep the process alive — the poll loop runs in DevRunner
   await new Promise<void>(() => {});

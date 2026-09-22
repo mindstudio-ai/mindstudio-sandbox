@@ -14,9 +14,11 @@ import { readAgentConfig, type AgentConfigBundle } from './agent-config.ts';
 import { readVoiceConfig, type VoiceConfigBundle } from './voice-config.ts';
 import { readApiConfig, type ApiConfigBundle } from './api-config.ts';
 import { readMcpConfig, type McpConfigBundle } from './mcp-config.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { detectAppConfig } from '../config/app-config.ts';
-import type { AppConfig, AppAuthConfig } from '../config/types.ts';
+import type { AppConfig, AppAuthConfig } from '../../appConfig/types.ts';
+
+const log = createLogger('config');
 
 export type InterfaceType = 'agent' | 'voice' | 'api' | 'mcp';
 
@@ -68,11 +70,11 @@ function readSlice<T>(
     const error = err instanceof Error ? err.message : String(err);
     if (declared) {
       unresolvedDeclared.push(type);
-      log.warn('config', `${type} interface declared but failed to resolve`, {
+      log.warn(`${type} interface declared but failed to resolve`, {
         error,
       });
     } else {
-      log.debug('config', `${type} config not available`, { error });
+      log.debug(`${type} config not available`, { error });
     }
     return null;
   }
@@ -105,7 +107,7 @@ export function readConfig(
   const api = readSlice(
     'api',
     appConfig,
-    () => readApiConfig(projectRoot, appConfig),
+    () => readApiConfig(appConfig),
     unresolvedDeclared,
   );
   const mcp = readSlice(
@@ -154,7 +156,7 @@ export async function resolveConfigSnapshot(
     i++
   ) {
     await new Promise((r) => setTimeout(r, delayMs));
-    current = detectAppConfig(cwd) ?? current;
+    current = (await detectAppConfig(cwd)) ?? current;
     result = readConfig(cwd, current);
   }
 

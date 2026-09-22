@@ -1,5 +1,4 @@
 import type { ProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
-import type { AppConfig } from '../types.ts';
 import type {
   TunnelAction,
   TunnelCommandParams,
@@ -34,8 +33,8 @@ export interface ToolContext {
     timeoutMs?: number,
   ) => { requestId: string; response: Promise<Record<string, unknown>> };
   workspaceDir: string;
-  readAppConfig: () => Promise<AppConfig | null>;
-  setAppConfig: (config: AppConfig) => void;
+  /** Re-read `mindstudio.json` and broadcast it to the editor, after a tool wrote it. */
+  refreshAppConfig: () => Promise<void>;
   /**
    * Fired once, on the genuine first transition into the `buildComplete`
    * onboarding state. The implementation (wired in index.ts) snapshots the

@@ -11,7 +11,7 @@
  */
 
 import path from 'node:path';
-import type { AppConfig } from '../../types.ts';
+import type { AppConfig } from '../../appConfig/types.ts';
 
 export interface EditorTab {
   path: string;
@@ -230,18 +230,18 @@ export class EditorStateManager {
     // path as required, but real-world `mindstudio.json` files in user
     // workspaces sometimes have malformed entries, and this pre-expansion
     // is purely cosmetic so we'd rather degrade than crash the bootstrap.
-    for (const m of appConfig.methods ?? []) {
+    for (const m of appConfig.methods) {
       if (typeof m.path === 'string' && m.path) {
         dirs.add(path.dirname(m.path));
       }
     }
-    for (const t of appConfig.tables ?? []) {
+    for (const t of appConfig.tables) {
       if (typeof t.path === 'string' && t.path) {
         dirs.add(path.dirname(t.path));
       }
     }
     // For interfaces, expand the directory containing the config file
-    for (const i of appConfig.interfaces ?? []) {
+    for (const i of appConfig.interfaces) {
       if (typeof i.path === 'string' && i.path) {
         dirs.add(path.dirname(i.path));
       }

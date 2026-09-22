@@ -9,7 +9,13 @@ import { takeSnapshot, getRefMap } from '../snapshot/walker';
 import { resolveElement } from './resolve';
 import * as actions from './actions';
 import * as cursor from '../cursor/cursor';
-import { startCapture, stopCapture, type LogEntry } from '../transport';
+import { startCapture, stopCapture } from '../transport';
+import type {
+  BrowserStep,
+  CommandResult,
+  LogEntry,
+  StepResult,
+} from '../protocol';
 import {
   ensureSessionRecorder,
   flushSessionRecording,
@@ -371,45 +377,19 @@ function getScrollableAncestors(element: Element): Element[] {
   return scrollers;
 }
 
-export interface StepResult {
-  index: number;
-  command: string;
-  result?: unknown;
-  matched?: string;
-  elapsed?: number;
-  error?: string;
-}
-
-export interface CommandResult {
-  id: string;
-  steps: StepResult[];
-  snapshot: string;
-  logs: LogEntry[];
-  duration: number;
-  /** A flush of the continuous session recording — the rrweb events buffered
-   *  since the last command. The first flush of a run carries the Meta +
-   *  FullSnapshot; later flushes are incremental-only and share the same
-   *  node-ID namespace, so the tunnel can concatenate them seamlessly. */
-  events?: unknown[];
-  /** Identifies the recorder run (document lifetime) these events belong to.
-   *  A new runId means a fresh FullSnapshot — i.e. a real page load / rebuild
-   *  seam. Stable across same-document commands and SPA navigations. */
-  runId?: string;
-}
-
 // Commands that produce a replay-worthy session. Read-only commands
 // (snapshot, styles, evaluate, wait), screenshots, and nav/state-only
 // batches aren't worth recording — the final screenshot or snapshot
 // tells the same story without the overhead.
 const RECORDED_COMMANDS = new Set(['click', 'type', 'select']);
 
-function shouldRecord(steps: Array<Record<string, unknown>>): boolean {
-  return steps.some((s) => RECORDED_COMMANDS.has(s.command as string));
+function shouldRecord(steps: BrowserStep[]): boolean {
+  return steps.some((s) => RECORDED_COMMANDS.has(s.command));
 }
 
 export async function executeSteps(
   id: string,
-  steps: Array<Record<string, unknown>>,
+  steps: BrowserStep[],
 ): Promise<CommandResult> {
   const startTime = Date.now();
   const results: StepResult[] = [];
@@ -421,9 +401,7 @@ export async function executeSteps(
   // (click, type, select). Snapshot/evaluate/wait batches shouldn't
   // interfere with the cursor's hide timer.
   const CURSOR_COMMANDS = new Set(['click', 'type', 'select']);
-  const needsCursor = steps.some((s) =>
-    CURSOR_COMMANDS.has(s.command as string),
-  );
+  const needsCursor = steps.some((s) => CURSOR_COMMANDS.has(s.command));
   if (needsCursor) {
     cursor.setExecuting(true);
     cursor.cancelHide();
@@ -617,7 +595,7 @@ export async function resumePendingNavigation(): Promise<CommandResult | null> {
     id: string;
     startTime: number;
     completedSteps: StepResult[];
-    remainingSteps: Array<Record<string, unknown>>;
+    remainingSteps: BrowserStep[];
     stepOffset: number;
   } | null = null;
 

@@ -45,53 +45,6 @@ export interface SearchResult {
   text: string;
 }
 
-// App config (from mindstudio.json)
-
-export interface AppConfig {
-  appId: string;
-  name: string;
-  description?: string;
-  roles: Array<{ id: string; name: string }>;
-  tables: Array<{ path: string; export: string }>;
-  methods: Array<{
-    id: string;
-    name: string;
-    description?: string;
-    path: string;
-    export: string;
-  }>;
-  interfaces: Array<{
-    type: string;
-    /**
-     * Path to this interface's config file, relative to the workspace.
-     * Optional in the manifest schema (see remy's prompt/compiled/manifest.md):
-     * an interface may carry its config inline under `config`, or declare a type
-     * with nothing to configure at all (`{"type":"api"}`). Typing it as required
-     * is what let `path.join(dir, undefined)` reach production.
-     */
-    path?: string;
-    config?: Record<string, unknown>;
-  }>;
-  scenarios?: Array<{
-    id: string;
-    name: string;
-    description?: string;
-    path: string;
-    export: string;
-    roles: string[];
-  }>;
-  /** Raw parsed manifest — includes any fields not in the typed interface. */
-  [key: string]: unknown;
-}
-
-export interface WebConfig {
-  web: {
-    devCommand: string;
-    devPort: number;
-    defaultPreviewMode?: 'mobile' | 'desktop';
-  };
-}
-
 // Server state
 
 export type ServerStatus = 'bootstrapping' | 'ready' | 'error';

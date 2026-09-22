@@ -8,13 +8,20 @@
  */
 
 import {
-  CommandResult,
   executeSteps,
   peekPendingNavigationId,
   resumePendingNavigation,
 } from './executor';
 import { setWsGetter } from '../transport';
 import { getState } from '../state';
+import type {
+  BrowserStep,
+  CommandResult,
+  PageHello,
+  PageResult,
+  ProxyBroadcast,
+  ProxyToPageMessage,
+} from '../protocol';
 
 const WS_PATH = '/__mindstudio_dev__/ws';
 const RECONNECT_BASE = 1000;
@@ -110,12 +117,9 @@ function connect(): void {
           viewport: { w: window.innerWidth, h: window.innerHeight },
           mirror: isMirrorSource,
           sandbox: isSandboxBrowser(),
-          // Explicit `null` means "checked, no stash" — the proxy uses the
-          // distinction to fail commands whose in-flight steps died with the
-          // previous page, instead of waiting out a disconnect grace timer.
           // Peek only: checkPendingNavigation consumes the stash after ack.
           resumingCommandId: peekPendingNavigationId(),
-        }),
+        } satisfies PageHello),
       );
     } catch {
       // Hello failed — close and reconnect
@@ -124,7 +128,7 @@ function connect(): void {
   };
 
   s.ws.onmessage = (event) => {
-    let msg: Record<string, unknown>;
+    let msg: ProxyToPageMessage;
     try {
       msg = JSON.parse(event.data);
     } catch {
@@ -133,7 +137,7 @@ function connect(): void {
 
     switch (msg.type) {
       case 'ack':
-        s.clientId = msg.clientId as string;
+        s.clientId = msg.clientId;
         // Reset backoff on successful connection
         s.reconnectDelay = RECONNECT_BASE;
         // Check for pending navigation — resume remaining steps from before page navigated
@@ -141,17 +145,11 @@ function connect(): void {
         break;
 
       case 'command':
-        handleCommand(
-          msg.id as string,
-          msg.steps as Array<Record<string, unknown>>,
-        );
+        handleCommand(msg.id, msg.steps);
         break;
 
       case 'broadcast':
-        handleBroadcast(
-          msg.action as string,
-          msg.payload as Record<string, unknown> | undefined,
-        );
+        handleBroadcast(msg.action, msg.payload);
         break;
     }
   };
@@ -178,10 +176,7 @@ function scheduleReconnect(): void {
   s.reconnectDelay = Math.min(s.reconnectDelay * 2, RECONNECT_MAX);
 }
 
-async function handleCommand(
-  id: string,
-  steps: Array<Record<string, unknown>>,
-): Promise<void> {
+async function handleCommand(id: string, steps: BrowserStep[]): Promise<void> {
   const s = getState().ws;
   if (s.busy) {
     // Already executing a command — reject this one immediately
@@ -216,11 +211,13 @@ async function handleCommand(
   }
 }
 
-function sendResult(result: Record<string, unknown> | CommandResult): void {
+function sendResult(result: CommandResult): void {
   try {
     const sock = getSocket();
     if (sock) {
-      sock.send(JSON.stringify({ type: 'result', ...result }));
+      sock.send(
+        JSON.stringify({ type: 'result', ...result } satisfies PageResult),
+      );
     }
   } catch {
     // Socket may have closed between check and send — result is lost,
@@ -246,8 +243,8 @@ function notifyParent(command: string, data?: Record<string, unknown>): void {
 }
 
 function handleBroadcast(
-  action: string,
-  _payload?: Record<string, unknown>,
+  action: ProxyBroadcast['action'],
+  _payload?: ProxyBroadcast['payload'],
 ): void {
   switch (action) {
     case 'reload':

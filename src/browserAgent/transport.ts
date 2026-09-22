@@ -6,9 +6,8 @@
  * On page unload, remaining entries are sent via navigator.sendBeacon.
  */
 
-import { getState, type LogEntry } from './state';
-
-export type { LogEntry } from './state';
+import { getState } from './state';
+import type { LogEntry, PageLog } from './protocol';
 
 const ENDPOINT = '/__mindstudio_dev__/logs';
 const FLUSH_INTERVAL = 2000;
@@ -33,7 +32,7 @@ function flush(): void {
   const ws = s.wsGetter?.();
   if (ws && ws.readyState === WebSocket.OPEN) {
     try {
-      ws.send(JSON.stringify({ type: 'log', entries }));
+      ws.send(JSON.stringify({ type: 'log', entries } satisfies PageLog));
       return;
     } catch {
       // Fall through to XHR

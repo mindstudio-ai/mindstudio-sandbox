@@ -12,6 +12,7 @@
 import { record } from 'rrweb';
 import { getState } from '../state';
 import { getSocket } from '../commands/ws-client';
+import type { MirrorBatch, MirrorEvent } from '../protocol';
 
 const BATCH_INTERVAL = 16; // ms — flush every frame for real-time feel
 const CHECKOUT_INTERVAL = 30_000; // ms — full snapshot for late joiners / reconnect
@@ -54,7 +55,7 @@ export async function initMirrorRecording(): Promise<void> {
     return;
   }
 
-  let batch: unknown[] = [];
+  let batch: MirrorEvent[] = [];
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   function flush() {
@@ -72,10 +73,10 @@ export async function initMirrorRecording(): Promise<void> {
 
     const events = batch;
     batch = [];
-    sock.send(JSON.stringify({ type: 'mirror', events }));
+    sock.send(JSON.stringify({ type: 'mirror', events } satisfies MirrorBatch));
   }
 
-  function emit(event: unknown) {
+  function emit(event: MirrorEvent) {
     batch.push(event);
     if (!flushTimer) {
       flushTimer = setTimeout(flush, BATCH_INTERVAL);

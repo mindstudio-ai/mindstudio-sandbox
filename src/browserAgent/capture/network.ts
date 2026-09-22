@@ -4,7 +4,8 @@
  * picture of what the app is doing.
  */
 
-import { push, type LogEntry } from '../transport';
+import { push } from '../transport';
+import type { LogEntry } from '../protocol';
 import { trackRequestStart, trackRequestEnd } from '../network-idle';
 
 export function initNetworkCapture(): void {

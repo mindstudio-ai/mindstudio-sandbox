@@ -36,8 +36,9 @@ Inside the container, the C&C server manages:
 - **TypeScript language server** — shared between Monaco editor and remy
 - **Snapshot manager** — periodic snapshots of the home directory to S3 for persistence across boxes
 
-Both children receive their platform credentials on the environment, never on argv — the process
-list is served to the editor, and `ProcessManager` logs every command line.
+Both children read their platform credentials from the container environment they inherit — never
+argv: the process list is served to the editor, and `ProcessManager` logs every command line. The
+C&C passes the tunnel neither flags nor environment of its own.
 
 ## Project Structure
 
@@ -47,20 +48,24 @@ Two entry points, one package:
 src/
   index.ts              — C&C entry (bin: remy-sandbox), bootstrap orchestration
   config.ts             — environment variable parsing
-  types.ts              — shared types (WS protocol, filesystem, app config)
-  logger.ts             — centralized logger, two levels (see its header)
+  types.ts              — shared types (WS protocol, filesystem)
+  logger.ts             — THE logger, both processes; two levels and a pluggable sink (see its header)
   state.ts              — persistent state (survives hibernate/resume)
   bootProgress.ts       — boot phase reporting to the editor
 
+  appConfig/            — mindstudio.json: the one type and the one tolerant reader, for both
+                          processes (the C&C repairs on disk; the tunnel only reads)
   bootstrap/            — install agent + LSP, clone the app, install deps, configure git
-  fileWatcher/          — chokidar watcher; broadcasts filesystem changes
+  fileWatcher/          — THE workspace watcher: broadcasts changes to the editor and tells the
+                          tunnel about config and table files over stdin
   projectStatus/        — onboarding state, home snapshots (tar to S3), fork detection,
                           app brand, first-build email, legacy draft restore
-  utils/                — paths, file locking, global-package lookup, JSON config
+  utils/                — paths, file locking, global-package lookup, JSON config, line splitter
 
   server/
     index.ts            — HTTP/WS server, upgrade routing, broadcast
     context.ts          — shared server context + init frame construction
+    refreshAppConfig.ts — re-read the manifest and tell the editor (one function, four callers)
     httpRoutes.ts       — /health, /status, and the preview reverse proxy
     BroadcastBatcher.ts — batched WS event delivery (100ms flush)
     HmrRelay.ts         — HMR WebSocket relay, buffered during agent turns
@@ -75,7 +80,7 @@ src/
   processes/
     ProcessManager.ts   — long-lived child process lifecycle, restart policy
     ProcessRegistry.ts  — process metadata + per-process .logs/<name>.ndjson
-    ResourceMonitor.ts  — memory/CPU metrics;  lineSplitter.ts, parseJsonEvent.ts
+    ResourceMonitor.ts  — memory/CPU metrics;  parseJsonEvent.ts
     agent/              — remy process + IPC, typed events, activity, history, actions
     tunnel/             — dev tunnel process + IPC; imports devTunnel/protocol.ts
     devServer/          — dev server process management
@@ -90,15 +95,17 @@ src/
     proxy/              — the preview proxy, __MINDSTUDIO__ injection, WS clients
     browser/            — headless Chrome supervisor, CDP screenshots, cookies, ffmpeg
     stdin-commands/     — one file per action, plus the router
-    config/             — mindstudio.json reading and the file watchers
-    interfaces/         — per-interface config readers; schema/ derives JSON schemas
-    ipc/  logging/      — stdout protocol writers; stderr logger, request and browser logs
+    config/             — table sources, and the manifest re-read with retry
+    interfaces/         — per-interface config bundlers; schema/ derives JSON schemas
+    ipc/  logging/      — stdout protocol writers; the shared logger pointed at stderr,
+                          request and browser logs
 
   browserAgent/         — the in-page agent the tunnel's proxy injects into dev previews.
                           BROWSER code: its own tsconfig.browser.json, bundled by esbuild to
                           dist/browserAgent/index.js, excluded from the root program. See its
                           own README.
     index.ts            — entry, idempotency guard, window.__MINDSTUDIO_BROWSER_AGENT__
+    protocol.ts         — THE page↔proxy wire protocol: import-free, so both programs compile it
     state.ts            — all mutable state on window.__ms, survives HMR
     transport.ts  network-idle.ts  utils.ts  fonts.ts  iframe-bridge.ts  navigation.ts
     capture/            — console, errors, fetch, XHR, click interactions
@@ -623,16 +630,17 @@ All file paths are relative to the workspace root. Paths that escape the workspa
 | `GIT_REPO_URL` | App git repo to clone | required |
 | `MINDSTUDIO_API_KEY` | Developer's API key (for tunnel + agent) | required |
 | `USER_ID` | Developer's user ID (for tunnel) | required |
-| `API_BASE_URL` | Platform API URL | `https://api.mindstudio.ai` |
+| `MINDSTUDIO_BASE_URL` | Platform API URL — the same name the tunnel, remy and the agent SDK read. No default on purpose: a built-in one is how a box quietly talks to production | required |
 | `PORT` | Server port | `4387` |
 | `SANDBOX_TOKEN` | WebSocket auth token | none (no auth) |
 | `MINDSTUDIO_SESSION_ID` | Platform sandbox-session id, sent with every snapshot write | required |
 | `DB_WS_URL` | App-database socket. Absence is meaningful — the method worker falls back to a fetch transport addressed at the API base URL | unset |
-| `LOG_LEVEL` | Verbosity of the log stream the editor reads | `debug` |
+| `LOG_LEVEL` | Verbosity of the log stream the editor reads. The tunnel reads it too, defaulting to `info` — see `devTunnel/config.ts` for why | `debug` |
 | `STDOUT_LOG_LEVEL` | Verbosity of the scraped stdout sink. Deliberately quieter — one debug line per agent event was most of the platform's log volume | `info` |
 
-`MINDSTUDIO_API_KEY`, `API_BASE_URL` and `USER_ID` are passed down to both children on *their*
-environment, not on their command lines.
+Both children inherit this environment whole — `MINDSTUDIO_API_KEY`, `MINDSTUDIO_BASE_URL`,
+`USER_ID`, `DB_WS_URL` — rather than having values re-injected under other names. Nothing goes on
+their command lines.
 
 ## Development
 
@@ -648,8 +656,9 @@ npm run dev         # tsx src/index.ts, with .env
 loader is not inherited by a `node <script>` child, so it could not run the source anyway. Startup
 fails with a message saying exactly this.
 
-`npm run build` is `tsc` plus `scripts/assert-worker-standalone.mjs`, which proves the forked method
-worker is still a single self-contained file. CI runs both `typecheck` and `build` for that reason.
+`npm run build` is `tsc`, then `scripts/build-browser-agent.mjs` (the page agent's esbuild bundle),
+then `scripts/assert-worker-standalone.mjs`, which proves the forked method worker is still a single
+self-contained file. CI runs both `typecheck` and `build` for that reason.
 
 To exercise a change on a real box rather than locally, set `DEV_BRANCHES.sandbox` in
 `youai-api/src/sandboxOrchestrator/devBoxes/SandboxManager.ts` to your branch: the box clones and

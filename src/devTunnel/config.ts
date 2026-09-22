@@ -17,11 +17,14 @@
  * @module
  */
 
+import { parseLogLevel, type LogLevel } from './logging/logger.ts';
+
 interface TunnelConfig {
   apiKey: string;
   apiBaseUrl: string;
   userId: string | undefined;
   dbWsUrl: string | undefined;
+  logLevel: LogLevel;
 }
 
 let config: TunnelConfig | null = null;
@@ -49,6 +52,14 @@ function optional(name: string): string | undefined {
  * old `conf` schema carried `https://api.mindstudio.ai` as a per-environment
  * default, which is the shape of mistake that has a box quietly talking to
  * production because one env var went missing.
+ *
+ * `LOG_LEVEL` is the same variable the C&C reads, with a different fallback:
+ * `info` here against its `debug`. Both feed editor-facing sinks, but two sites
+ * in this process log per line rather than per event — Chrome's stderr
+ * (`browser/launcher.ts`) and every completed API call including polls
+ * (`api.ts`) — so inheriting the box's debug default would churn
+ * `.logs/tunnel.ndjson` for nobody. Set `LOG_LEVEL=debug` on a box you are
+ * debugging and both processes follow.
  */
 export function initConfig(): void {
   config = {
@@ -56,6 +67,7 @@ export function initConfig(): void {
     apiBaseUrl: required('MINDSTUDIO_BASE_URL'),
     userId: optional('USER_ID'),
     dbWsUrl: optional('DB_WS_URL'),
+    logLevel: parseLogLevel(optional('LOG_LEVEL'), 'info'),
   };
 }
 
@@ -78,6 +90,10 @@ export function getApiBaseUrl(): string {
 
 export function getUserId(): string | undefined {
   return get().userId;
+}
+
+export function getLogLevel(): LogLevel {
+  return get().logLevel;
 }
 
 /**

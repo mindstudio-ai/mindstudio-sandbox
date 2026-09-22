@@ -6,10 +6,7 @@
  * its own namespace (e.g. getState().cursor, getState().ws).
  */
 
-export interface LogEntry {
-  type: string;
-  [key: string]: unknown;
-}
+import type { LogEntry } from './protocol';
 
 export interface MsState {
   ws: {

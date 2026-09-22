@@ -28,6 +28,7 @@
 
 import { ProtocolError } from 'puppeteer-core';
 import type { Page, Viewport } from 'puppeteer-core';
+import { uploadToGrant } from '../api.ts';
 import { resolveAppUrl } from './navigation.ts';
 
 export interface CaptureOpts {
@@ -887,21 +888,10 @@ async function uploadToPresigned(
 ): Promise<void> {
   const contentType = type === 'png' ? 'image/png' : 'image/jpeg';
   const filename = type === 'png' ? 'screenshot.png' : 'screenshot.jpg';
-  const form = new FormData();
-  for (const [k, v] of Object.entries(uploadFields)) {
-    form.append(k, v);
-  }
-  form.append(
-    'file',
+  await uploadToGrant(
+    { uploadUrl, uploadFields },
     new Blob([buf as unknown as BlobPart], { type: contentType }),
     filename,
+    UPLOAD_TIMEOUT_MS,
   );
-  const res = await fetch(uploadUrl, {
-    method: 'POST',
-    body: form,
-    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Screenshot upload failed: ${res.status}`);
-  }
 }

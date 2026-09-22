@@ -40,7 +40,7 @@ import {
   SYSTEM_USER_ID,
   SYSTEM_ROLE,
 } from './mapper.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import {
   logMapperExecution,
   logMethodExecution,
@@ -49,15 +49,15 @@ import {
 import { formatErrorForDisplay } from './format-error.ts';
 import type { ConfigBundle } from '../interfaces/read-config.ts';
 import type { DevProxy } from '../proxy/proxy.ts';
+import type { DevSession, DevRequest, DevResult } from '../api.ts';
 import type {
-  DevSession,
-  DevRequest,
-  DevResult,
   AppScenario,
   AppConfig,
   AppDataSource,
   AppMethod,
-} from '../config/types.ts';
+} from '../../appConfig/types.ts';
+
+const log = createLogger('runner');
 
 // Reserved sentinel on run-method's userId: resolves to the dev-bypass user
 // (find-or-create via platform), so agents can invoke auth-gated methods
@@ -124,7 +124,7 @@ export class DevRunner {
       throw new Error('DevRunner is already running');
     }
 
-    log.info('runner', 'Dev session starting', {
+    log.info('Dev session starting', {
       appId: this.appId,
       devOrigin: this.startOpts.devOrigin,
     });
@@ -142,7 +142,7 @@ export class DevRunner {
     this.isRunning = true;
     this.backoffMs = 1000;
 
-    log.info('runner', 'Dev session started', {
+    log.info('Dev session started', {
       sessionId: session.sessionId,
     });
 
@@ -157,14 +157,14 @@ export class DevRunner {
   }
 
   async stop(): Promise<void> {
-    log.info('runner', 'Dev session stopping');
+    log.info('Dev session stopping');
     this.isRunning = false;
 
     if (this.session) {
       try {
         await stopDevSession(this.appId, this.session.sessionId);
       } catch (err) {
-        log.warn('runner', 'Failed to stop dev session cleanly', {
+        log.warn('Failed to stop dev session cleanly', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -189,7 +189,7 @@ export class DevRunner {
   // as the test user through the app's own auth flow and sees the app from
   // whatever roles the row currently holds.
   async setTestUserRoles(roles: string[]): Promise<Record<string, unknown>> {
-    log.info('runner', 'Setting test user roles', { roles });
+    log.info('Setting test user roles', { roles });
     const { user } = await createAuthSession(this.appId, {
       ...this.testUserIdentityOpts(),
       roles,
@@ -239,7 +239,7 @@ export class DevRunner {
     const requestId = randomBytes(8).toString('hex');
     const startTime = Date.now();
 
-    log.info('runner', 'Method received', {
+    log.info('Method received', {
       requestId,
       method: opts.methodExport,
       source: 'direct',
@@ -273,14 +273,14 @@ export class DevRunner {
       const duration = Date.now() - startTime;
 
       if (result.success) {
-        log.info('runner', 'Method complete', {
+        log.info('Method complete', {
           requestId,
           method: opts.methodExport,
           duration,
           sessionId: this.session.sessionId,
         });
       } else {
-        log.warn('runner', 'Method failed', {
+        log.warn('Method failed', {
           requestId,
           method: opts.methodExport,
           duration,
@@ -312,7 +312,7 @@ export class DevRunner {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       const duration = Date.now() - startTime;
-      log.error('runner', 'Method execution error', {
+      log.error('Method execution error', {
         requestId,
         method: opts.methodExport,
         duration,
@@ -404,7 +404,7 @@ export class DevRunner {
     const startTime = Date.now();
     const scenarioName = scenario.name ?? scenario.export;
 
-    log.info('runner', 'Scenario starting', {
+    log.info('Scenario starting', {
       requestId,
       id: scenario.id,
       name: scenarioName,
@@ -413,7 +413,7 @@ export class DevRunner {
     try {
       // 1. Truncate all tables (clean slate) unless caller opts out
       if (!opts?.skipTruncate) {
-        log.debug('runner', 'Resetting database for scenario');
+        log.debug('Resetting database for scenario');
         const databases = await resetDevDatabase(
           this.appId,
           this.session.sessionId,
@@ -426,7 +426,7 @@ export class DevRunner {
       }
 
       // 2. Transpile and execute the seed function
-      log.debug('runner', 'Transpiling scenario', { path: scenario.path });
+      log.debug('Transpiling scenario', { path: scenario.path });
       const transpiledPath = await this.transpiler.transpile(scenario.path);
 
       // Fetch a callback token + dev secrets for the seed execution —
@@ -436,7 +436,7 @@ export class DevRunner {
         this.session.sessionId,
       );
 
-      log.debug('runner', 'Running scenario seed function', {
+      log.debug('Running scenario seed function', {
         export: scenario.export,
       });
       const result = await executeMethod({
@@ -456,7 +456,7 @@ export class DevRunner {
 
       if (!result.success) {
         const error = result.error?.message ?? 'Scenario seed failed';
-        log.error('runner', 'Scenario seed function failed', {
+        log.error('Scenario seed function failed', {
           id: scenario.id,
           name: scenarioName,
           duration: Date.now() - startTime,
@@ -478,13 +478,12 @@ export class DevRunner {
       // no users to hold roles.
       if (scenario.roles.length > 0) {
         if (this.appConfig?.auth?.enabled) {
-          log.debug('runner', 'Assigning scenario roles to test user', {
+          log.debug('Assigning scenario roles to test user', {
             roles: scenario.roles,
           });
           await this.setTestUserRoles(scenario.roles);
         } else {
           log.warn(
-            'runner',
             'Scenario declares roles but auth is not enabled — skipping role assignment',
             { roles: scenario.roles },
           );
@@ -492,7 +491,7 @@ export class DevRunner {
       }
 
       const duration = Date.now() - startTime;
-      log.info('runner', 'Scenario complete', {
+      log.info('Scenario complete', {
         id: scenario.id,
         name: scenarioName,
         duration,
@@ -508,7 +507,7 @@ export class DevRunner {
       return { success: true, databases: this.session.databases };
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Unknown error';
-      log.error('runner', 'Scenario failed', {
+      log.error('Scenario failed', {
         id: scenario.id,
         name: scenarioName,
         duration: Date.now() - startTime,
@@ -544,7 +543,7 @@ export class DevRunner {
 
         if (this.hadConnectionWarning) {
           this.hadConnectionWarning = false;
-          log.info('runner', 'Connection to platform restored');
+          log.info('Connection to platform restored');
           devRequestEvents.emitConnectionRestored();
         }
 
@@ -556,7 +555,7 @@ export class DevRunner {
           // so guard against an unhandled rejection here taking down the whole
           // process (e.g. the session gets torn down while this is in flight).
           this.handleRequest(request).catch((err) =>
-            log.error('runner', 'Unhandled request error', {
+            log.error('Unhandled request error', {
               requestId: request.requestId,
               error: err instanceof Error ? err.message : String(err),
             }),
@@ -567,7 +566,7 @@ export class DevRunner {
       } catch (error) {
         // Session expired
         if (error instanceof DevPollError && error.statusCode === 404) {
-          log.error('runner', 'Dev session expired', { statusCode: 404 });
+          log.error('Dev session expired', { statusCode: 404 });
           devRequestEvents.emitSessionExpired();
           this.isRunning = false;
           return;
@@ -586,7 +585,7 @@ export class DevRunner {
           (error instanceof DevPollError || error instanceof ApiError) &&
           error.statusCode === 401
         ) {
-          log.error('runner', 'Session token rejected by the platform', {
+          log.error('Session token rejected by the platform', {
             statusCode: 401,
           });
           devRequestEvents.emitSessionExpired();
@@ -597,7 +596,7 @@ export class DevRunner {
         // Connection issue — backoff and retry
         if (!this.hadConnectionWarning) {
           this.hadConnectionWarning = true;
-          log.warn('runner', 'Lost connection to platform, retrying');
+          log.warn('Lost connection to platform, retrying');
           devRequestEvents.emitConnectionWarning(
             'Lost connection to platform, retrying...',
           );
@@ -643,7 +642,7 @@ export class DevRunner {
     );
     if (!method) {
       const message = `Unknown method ID: ${request.methodId}`;
-      log.error('runner', message, {
+      log.error(message, {
         requestId: request.requestId,
         sessionId: session.sessionId,
       });
@@ -675,7 +674,7 @@ export class DevRunner {
     const jewel = request.jewel ? method.jewel : undefined;
     if (request.jewel && !jewel) {
       const message = `Method ${method.id} declares no jewel in mindstudio.json`;
-      log.error('runner', message, {
+      log.error(message, {
         requestId: request.requestId,
         sessionId: session.sessionId,
       });
@@ -709,7 +708,7 @@ export class DevRunner {
       timestamp: startTime,
     });
 
-    log.info('runner', 'Method received', {
+    log.info('Method received', {
       requestId: request.requestId,
       method: method.export,
       jewel: !!jewel,
@@ -786,14 +785,14 @@ export class DevRunner {
         totalMs: duration,
       };
       if (result.success) {
-        log.info('runner', 'Method complete', {
+        log.info('Method complete', {
           requestId: request.requestId,
           method: method.export,
           timing,
           sessionId: session.sessionId,
         });
       } else {
-        log.warn('runner', 'Method failed', {
+        log.warn('Method failed', {
           requestId: request.requestId,
           method: method.export,
           timing,
@@ -825,7 +824,7 @@ export class DevRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const duration = Date.now() - startTime;
-      log.error('runner', 'Method execution error', {
+      log.error('Method execution error', {
         requestId: request.requestId,
         method: method.export,
         duration,
@@ -845,7 +844,7 @@ export class DevRunner {
           },
         );
       } catch (submitErr) {
-        log.error('runner', 'Failed to report method error to platform', {
+        log.error('Failed to report method error to platform', {
           error:
             submitErr instanceof Error ? submitErr.message : String(submitErr),
         });
@@ -898,7 +897,7 @@ export class DevRunner {
 
     if (!dataSource) {
       const message = `Data source "${slug}" declares no mapper in mindstudio.json`;
-      log.error('runner', message, {
+      log.error(message, {
         requestId: request.requestId,
         sessionId: session.sessionId,
       });
@@ -918,7 +917,7 @@ export class DevRunner {
       method: label,
       timestamp: startTime,
     });
-    log.info('runner', 'Mapper frame received', {
+    log.info('Mapper frame received', {
       requestId: request.requestId,
       dataSource: slug,
       source: 'poll',
@@ -973,14 +972,14 @@ export class DevRunner {
       duration,
     });
     if (result.success) {
-      log.info('runner', 'Mapper frame complete', {
+      log.info('Mapper frame complete', {
         requestId: request.requestId,
         dataSource: slug,
         duration,
         sessionId: session.sessionId,
       });
     } else {
-      log.warn('runner', 'Mapper frame failed', {
+      log.warn('Mapper frame failed', {
         requestId: request.requestId,
         dataSource: slug,
         duration,

@@ -17,4 +17,4 @@ export { setAuthCookie, clearAuthCookies } from './cookies.ts';
 export { resolveAppUrl, navigateTunnelSide } from './navigation.ts';
 export type { TunnelNavigateResult } from './navigation.ts';
 export { viewportFor, viewportToString } from './launcher.ts';
-export type { PreviewMode } from './launcher.ts';
+export type { PreviewMode } from '../protocol.ts';

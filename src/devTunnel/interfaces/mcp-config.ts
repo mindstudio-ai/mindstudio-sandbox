@@ -1,9 +1,9 @@
-// Read the local MCP interface config and inline its file references into a
-// single bundle the platform can serve as the app's MCP server in dev.
+// Bundle the MCP interface config — inline its file references — into the shape
+// the platform serves as the app's MCP server in dev.
 //
-// Called via readConfig() on every get-config poll request — no caching, so
-// edits to instructions.md, tools/*.md, and prompts/*.md are picked up
-// immediately.
+// The config file itself has already been read: `readAppConfig` resolves each
+// interface's file onto `interfaces[].config`, tolerantly. What is left here is
+// following the paths inside it.
 //
 // Unlike api.json (self-contained, passed through verbatim), the MCP
 // interface.json references three things by path that must be inlined:
@@ -16,7 +16,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { AppConfig } from '../config/types.ts';
+import type { AppConfig } from '../../appConfig/types.ts';
 
 export interface McpToolConfig {
   method: string;
@@ -50,6 +50,16 @@ export interface McpConfigBundle {
   prompts: McpPromptConfig[];
 }
 
+/** The compiled MCP config as written to disk: same shape as the bundle, but
+ *  `instructions`, `tools[].description` and `prompts[].template` are paths. */
+type McpConfigFile = {
+  instructions?: string;
+  tools?: McpToolConfig[];
+  prompts?: McpPromptConfig[];
+  resources?: McpResourceConfig[];
+  [key: string]: unknown;
+};
+
 /**
  * Read and bundle the MCP interface config from local dist files.
  *
@@ -68,20 +78,18 @@ export function readMcpConfig(
   if (!mcpInterface) {
     throw new Error('No MCP interface configured in mindstudio.json');
   }
-
-  const configPath = join(projectRoot, mcpInterface.path);
-  let raw: string;
-  try {
-    raw = readFileSync(configPath, 'utf-8');
-  } catch {
+  if (!mcpInterface.path) {
+    throw new Error('MCP interface declares no config path in mindstudio.json');
+  }
+  // Absent when the file is missing or unparseable — "not built yet".
+  if (!mcpInterface.config) {
     throw new Error(
       `MCP config not found at ${mcpInterface.path} — run your build command`,
     );
   }
 
-  const parsed = JSON.parse(raw);
-  const config = parsed.mcp ?? parsed; // unwrap "mcp" key if present
-  const mcpDir = dirname(configPath);
+  const config = mcpInterface.config as McpConfigFile;
+  const mcpDir = dirname(join(projectRoot, mcpInterface.path));
 
   // Resolve a file referenced (by relative path) from the interface dir and
   // inline its contents. A listed-but-missing file is a broken build.
@@ -101,26 +109,19 @@ export function readMcpConfig(
     : '';
 
   // Inline each tool's description; pass method/name/title/annotations verbatim.
-  const tools: McpToolConfig[] = (config.tools ?? []).map(
-    (tool: McpToolConfig) => ({
-      ...tool,
-      description: readRef(
-        tool.description,
-        `tool description for "${tool.method}"`,
-      ),
-    }),
-  );
+  const tools: McpToolConfig[] = (config.tools ?? []).map((tool) => ({
+    ...tool,
+    description: readRef(
+      tool.description,
+      `tool description for "${tool.method}"`,
+    ),
+  }));
 
   // Inline each prompt's template; pass name/title/description/arguments verbatim.
-  const prompts: McpPromptConfig[] = (config.prompts ?? []).map(
-    (prompt: McpPromptConfig) => ({
-      ...prompt,
-      template: readRef(
-        prompt.template,
-        `prompt template for "${prompt.name}"`,
-      ),
-    }),
-  );
+  const prompts: McpPromptConfig[] = (config.prompts ?? []).map((prompt) => ({
+    ...prompt,
+    template: readRef(prompt.template, `prompt template for "${prompt.name}"`),
+  }));
 
   return {
     ...config,
@@ -128,5 +129,5 @@ export function readMcpConfig(
     tools,
     prompts,
     resources: config.resources ?? [],
-  };
+  } as McpConfigBundle;
 }

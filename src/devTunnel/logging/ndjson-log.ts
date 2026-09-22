@@ -7,7 +7,9 @@
 
 import fs from 'node:fs';
 import { join } from 'node:path';
-import { log } from './logger.ts';
+import { createLogger } from './logger.ts';
+
+const log = createLogger('logging');
 
 export class NdjsonLog {
   private fd: number | null = null;
@@ -42,12 +44,12 @@ export class NdjsonLog {
       // If the file was left over-cap by a previous run, rotate now so the
       // first append doesn't race against a huge file.
       this.maybeRotate();
-      log.debug('logging', `${this.filename} log initialized`, {
+      log.debug(`${this.filename} log initialized`, {
         path: this.logPath,
         existingEntries: this.lineCount,
       });
     } catch (err) {
-      log.warn('logging', `Failed to initialize ${this.filename} log`, {
+      log.warn(`Failed to initialize ${this.filename} log`, {
         error: err instanceof Error ? err.message : String(err),
       });
       this.fd = null;

@@ -8,11 +8,13 @@
  * A single trailing comma used to take the whole sandbox down: readAppConfig
  * returned null, the web interface became undiscoverable, and the dev server
  * never started. Tolerating the slop WITHOUT rewriting would be worse than
- * failing — we aren't the only strict parser of these files (the
- * admin CLI and the server-side deploy pipeline both are), so a
- * lenient-only read just relocates the failure to publish time, far from the
- * edit that caused it. Repairing on disk fixes it for every consumer at once,
- * and the repaired file rides the next workspace snapshot.
+ * failing — we aren't the only strict parser of these files (the admin CLI and
+ * the server-side deploy pipeline both are, and so was the dev tunnel until it
+ * read through here), so a lenient-only read just relocates the failure to
+ * publish time, far from the edit that caused it. Repairing on disk fixes it
+ * for every consumer at once, and the repaired file rides the next workspace
+ * snapshot. Only the C&C repairs: the tunnel calls this with `normalize` off,
+ * so two processes never race to rewrite one file.
  *
  * Strict-first means the steady state never rewrites: no formatting churn and
  * no snapshot noise for files that were already valid.
@@ -25,9 +27,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLogger } from '../logger.ts';
-// Imported from the watcher leaf, NOT `fileWatcher/index.js`: that barrel
-// imports readAppConfig from bootstrap, and bootstrap imports this module.
-import { suppressPath } from '../fileWatcher/watcher.ts';
+// The leaf, not `fileWatcher/watcher.ts`: that module loads chokidar, and the
+// dev tunnel imports this one without wanting a watcher.
+import { suppressPath } from '../fileWatcher/suppress.ts';
 import { withFileLock } from './fileLock.ts';
 import { msg, parseJsonConfig, type ParseResult } from './parseJsonConfig.ts';
 

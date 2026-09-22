@@ -10,20 +10,23 @@
  * Levels (in order): debug < info < warn < error
  * Set via LOG_LEVEL env var or setLogLevel(). Default: 'info'.
  *
- * Output is NDJSON on stdout/stderr for structured consumption.
- * Register onLog() listeners to pipe log entries into registries,
- * ring buffers, or external log collectors.
+ * Output is NDJSON, one object per line, written to the SINK. By default that is
+ * stdout (stderr for `error`) — what the cluster's log forwarder scrapes off the
+ * C&C. The dev tunnel points it at stderr instead, because its stdout is the
+ * NDJSON protocol channel to the C&C; see `devTunnel/logging/logger.ts`, which
+ * is how every tunnel module reaches this one. Register onLog() listeners to
+ * pipe log entries into registries, ring buffers, or external log collectors.
  *
  * ## Two levels, on purpose
  *
- * The two sinks have different audiences and different costs, so they have
+ * The two outputs have different audiences and different costs, so they have
  * separate thresholds:
  *
  *   - LISTENERS (`LOG_LEVEL`, default debug) feed the editor's log pane via the
  *     `system` pseudo-process. This is somebody actively debugging a box, and
  *     debug detail is the reason they opened it.
- *   - STDOUT (`STDOUT_LOG_LEVEL`, default info) is scraped by the cluster's log
- *     forwarder and shipped off-box. One debug line here is not one line: at
+ *   - THE SINK (`STDOUT_LOG_LEVEL`, default info) is scraped by the cluster's
+ *     log forwarder and shipped off-box. One debug line here is not one line: at
  *     2026-09-19 a single `log.debug('Agent event')` was 2.19M lines/day, 57% of
  *     the entire platform's log volume, which is how it drowned out the 413k
  *     lines the platform emits about itself.
@@ -56,6 +59,9 @@ export interface Logger {
   error(msg: string, ctx?: LogContext): void;
 }
 
+/** Where a formatted NDJSON line goes. Receives the line without its newline. */
+export type LogSink = (line: string, level: LogLevel) => void;
+
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
@@ -63,8 +69,39 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
 };
 
+const VALID_LOG_LEVELS: readonly LogLevel[] = [
+  'debug',
+  'info',
+  'warn',
+  'error',
+];
+
+/**
+ * Parse an env-var value into a level, falling back when it is unset or not a
+ * level. Both processes read `LOG_LEVEL` through this, so they disagree only in
+ * the fallback they choose.
+ */
+export function parseLogLevel(
+  raw: string | undefined,
+  fallback: LogLevel,
+): LogLevel {
+  const value = raw?.toLowerCase();
+  return VALID_LOG_LEVELS.includes(value as LogLevel)
+    ? (value as LogLevel)
+    : fallback;
+}
+
+const stdoutSink: LogSink = (line, level) => {
+  if (level === 'error') {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+};
+
 let currentLevel: LogLevel = 'info';
-let stdoutLevel: LogLevel = 'info';
+let sinkLevel: LogLevel = 'info';
+let sink: LogSink = stdoutSink;
 const listeners = new Set<(entry: LogEntry) => void>();
 
 export function setLogLevel(level: LogLevel): void {
@@ -76,15 +113,20 @@ export function getLogLevel(): LogLevel {
 }
 
 /**
- * The threshold for the stdout sink only — see the header. Never below
- * `currentLevel` in effect, since an entry filtered there never reaches here.
+ * The threshold for the sink only — see the header. Never below `currentLevel`
+ * in effect, since an entry filtered there never reaches here.
  */
-export function setStdoutLogLevel(level: LogLevel): void {
-  stdoutLevel = level;
+export function setSinkLogLevel(level: LogLevel): void {
+  sinkLevel = level;
 }
 
-export function getStdoutLogLevel(): LogLevel {
-  return stdoutLevel;
+export function getSinkLogLevel(): LogLevel {
+  return sinkLevel;
+}
+
+/** Replace the default stdout sink. Listeners are unaffected. */
+export function setLogSink(next: LogSink): void {
+  sink = next;
 }
 
 /** Register a listener for all log entries that pass the level filter. */
@@ -102,20 +144,17 @@ export function createLogger(module: string): Logger {
       return;
     }
 
-    if (LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[stdoutLevel]) {
-      const line = JSON.stringify({
-        ts: Date.now(),
+    if (LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[sinkLevel]) {
+      sink(
+        JSON.stringify({
+          ts: Date.now(),
+          level,
+          module,
+          msg,
+          ...ctx,
+        }),
         level,
-        module,
-        msg,
-        ...ctx,
-      });
-
-      if (level === 'error') {
-        console.error(line);
-      } else {
-        console.log(line);
-      }
+      );
     }
 
     const entry: LogEntry = { level, module, message: msg, ts: Date.now() };

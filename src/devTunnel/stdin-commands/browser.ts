@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { getRecordingUploadUrl, getUploadUrl } from '../api.ts';
+import { getRecordingUploadUrl, getUploadUrl, uploadToGrant } from '../api.ts';
 import {
   captureViaCdp,
   navigateTunnelSide,
@@ -7,11 +7,13 @@ import {
   viewportToString,
 } from '../browser/index.ts';
 import type { PreviewMode } from '../browser/index.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { CommandError } from './types.ts';
 import type { CommandContext } from './types.ts';
 import type { Page } from 'puppeteer-core';
-import type { TunnelCommandResult } from '../protocol.ts';
+import type { BrowserStep, TunnelCommandResult } from '../protocol.ts';
+
+const log = createLogger('browser');
 
 /**
  * Metadata attached to each uploaded recording chunk. The agent emits one
@@ -159,7 +161,7 @@ async function runBrowser(
     throw new CommandError('No active proxy', 'NO_BROWSER');
   }
 
-  const steps = cmd.steps as Array<Record<string, unknown>>;
+  const steps = cmd.steps as BrowserStep[];
   if (!Array.isArray(steps) || steps.length === 0) {
     throw new CommandError(
       'browser action requires a non-empty "steps" array',
@@ -201,7 +203,7 @@ async function runBrowser(
   const allEvents: unknown[] = [];
   let lastRunId: string | undefined;
 
-  let buffer: Array<{ idx: number; step: Record<string, unknown> }> = [];
+  let buffer: Array<{ idx: number; step: BrowserStep }> = [];
 
   const flushBuffer = async () => {
     if (buffer.length === 0) {
@@ -212,7 +214,7 @@ async function runBrowser(
       batch,
       remaining(),
     );
-    const outSteps = (out.steps as Array<Record<string, unknown>>) ?? [];
+    const outSteps = out.steps ?? [];
     for (let i = 0; i < buffer.length; i++) {
       const returned = outSteps[i] ?? {};
       resultsByIndex[buffer[i].idx] = {
@@ -225,13 +227,13 @@ async function runBrowser(
       lastSnapshot = out.snapshot;
     }
     if (Array.isArray(out.logs)) {
-      lastLogs = out.logs as unknown[];
+      lastLogs = out.logs;
     }
     if (typeof out.duration === 'number') {
       totalDuration += out.duration;
     }
     if (Array.isArray(out.events)) {
-      allEvents.push(...(out.events as unknown[]));
+      allEvents.push(...out.events);
     }
     if (typeof out.runId === 'string') {
       lastRunId = out.runId;
@@ -496,32 +498,24 @@ async function uploadRecording(
   const body = JSON.stringify(chunkEvents);
 
   try {
-    const { uploadUrl, uploadFields, path, store, key } =
-      await getRecordingUploadUrl(
-        appId,
-        session.sessionId,
-        RECORDING_SESSION_ID,
-        chunkRunId,
-        seq,
-      );
-    const form = new FormData();
-    for (const [k, v] of Object.entries(uploadFields)) {
-      form.append(k, v);
-    }
-    form.append(
-      'file',
+    const grant = await getRecordingUploadUrl(
+      appId,
+      session.sessionId,
+      RECORDING_SESSION_ID,
+      chunkRunId,
+      seq,
+    );
+    await uploadToGrant(
+      grant,
       new Blob([body], { type: 'application/json' }),
       'recording.json',
     );
-    const res = await fetch(uploadUrl, { method: 'POST', body: form });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    const { path, store, key } = grant;
     carry = null;
 
     const { containsSnapshot, startTs, endTs, width, height } =
       summarizeEvents(chunkEvents);
-    log.info('browser', 'Recording chunk uploaded', {
+    log.info('Recording chunk uploaded', {
       bytes: body.length,
       events: chunkEvents.length,
       carried,
@@ -548,7 +542,7 @@ async function uploadRecording(
       // Too much to hold. The stream has a hole from here until the next
       // FullSnapshot (a real page load starts a fresh run).
       carry = null;
-      log.warn('browser', 'Recording upload failed; chunk too large to retry', {
+      log.warn('Recording upload failed; chunk too large to retry', {
         seq,
         events: chunkEvents.length,
         bytes: body.length,
@@ -557,7 +551,7 @@ async function uploadRecording(
       return null;
     }
     carry = { seq, runId: chunkRunId, events: chunkEvents };
-    log.warn('browser', 'Recording upload failed; holding chunk for retry', {
+    log.warn('Recording upload failed; holding chunk for retry', {
       seq,
       events: chunkEvents.length,
       bytes: body.length,

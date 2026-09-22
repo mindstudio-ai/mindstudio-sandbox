@@ -5,16 +5,115 @@
 // The dev session IS a release — sessionId and releaseId are the same UUID.
 
 import { getApiKey, getApiBaseUrl } from './config.ts';
-import { log } from './logging/logger.ts';
-import type {
-  AppDataSource,
-  AppMethod,
-  DevSession,
-  DevRequest,
-  DevResult,
-  SyncSchemaResponse,
-} from './config/types.ts';
+import { createLogger } from './logging/logger.ts';
+import type { AppDataSource, AppMethod } from '../appConfig/types.ts';
 import type { ConfigBundle } from './interfaces/read-config.ts';
+
+const log = createLogger('api');
+
+// ---------------------------------------------------------------------------
+// Wire types
+// ---------------------------------------------------------------------------
+
+/** Response from POST /_internal/v2/apps/{appId}/dev/manage/start.
+ *  The dev session IS a release — sessionId and releaseId are the same UUID.
+ *  Start resumes an existing dev release if one exists (no duplicate sessions).
+ *  Databases are scoped to this release and persist across connect/disconnect. */
+export interface DevSession {
+  sessionId: string; // same value as releaseId (dev release UUID)
+  releaseId: string; // same value as sessionId
+  auth: {
+    /** null for an anonymous request — nobody signed in. */
+    userId: string | null;
+    /** A role is always held by a user, so `userId` here is non-null on
+     *  purpose. The SDK derives `auth.roles` by matching assignments against
+     *  `auth.userId`, so a null-held assignment matches a null identity and
+     *  reports a role that `requireRole` then rejects on identity. Mirrors
+     *  AppRoleAssignment in @mindstudio-ai/agent, which is `string`. */
+    roleAssignments: Array<{ userId: string; roleName: string }>;
+  };
+  databases: Array<{
+    id: string;
+    name: string;
+    tables: Array<{
+      name: string;
+      schema: Array<{ name: string; type: string; required?: boolean }>;
+    }>;
+  }>;
+  methods: Record<string, string>;
+  /**
+   * RELATIVE path (`/v2/{appId}/run?dev-preview=true`), not a URL — the consuming dashboard
+   * prepends its own host. A caller with no host to prepend has nothing to show.
+   */
+  previewUrl?: string;
+  /** The window.__MINDSTUDIO__ context object to inject into HTML. */
+  clientContext: Record<string, unknown>;
+  /** Null today: the route returns no user on this response. Guard before reading. */
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    profilePictureUrl?: string;
+  } | null;
+}
+
+/**
+ * Returned from GET /_internal/v2/apps/{appId}/dev/poll
+ *
+ * `execute` is the only type. There used to be a `get-config`, which is how the
+ * platform learned this project's interface config: a round trip through this
+ * queue, in the platform's own request path, with a 30-second timeout. The
+ * config is PUSHED now — `readConfig()` rides `startDevSession`, and a config
+ * change restarts the session — so the platform reads it off the dev release
+ * like any other environment reads it off its release.
+ */
+export interface DevRequest {
+  requestId: string;
+  type: 'execute';
+  authorizationToken: string;
+  methodId?: string;
+  methodExport?: string;
+  methodPath?: string;
+  input?: unknown;
+  userId?: string | null;
+  /** Resolved platform-side; a system invocation arrives held by the platform's
+   *  system user, never by a null identity. See DevSession['auth']. */
+  roleAssignments?: Array<{ userId: string; roleName: string }>;
+  streamId?: string;
+  /** Originating-session identity (voice/agent tool calls) — exposed by the SDK as `session`. */
+  session?: {
+    channel: 'voice' | 'agent';
+    voiceSessionId?: string;
+    threadId?: string;
+    visitorId?: string;
+  };
+  secrets?: Record<string, string>;
+  /** Run the method's jewel companion instead of the method itself (dev twin
+   *  of the deployed jewelS3Key dispatch — jewels.propose in dev sessions). */
+  jewel?: boolean;
+  /** Run a data source's mapper (dev twin of the deployed mapperS3Key
+   *  dispatch — a dev-session `add()` or `map test --dev`). `methodId` is the
+   *  synthetic `datasource:<slug>`; `input` is the executor's `{ objects }`. */
+  mapper?: { slug: string };
+}
+
+/** Posted to POST /_internal/v2/apps/{appId}/dev/result/{requestId} */
+export interface DevResult {
+  type: 'execute';
+  success: boolean;
+  output?: unknown;
+  error?: { message: string; stack?: string };
+  stdout?: string[];
+  stats?: { memoryUsedBytes: number; executionTimeMs: number };
+}
+
+/** Response from POST /_internal/v2/apps/{appId}/dev/manage/sync-schema */
+export interface SyncSchemaResponse {
+  created: string[];
+  altered: string[];
+  errors: string[];
+  databases: DevSession['databases'];
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -72,7 +171,7 @@ async function apiRequest<T>(
   const duration = Date.now() - start;
 
   if (response.status === 204) {
-    log.debug('api', 'Request complete', {
+    log.debug('Request complete', {
       method: httpMethod,
       path,
       status: 204,
@@ -83,7 +182,7 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const error = await response.text();
-    log.error('api', 'Request failed', {
+    log.error('Request failed', {
       method: httpMethod,
       path,
       status: response.status,
@@ -97,7 +196,7 @@ async function apiRequest<T>(
   }
 
   const data = (await response.json()) as T;
-  log.info('api', 'Request complete', {
+  log.info('Request complete', {
     method: httpMethod,
     path,
     status: response.status,
@@ -414,6 +513,37 @@ export async function getUploadUrl(
       ...(target ? { store: target.store, access: target.access } : {}),
     },
   );
+}
+
+/**
+ * POST a file to a presigned grant. The multipart shape — the grant's fields,
+ * then `file` — is S3's, and every upload in this process (screenshots,
+ * recording chunks, replay exports) used to spell it out for itself.
+ *
+ * `timeoutMs` is optional because the callers differ on purpose: a screenshot
+ * caps its upload because the capture as a whole has a budget; a replay export
+ * runs inside its own ten-minute envelope and a large mp4 must not be cut off
+ * at some number picked here.
+ */
+export async function uploadToGrant(
+  grant: Pick<UploadGrant, 'uploadUrl' | 'uploadFields'>,
+  body: Blob,
+  filename: string,
+  timeoutMs?: number,
+): Promise<void> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(grant.uploadFields)) {
+    form.append(k, v);
+  }
+  form.append('file', body, filename);
+  const res = await fetch(grant.uploadUrl, {
+    method: 'POST',
+    body: form,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+  });
+  if (!res.ok) {
+    throw new Error(`Upload failed: HTTP ${res.status}`);
+  }
 }
 
 /**

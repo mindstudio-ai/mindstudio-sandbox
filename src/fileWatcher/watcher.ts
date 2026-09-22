@@ -1,6 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import { createLogger } from '../logger.ts';
+import { isSuppressed, pruneSuppressed } from './suppress.ts';
 
 const log = createLogger('file-watcher');
 
@@ -35,27 +36,6 @@ let watcher: FSWatcher | null = null;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 let workspaceDir: string;
 
-// Write suppression to avoid feedback loops
-const suppressedPaths = new Map<string, number>();
-
-const SUPPRESS_TTL = 2000;
-
-export function suppressPath(filePath: string): void {
-  suppressedPaths.set(filePath, Date.now());
-}
-
-function isSuppressed(filePath: string): boolean {
-  const ts = suppressedPaths.get(filePath);
-  if (!ts) {
-    return false;
-  }
-  if (Date.now() - ts > SUPPRESS_TTL) {
-    suppressedPaths.delete(filePath);
-    return false;
-  }
-  return true;
-}
-
 export function startWatcher(
   dir: string,
   onChange: (
@@ -66,14 +46,7 @@ export function startWatcher(
   workspaceDir = dir;
 
   // Periodically clean stale suppression entries
-  cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [filePath, ts] of suppressedPaths) {
-      if (now - ts > SUPPRESS_TTL) {
-        suppressedPaths.delete(filePath);
-      }
-    }
-  }, 30_000);
+  cleanupTimer = setInterval(pruneSuppressed, 30_000);
   cleanupTimer.unref();
 
   const ignoredNames = new Set([...IGNORED_DIRS, ...TREE_HIDDEN]);

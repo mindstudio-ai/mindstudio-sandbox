@@ -35,15 +35,17 @@ import { mkdir, readFile, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { CDPSession, Page } from 'puppeteer-core';
-import { getStitchedRecording, getUploadUrl } from '../api.ts';
+import { getStitchedRecording, getUploadUrl, uploadToGrant } from '../api.ts';
 import { resolveFfmpegPath } from '../browser/index.ts';
 import { emitEvent } from '../ipc/ipc.ts';
 import type { RenderJobConfig, RenderStageStyle } from '../proxy/proxy.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { assertNoExport, enqueueBrowserWork, exportGate } from './browser.ts';
 import { CommandError } from './types.ts';
 import type { CommandContext } from './types.ts';
 import type { TunnelCommandResult } from '../protocol.ts';
+
+const log = createLogger('browser');
 
 // Minted sandbox-side as 16 random bytes, hex. Doubles as the render page's
 // token, so it must not be guessable (the proxy's internal routes may be
@@ -531,34 +533,30 @@ async function runExport(
     checkAbort();
     progress(jobId, 'uploading', 0);
     const bytes = (await stat(mp4)).size;
-    const { uploadUrl, uploadFields, publicUrl, store, key } =
-      await getUploadUrl(
-        job.appId,
-        job.sessionId,
-        'mp4',
-        'video/mp4',
-        job.target,
-      );
-    const form = new FormData();
-    for (const [k, v] of Object.entries(uploadFields)) {
-      form.append(k, v);
-    }
-    form.append(
-      'file',
-      new Blob([await readFile(mp4)], { type: 'video/mp4' }),
-      'replay.mp4',
+    const grant = await getUploadUrl(
+      job.appId,
+      job.sessionId,
+      'mp4',
+      'video/mp4',
+      job.target,
     );
-    const res = await fetch(uploadUrl, { method: 'POST', body: form });
-    if (!res.ok) {
+    const { publicUrl, store, key } = grant;
+    try {
+      await uploadToGrant(
+        grant,
+        new Blob([await readFile(mp4)], { type: 'video/mp4' }),
+        'replay.mp4',
+      );
+    } catch (err) {
       throw new CommandError(
-        `Video upload failed (HTTP ${res.status})`,
+        `Video upload failed: ${err instanceof Error ? err.message : String(err)}`,
         'UPLOAD_FAILED',
       );
     }
     progress(jobId, 'uploading', 100);
 
     const elapsedMs = Date.now() - startedAt;
-    log.info('browser', 'Replay export complete', {
+    log.info('Replay export complete', {
       jobId,
       width: outWidth,
       height: outHeight,

@@ -12,7 +12,9 @@ import { unlink, mkdir, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { build, stop } from 'esbuild';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
+
+const log = createLogger('transpiler');
 
 /**
  * esbuild keeps a single long-lived service child process and caches it even
@@ -67,7 +69,7 @@ export class Transpiler {
     // Find nearest node_modules by walking up from the source file
     const nodeModulesDir = findNearestNodeModules(dirname(absolutePath));
     if (!nodeModulesDir) {
-      log.error('transpiler', 'Cannot find node_modules for method', {
+      log.error('Cannot find node_modules for method', {
         methodPath,
         searchStart: dirname(absolutePath),
       });
@@ -101,7 +103,7 @@ export class Transpiler {
       if (!isEsbuildServiceDead(err)) {
         throw err;
       }
-      log.warn('transpiler', 'esbuild service died — restarting and retrying', {
+      log.warn('esbuild service died — restarting and retrying', {
         methodPath,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -110,7 +112,7 @@ export class Transpiler {
     }
 
     this.outputFiles.add(outfile);
-    log.info('transpiler', 'Method transpiled', {
+    log.info('Method transpiled', {
       duration: Date.now() - start,
       methodPath,
       outfile,

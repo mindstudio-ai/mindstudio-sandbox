@@ -1,5 +1,6 @@
 import { ctx } from '../context.ts';
 import { createLogger } from '../../logger.ts';
+import { refreshAppConfig } from '../refreshAppConfig.ts';
 import { sendCommand as sendTunnelCommand } from '../../processes/tunnel/index.ts';
 import type { ActionHandler } from './index.ts';
 
@@ -36,10 +37,12 @@ export const processHandlers: Record<string, ActionHandler> = {
       return {};
     }
 
-    // Treat dev server restart as an implicit mindstudio.json change —
-    // file watchers don't always pick up changes reliably.
+    // A manual dev-server restart is when someone expects their manifest edits
+    // to count, and chokidar has missed changes on long-running containers —
+    // so re-read it here rather than trust the watcher saw them. Said plainly:
+    // this used to forge a `mindstudio.json` file event to the same effect.
     if (name === 'devServer') {
-      ctx.onFileChanged?.('mindstudio.json', 'modified');
+      await refreshAppConfig();
     }
 
     const restarted = await ctx.processManager.restart(name);

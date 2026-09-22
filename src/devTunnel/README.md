@@ -15,40 +15,41 @@ how the C&C's old hand-written mirror came to declare three fields that were nev
 document covers the things types cannot: sequence, lifecycle, and the surrounding machinery.
 
 ```bash
-# how the C&C invokes it (processes/tunnel/index.ts) — credentials on the environment
-MINDSTUDIO_API_KEY=… MINDSTUDIO_BASE_URL=… USER_ID=… \
-  node dist/devTunnel/cli.js --port 5173 --sandbox-browser --log-level info
+# how the C&C invokes it (processes/tunnel/index.ts): no flags, no environment of its own
+node dist/devTunnel/cli.js
 ```
 
-| Flag | Meaning |
-|---|---|
-| `--port <n>` | The dev server to proxy. Falls back to `devPort` in the web interface config; with neither, the proxy does not start and only method execution works |
-| `--proxy-port <n>` | Preferred port for the proxy. Defaults to a stable port derived from the app id |
-| `--sandbox-browser` | Launch and supervise the box's headless Chrome as a WS client |
-| `--log-level <lvl>` | `error` \| `warn` \| `info` \| `debug`. Default `info` |
+There are no flags. The dev server's port is read from the web interface's config on every session
+start — so a `devPort` edit reaches the proxy on the restart it triggers — the box's headless Chrome
+is always supervised, and the log level is `LOG_LEVEL`, the same variable the C&C reads (default
+`info` here against its `debug`; `config.ts` says why). Configuration is the container environment
+this process inherits: `MINDSTUDIO_API_KEY` and `MINDSTUDIO_BASE_URL` are required; `USER_ID` and
+`DB_WS_URL` are optional, and `DB_WS_URL`'s absence is meaningful (see `config.ts` — it selects the
+worker's fetch transport, and inventing a default is how a box ends up making database calls its
+token is not valid for).
 
 The proxy binds `127.0.0.1` unconditionally. Nothing outside the container reaches this port — a box
 exposes exactly one, the C&C's 4387 — and every consumer of this one is a sibling process on
 loopback: the C&C reverse-proxies preview and HMR traffic to it, and the box's headless Chrome loads
 it directly. See the comment on `BIND_ADDRESS` in `session.ts`.
 
-`MINDSTUDIO_API_KEY` and `MINDSTUDIO_BASE_URL` are required; `USER_ID` and `DB_WS_URL` are optional,
-and `DB_WS_URL`'s absence is meaningful (see `config.ts` — it selects the worker's fetch transport,
-and inventing a default is how a box ends up making database calls its token is not valid for).
-
 ## Startup sequence
 
 1. `initConfig()` reads the environment. Missing credentials fail here, loudly.
-2. Read `mindstudio.json`; validate config and `appId`.
+2. Read `mindstudio.json` through the reader both processes share (`src/appConfig/read.ts`) —
+   tolerant of the JSON slop remy writes, and never repairing on disk: the C&C is the one writer.
+   Validate `appId`.
 3. Emit `session-starting`.
 4. Start the platform session — registers methods and data sources, gets the session token and
    client context.
 5. Sync table schemas if any tables are declared → `schema-sync-completed`.
-6. Start the proxy if a dev port resolved, injecting `window.__MINDSTUDIO__` into HTML.
-7. Optionally launch the sandbox browser, which connects back to the proxy as a WS client.
+6. Start the proxy at the dev port from `web.json` (5173 when it says nothing), injecting
+   `window.__MINDSTUDIO__` into HTML.
+7. Launch the sandbox browser, which connects back to the proxy as a WS client.
 8. Emit `session-started` with the session, the proxy URL, and the app's roles and scenarios.
 9. Begin polling the platform for method execution requests.
-10. Watch `mindstudio.json`, every interface JSON it references, and the declared table sources.
+10. Start reading stdin commands — including the C&C's `config-file-changed` and
+    `table-file-changed`, which are how this process learns the workspace changed.
 
 A boot that cannot find a valid `mindstudio.json` retries five times with backoff, then emits
 `degraded-state` and keeps retrying on a 15s timer until the config appears —
@@ -60,7 +61,7 @@ Every command carries a `requestId`. Responses echo it with `status: "started"` 
 intermediate ack) then `status: "completed"`. System events — session lifecycle, connection health,
 browser state — carry no `requestId`, which is how the C&C tells them apart.
 
-The seventeen action names, their params and their results are `TunnelAction`,
+The nineteen action names, their params and their results are `TunnelAction`,
 `TunnelCommandParams` and `TunnelCommandResult` in `./protocol.ts`; the failure codes are
 `ERROR_CODES` in the same file. Read those rather than a table here.
 
@@ -75,14 +76,17 @@ Two behaviours worth knowing that the types do not express:
   phone-auth apps; the platform skips OTP for both), cached for the session. It is how an agent
   invokes an auth-gated method without first seeding a user through a scenario.
 
-## File watchers
+## Workspace changes
 
-No polling and no commands — changes are picked up automatically. Both watchers handle atomic
-write-then-rename correctly.
+This process watches nothing. The C&C's workspace watcher (`src/fileWatcher/`) is the one chokidar
+tree in the box; when the manifest, an enabled interface's config file, or a declared table source
+changes, it sends `config-file-changed` (with the absolute path) or `table-file-changed` over stdin,
+debounced 500 ms. There used to be two more watchers here over the same directory — which also saw
+the C&C's own JSON repairs as edits and restarted the session for a reformat.
 
 | What | Action |
 |---|---|
-| `mindstudio.json` and every interface JSON it references | Full session teardown and restart, so new methods, scenarios, roles and tables are picked up. Validates *before* tearing down, so a corrupt mid-write file does not kill a live session. Emits `config-changed` → `session-starting` → `session-started` |
+| `mindstudio.json` and every interface JSON it references | Full session teardown and restart, so new methods, scenarios, roles and tables are picked up. Validates *before* tearing down, so a corrupt mid-write file does not kill a live session — and "corrupt" means what the C&C means by it, since both read through the same parser. Emits `config-changed` → `session-starting` → `session-started` |
 | The one exception: `web.json`'s `defaultPreviewMode` | Hot-applied to the sandbox browser with no restart, so rrweb continuity and cookies survive the swap |
 | Declared table source files | Re-read and schema-sync, no session restart. `schema-sync-started` → `schema-sync-completed` |
 
@@ -113,10 +117,12 @@ The proxy also serves `/__mindstudio_dev__/ws` for the browser agent and
 
 The proxy injects a `<script>` tag into every HTML response loading the browser agent, which connects
 back over WebSocket. Its source is `src/browserAgent/` in this repo — see that directory's README.
+What crosses that socket is `src/browserAgent/protocol.ts`, an import-free module both the page and
+this proxy compile against.
 
 **Multi-client.** Several browsers can attach at once — the editor's iframe, a standalone tab, a
-phone. Broadcasts (reload) go to all of them; command-and-control goes to one preferred client,
-favouring `mode=iframe`, and to the sandbox-hosted Chrome when `--sandbox-browser` is on.
+phone. Broadcasts (reload) go to all of them; command-and-control goes to the sandbox-hosted Chrome,
+which this process always supervises.
 
 **Log capture** is always on and writes `.logs/browser.ndjson`: console output, uncaught errors and
 unhandled rejections with stacks, every fetch and XHR with status and duration (and the response
@@ -139,5 +145,10 @@ change what the page loads, and the page-side API cannot drift from the code tha
 
 - Starting and supervising the dev server (Vite, Next, whatever the app declares).
 - Minting `requestId`s and correlating responses.
-- Reading `mindstudio.json` itself for scenario and role lists — static config, not runtime state.
-- Relaying events to the editor, and its own logging.
+- Watching the workspace, and telling this process what changed (above).
+- Reading `mindstudio.json` — through the same reader as this process — and being the one that
+  repairs it on disk when remy leaves a trailing comma behind.
+- Relaying events to the editor.
+
+Both processes share one logger (`src/logger.ts`); this one points it at stderr
+(`logging/logger.ts`), because its stdout is the protocol.

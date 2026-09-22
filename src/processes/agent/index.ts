@@ -197,7 +197,7 @@ export function sendAgentCommand(
 
 export function startAgent(
   pm: ProcessManager,
-  config: { workspaceDir: string; apiKey: string; apiBaseUrl: string },
+  workspaceDir: string,
   callbacks: AgentCallbacks,
 ): void {
   pm.start({
@@ -207,17 +207,14 @@ export function startAgent(
     // Sep 2026, so the flag stopped meaning anything. remy still tolerates it
     // (unrecognized args are ignored), which is what let this drop land
     // without pinning the devbox image to a remy version.
-    args: ['--lsp-url', 'http://localhost:4388', '--log-level', 'debug'],
-    // Credentials on the environment, not argv — remy's own config resolution
-    // reads both of these (flags → env → default), so this needs nothing on its
-    // side. They were `--api-key`/`--base-url`, and ProcessManager logs the full
-    // command line, keeps it as ProcessInfo.command, and serves that to the
+    //
+    // No credentials either. remy reads MINDSTUDIO_API_KEY and
+    // MINDSTUDIO_BASE_URL from the environment it inherits from this process,
+    // which inherits them from the container. They were `--api-key`/`--base-url`
+    // once, and ProcessManager logs the full command line and serves it to the
     // editor's process list, which put a live API key in three places at once.
-    env: {
-      MINDSTUDIO_API_KEY: config.apiKey,
-      MINDSTUDIO_BASE_URL: config.apiBaseUrl,
-    },
-    cwd: config.workspaceDir,
+    args: ['--lsp-url', 'http://localhost:4388', '--log-level', 'debug'],
+    cwd: workspaceDir,
     stdin: true,
     restartOnCrash: false,
     maxRestarts: 0,

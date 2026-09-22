@@ -10,7 +10,7 @@
 import type { DevRunner } from '../execution/runner.ts';
 import type { DevProxy } from '../proxy/proxy.ts';
 import type { BrowserSupervisor } from '../browser/index.ts';
-import type { AppConfig, WebInterfaceConfig } from '../config/types.ts';
+import type { AppConfig, WebInterfaceConfig } from '../../appConfig/types.ts';
 import {
   ERROR_CODES,
   type ErrorCode,
@@ -34,10 +34,23 @@ export interface SessionState {
   unsubscribers: Array<() => void>;
 }
 
+/**
+ * What a command may ask the session lifecycle to do. The closures live in
+ * `session.ts`, next to the `restarting`/`stopping` guards they consult; the
+ * C&C's workspace watcher is what invokes them, over stdin.
+ */
+export interface LifecycleHooks {
+  /** `mindstudio.json`, or an interface config it references, changed. Absolute path. */
+  onConfigFileChanged(absPath: string): Promise<void>;
+  /** A declared table source file changed. */
+  onTableFileChanged(): Promise<void>;
+}
+
 export interface CommandContext {
   state: SessionState;
   cwd: string;
   requestId: string;
+  lifecycle: LifecycleHooks;
   /** Emit a "started" progress event for this command. */
   started(data?: Record<string, unknown>): void;
 }

@@ -23,14 +23,16 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import {
   logMethodStart,
   logMethodStdout,
   logBackgroundStdout,
 } from '../logging/request-log.ts';
-import type { DevSession } from '../config/types.ts';
+import type { DevSession } from '../api.ts';
 import type { ExecuteRequest, WorkerMessage } from './worker-protocol.ts';
+
+const log = createLogger('executor');
 
 const EXECUTION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — matches prod
 
@@ -221,7 +223,7 @@ async function spawnWorker(
       workerProjectRoot !== projectRoot
         ? 'project-root-changed'
         : 'disconnected';
-    log.info('executor', 'Respawning worker process', { reason });
+    log.info('Respawning worker process', { reason });
   }
 
   // Clean up old worker
@@ -266,7 +268,7 @@ async function spawnWorker(
   workerScriptPath = scriptPath;
   workerProjectRoot = projectRoot;
 
-  log.debug('executor', 'Spawning method execution process', {
+  log.debug('Spawning method execution process', {
     cwd: projectRoot,
     scriptPath,
   });
@@ -364,7 +366,7 @@ async function spawnWorker(
 
   // If worker dies unexpectedly, reject all pending requests
   child.on('exit', (code) => {
-    log.warn('executor', 'Method execution process exited unexpectedly', {
+    log.warn('Method execution process exited unexpectedly', {
       code,
     });
     for (const [, req] of pending) {
@@ -384,14 +386,13 @@ async function spawnWorker(
 
   // Drain the worker's stdout/stderr. Per-request console output is captured
   // with attribution in the ndjson request log (via the ALS interceptor); this
-  // is the raw process stream — surfaced for live visibility (shown on stderr
-  // in headless mode; interactive writes the logger to .logs/tunnel.ndjson) and,
-  // crucially, drained so a chatty method can't back-pressure the (previously
-  // unread) stdout pipe and stall the worker.
+  // is the raw process stream — surfaced for live visibility through the
+  // logger and, crucially, drained so a chatty method can't back-pressure the
+  // (previously unread) stdout pipe and stall the worker.
   child.stdout?.on('data', (chunk: Buffer) => {
     const text = chunk.toString().trim();
     if (text) {
-      log.info('executor', 'Method process stdout', {
+      log.info('Method process stdout', {
         text: text.slice(0, 2000),
       });
     }
@@ -399,14 +400,14 @@ async function spawnWorker(
   child.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString().trim();
     if (text) {
-      log.warn('executor', 'Method process stderr', {
+      log.warn('Method process stderr', {
         text: text.slice(0, 2000),
       });
     }
   });
 
   worker = child;
-  log.info('executor', 'Method execution process ready', { pid: child.pid });
+  log.info('Method execution process ready', { pid: child.pid });
   return child;
 }
 
@@ -448,7 +449,7 @@ async function executeMethodInWorker(
 
   const id = opts.requestId;
 
-  log.debug('executor', 'Sending method to execution process', {
+  log.debug('Sending method to execution process', {
     id,
     methodExport: opts.methodExport,
   });
@@ -456,7 +457,7 @@ async function executeMethodInWorker(
   return new Promise<ExecuteMethodResult>((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      log.warn('executor', 'Method execution timed out', {
+      log.warn('Method execution timed out', {
         id,
         methodExport: opts.methodExport,
       });

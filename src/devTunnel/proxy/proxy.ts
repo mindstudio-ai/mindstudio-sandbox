@@ -21,15 +21,28 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Socket } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { appendBrowserLogEntries } from '../logging/browser-log.ts';
+import type {
+  BrowserStep,
+  CommandResult,
+  MirrorBatch,
+  MirrorEvent,
+  PageHello,
+  PageResult,
+  PageToProxyMessage,
+  ProxyBroadcast,
+  ProxyToPageMessage,
+} from '../../browserAgent/protocol.ts';
 import { ClientRegistry } from './ws-clients.ts';
 import { tryHandleTelemetry } from './telemetry-mock.ts';
 import { CommandError } from '../stdin-commands/types.ts';
 import { getApiBaseUrl } from '../config.ts';
 
+const log = createLogger('proxy');
+
 interface PendingResult {
-  resolve: (result: Record<string, unknown>) => void;
+  resolve: (result: CommandResult) => void;
   reject: (err: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   clientId: string;
@@ -37,11 +50,16 @@ interface PendingResult {
 
 interface QueuedCommand {
   id: string;
-  steps: Array<Record<string, unknown>>;
+  steps: BrowserStep[];
   timeoutMs: number;
-  resolve: (result: Record<string, unknown>) => void;
+  resolve: (result: CommandResult) => void;
   reject: (err: Error) => void;
   queuedAt: number;
+}
+
+/** The one place a message to the page is serialised, so the shape is checked. */
+function send(ws: WebSocket, msg: ProxyToPageMessage): void {
+  ws.send(JSON.stringify(msg));
 }
 
 // How long a browser command waits for the sandbox-owned headless client to be
@@ -256,9 +274,9 @@ export class DevProxy {
    * Commands are queued and executed one at a time per client (FIFO).
    */
   async dispatchBrowserCommand(
-    steps: Array<Record<string, unknown>>,
+    steps: BrowserStep[],
     timeoutMs = 120_000,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<CommandResult> {
     // Automation runs only on the sandbox-owned headless client, which drops on
     // every navigation and reconnects when the new page loads. Wait for it to be
     // present rather than checking "any client connected" (hasConnected) — that
@@ -287,7 +305,7 @@ export class DevProxy {
         reject,
         queuedAt: Date.now(),
       });
-      log.debug('proxy', 'Browser command queued', {
+      log.debug('Browser command queued', {
         id,
         queueLength: this.commandQueue.length,
         commands: steps.map((s) => s.command),
@@ -322,7 +340,7 @@ export class DevProxy {
       const queued = this.commandQueue.shift()!;
       const { id, steps, timeoutMs, resolve, reject } = queued;
 
-      log.info('proxy', 'Browser command sent', {
+      log.info('Browser command sent', {
         id,
         clientId: target.id,
         mode: target.mode,
@@ -345,7 +363,7 @@ export class DevProxy {
         if (client) {
           client.activeCommandId = null; // free the slot for the next command
         }
-        log.warn('proxy', 'Browser command timed out', {
+        log.warn('Browser command timed out', {
           id,
           clientId: client?.id ?? null,
           pendingCount: this.pendingResults.size,
@@ -365,12 +383,12 @@ export class DevProxy {
       target.activeCommandId = id;
 
       try {
-        target.ws.send(JSON.stringify({ type: 'command', id, steps }));
+        send(target.ws, { type: 'command', id, steps });
       } catch {
         this.pendingResults.delete(id);
         clearTimeout(timeout);
         target.activeCommandId = null;
-        log.warn('proxy', 'Browser command send failed', {
+        log.warn('Browser command send failed', {
           id,
           clientId: target.id,
         });
@@ -394,16 +412,17 @@ export class DevProxy {
    * iframes. Pass `{ includeHeadless: true }` to override.
    */
   broadcastToClients(
-    action: string,
-    payload?: Record<string, unknown>,
+    action: ProxyBroadcast['action'],
+    payload?: ProxyBroadcast['payload'],
     opts: { includeHeadless?: boolean } = {},
   ): void {
-    const msg = JSON.stringify({ type: 'broadcast', action, payload });
+    const broadcast: ProxyBroadcast = { type: 'broadcast', action, payload };
+    const msg = JSON.stringify(broadcast);
     const clients = this.clients.getAll();
     const targets = opts.includeHeadless
       ? clients
       : clients.filter((c) => c.mode !== 'headless');
-    log.info('proxy', 'Broadcasting to browser clients', {
+    log.info('Broadcasting to browser clients', {
       action,
       clientCount: targets.length,
       skippedHeadless: clients.length - targets.length,
@@ -449,13 +468,13 @@ export class DevProxy {
         this.proxyPort = assignedPort;
         this.startHealthCheck();
         this.startPingTimer();
-        log.info('proxy', 'Dev proxy started', {
+        log.info('Dev proxy started', {
           port: assignedPort,
           bind: this.bindAddress,
         });
         return assignedPort;
       } catch {
-        log.warn('proxy', 'Proxy port in use, trying next', { port });
+        log.warn('Proxy port in use, trying next', { port });
         // Port in use — try next
       }
     }
@@ -520,7 +539,7 @@ export class DevProxy {
     this.headlessReadyWaiters.clear();
 
     if (this.server) {
-      log.info('proxy', 'Dev proxy stopping');
+      log.info('Dev proxy stopping');
       this.server.close();
       this.server = null;
       this.proxyPort = null;
@@ -562,16 +581,15 @@ export class DevProxy {
     // Require hello within 5s
     const helloTimeout = setTimeout(() => {
       if (!clientId) {
-        log.warn(
-          'proxy',
-          'Browser WS client did not send hello in time, closing',
-        );
+        log.warn('Browser WS client did not send hello in time, closing');
         ws.close(4000, 'Hello timeout');
       }
     }, DevProxy.HELLO_TIMEOUT);
 
     ws.on('message', (data) => {
-      let msg: Record<string, unknown>;
+      // The type is the contract, not a guarantee — the page is whatever loaded
+      // through this proxy — so the reads below stay as defensive as they were.
+      let msg: PageToProxyMessage;
       try {
         msg = JSON.parse(data.toString());
       } catch {
@@ -601,7 +619,7 @@ export class DevProxy {
 
         // Info-level so this shows up without --log-level debug. Small log,
         // fires once per client connect.
-        log.info('proxy', 'WS hello received', {
+        log.info('WS hello received', {
           remoteAddr,
           isLoopback,
           helloMode: msg.mode,
@@ -617,7 +635,6 @@ export class DevProxy {
           msg.sandbox === true || helloUrl.includes('ms_sandbox=1');
         if (looksLikeSandbox && mode !== 'headless') {
           log.warn(
-            'proxy',
             'Client looks like the sandbox browser but did not register as headless',
             {
               remoteAddr,
@@ -629,10 +646,7 @@ export class DevProxy {
             },
           );
         }
-        const viewport = (msg.viewport as { w: number; h: number }) || {
-          w: 0,
-          h: 0,
-        };
+        const viewport = msg.viewport || { w: 0, h: 0 };
 
         clientId = this.clients.add(ws, {
           mode,
@@ -666,7 +680,7 @@ export class DevProxy {
           this.drainCommandQueue();
         }
 
-        ws.send(JSON.stringify({ type: 'ack', clientId }));
+        send(ws, { type: 'ack', clientId });
 
         // Send buffered snapshot to new mirror viewers so they render immediately
         if (mode === 'mirror' && this.lastMirrorSnapshot) {
@@ -685,20 +699,17 @@ export class DevProxy {
 
         case 'log':
           if (Array.isArray(msg.entries)) {
-            appendBrowserLogEntries(msg.entries as Record<string, unknown>[]);
+            appendBrowserLogEntries(msg.entries);
           }
           break;
 
         case 'mirror': {
-          const events = msg.events as Array<{
-            type?: number;
-            data?: Record<string, unknown>;
-          }>;
+          const events = msg.events;
           if (clientId && Array.isArray(events)) {
             // Buffer the latest full snapshot (type 2) + preceding meta (type 4)
             // so new mirror viewers get it immediately on connect.
-            let meta: unknown = null;
-            let snapshot: unknown = null;
+            let meta: MirrorEvent | null = null;
+            let snapshot: MirrorEvent | null = null;
             for (const evt of events) {
               if (evt.type === 4) {
                 meta = evt;
@@ -719,15 +730,11 @@ export class DevProxy {
               }
             }
             if (snapshot) {
-              const snapshotEvents: unknown[] = [];
-              if (meta) {
-                snapshotEvents.push(meta);
-              }
-              snapshotEvents.push(snapshot);
-              this.lastMirrorSnapshot = JSON.stringify({
+              const replay: MirrorBatch = {
                 type: 'mirror',
-                events: snapshotEvents,
-              });
+                events: meta ? [meta, snapshot] : [snapshot],
+              };
+              this.lastMirrorSnapshot = JSON.stringify(replay);
             }
           }
           this.relayMirrorEvents(data.toString());
@@ -757,7 +764,7 @@ export class DevProxy {
         // "Browser disconnected".
         if (client?.activeCommandId) {
           const commandId = client.activeCommandId;
-          log.debug('proxy', 'Browser disconnected with active command', {
+          log.debug('Browser disconnected with active command', {
             commandId,
           });
           setTimeout(() => {
@@ -785,18 +792,18 @@ export class DevProxy {
     });
   }
 
-  private handleCommandResult(msg: Record<string, unknown>): void {
-    const id = msg.id as string;
+  private handleCommandResult(msg: PageResult): void {
+    const id = msg.id;
     if (!id) {
-      log.warn('proxy', 'Browser command result received with no id');
+      log.warn('Browser command result received with no id');
       return;
     }
 
     const pending = this.pendingResults.get(id);
     if (pending) {
-      log.info('proxy', 'Browser command result received', {
+      log.info('Browser command result received', {
         id,
-        stepCount: (msg.steps as unknown[])?.length,
+        stepCount: msg.steps?.length,
         duration: msg.duration,
       });
       clearTimeout(pending.timeout);
@@ -813,11 +820,10 @@ export class DevProxy {
       // Client is now free — dispatch next queued command
       this.drainCommandQueue();
     } else {
-      log.warn(
-        'proxy',
-        'Browser command result received but no pending command found',
-        { id, pendingIds: [...this.pendingResults.keys()] },
-      );
+      log.warn('Browser command result received but no pending command found', {
+        id,
+        pendingIds: [...this.pendingResults.keys()],
+      });
     }
   }
 
@@ -846,10 +852,7 @@ export class DevProxy {
    * - key absent (older browser-agent that doesn't report) → adopt
    *   optimistically; a never-resumed command falls to its dispatch timeout.
    */
-  private reconcileOrphanedCommands(
-    clientId: string,
-    hello: Record<string, unknown>,
-  ): void {
+  private reconcileOrphanedCommands(clientId: string, hello: PageHello): void {
     const client = this.clients.get(clientId);
     if (!client) {
       return;
@@ -867,7 +870,7 @@ export class DevProxy {
       if (id === resumingId || (!reported && !client.activeCommandId)) {
         client.activeCommandId = id;
         pending.clientId = clientId;
-        log.info('proxy', 'Orphaned command re-owned by reconnected client', {
+        log.info('Orphaned command re-owned by reconnected client', {
           id,
           clientId,
           resuming: id === resumingId,
@@ -918,7 +921,7 @@ export class DevProxy {
       clearTimeout(pending.timeout);
       this.pendingResults.delete(commandId);
       pending.reject(error);
-      log.warn('proxy', 'Pending command rejected', {
+      log.warn('Pending command rejected', {
         id: commandId,
         code: error.code,
         reason: error.message,
@@ -975,7 +978,7 @@ export class DevProxy {
       return;
     }
     this.upstreamUp = false;
-    log.info('proxy', 'Upstream dev server marked as down (explicit signal)');
+    log.info('Upstream dev server marked as down (explicit signal)');
     this.scheduleHealthCheck(DevProxy.HEALTH_CHECK_INTERVAL_DOWN);
   }
 
@@ -1010,9 +1013,9 @@ export class DevProxy {
 
     // Handle state transitions
     if (wasUp && !this.upstreamUp) {
-      log.warn('proxy', 'Upstream dev server is down');
+      log.warn('Upstream dev server is down');
     } else if (!wasUp && this.upstreamUp) {
-      log.info('proxy', 'Upstream dev server is back up, reloading browser');
+      log.info('Upstream dev server is back up, reloading browser');
       this.broadcastToClients('reload');
     }
 
@@ -1276,7 +1279,7 @@ export class DevProxy {
     );
 
     proxyReq.on('error', (err) => {
-      log.warn('proxy', 'API proxy error', {
+      log.warn('API proxy error', {
         path: originalPath,
         error: err.message,
       });
@@ -1383,7 +1386,7 @@ export class DevProxy {
     );
 
     upstreamReq.on('error', (err) => {
-      log.warn('proxy', 'Dev proxy cannot reach dev server', {
+      log.warn('Dev proxy cannot reach dev server', {
         path: clientReq.url,
         error: err.message,
       });

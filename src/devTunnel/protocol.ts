@@ -15,21 +15,23 @@
  * declared required but can be absent on the wire, and `sandbox-browser-state`
  * said `pid: number` while one of its two emit sites sends null.
  *
- * DELIBERATELY A LEAF: types and const arrays only, and no relative imports.
- * The consumer can read it without dragging the tunnel's module graph into the
- * C&C process, and it stays valid whatever happens to either side's internals.
- * Anything that needs a value from elsewhere belongs in the module that owns
- * that value, not here.
+ * DELIBERATELY A LEAF: types and const arrays only, and no relative imports
+ * but one — the page-agent protocol, itself a leaf. The consumer can read it
+ * without dragging the tunnel's module graph into the C&C process, and it stays
+ * valid whatever happens to either side's internals. Anything that needs a
+ * value from elsewhere belongs in the module that owns that value, not here.
  *
  * @module
  */
 
+// The page owns the step the C&C relays to it and the viewport it names. Both
+// are re-exported so the C&C keeps one import for everything it sends here.
+import type { BrowserStep, PreviewMode } from '../browserAgent/protocol.ts';
+export type { BrowserStep, PreviewMode } from '../browserAgent/protocol.ts';
+
 // ---------------------------------------------------------------------------
 // Shared vocabulary
 // ---------------------------------------------------------------------------
-
-/** Viewport class for the sandbox-hosted browser. */
-export type PreviewMode = 'desktop' | 'mobile';
 
 export interface TunnelRole {
   id: string;
@@ -231,35 +233,6 @@ export interface CommandFailure {
   errorCode?: ErrorCode;
 }
 
-/**
- * A single browser-automation step inside a `browser` batch.
- *
- * Open by design (the index signature): the tunnel's `browser` handler owns the
- * verb table and validates each step, while the C&C relays batches it does not
- * interpret — from the editor over WS and from the agent as a tool call. Adding
- * a browser verb must not require a change on the relay side.
- */
-export interface BrowserStep {
-  command: string;
-  path?: string;
-  scrollToSelector?: string;
-  scrollY?: number;
-  width?: number;
-  height?: number;
-  url?: string;
-  fresh?: boolean;
-  /**
-   * `setViewport` only, and wider than `PreviewMode`: `'default'` means "the
-   * app's configured defaultPreviewMode, falling back to desktop", which is
-   * what remy's per-run reset sends. Absent behaves the same as `'default'`.
-   * Typed narrower than this at first, and the set-viewport call site in
-   * `lsp/sidecar.ts` is what caught it.
-   */
-  mode?: PreviewMode | 'default';
-  format?: 'png' | 'jpeg';
-  [key: string]: unknown;
-}
-
 /** Where an uploaded rrweb chunk landed, attached to a recorded batch. */
 export interface RecordingChunkRef {
   path: string;
@@ -316,6 +289,15 @@ export interface TunnelCommandParams {
   };
   'dev-server-restarting': Record<string, never>;
   'restart-worker': Record<string, never>;
+  /**
+   * The C&C's workspace watcher saw `mindstudio.json`, or an interface config it
+   * references, change. `path` is absolute. The tunnel decides what that means
+   * — hot-apply, a session restart, or "invalid, keeping the current session" —
+   * and answers once it has; it used to watch these files itself.
+   */
+  'config-file-changed': { path: string };
+  /** A declared table source file changed; re-sync the schema. */
+  'table-file-changed': Record<string, never>;
   'export-recording': {
     jobId: string;
     recordingSessionId: string;
@@ -436,6 +418,8 @@ export interface TunnelCommandResult {
     | CommandFailure;
   'dev-server-restarting': { success: true } | CommandFailure;
   'restart-worker': { success: true } | CommandFailure;
+  'config-file-changed': { success: true } | CommandFailure;
+  'table-file-changed': { success: true } | CommandFailure;
   'export-recording':
     | {
         success: true;

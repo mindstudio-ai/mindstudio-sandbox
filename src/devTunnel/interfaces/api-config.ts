@@ -1,13 +1,12 @@
-// Read the local API interface config from the compiled api.json file.
+// The API interface config, passed through verbatim.
 //
-// Called via readConfig() on every get-config poll request — reads fresh
-// from disk so local changes are reflected immediately.
+// The compiled api.json has already been read: `readAppConfig` resolves each
+// interface's file onto `interfaces[].config`, tolerantly. It is self-contained,
+// so there is nothing to inline.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { AppConfig } from '../config/types.ts';
+import type { AppConfig } from '../../appConfig/types.ts';
 
-export interface ApiConfigBundle {
+export type ApiConfigBundle = {
   name: string;
   description?: string;
   routes: Array<{
@@ -19,34 +18,21 @@ export interface ApiConfigBundle {
     tag?: string;
     params?: Record<string, unknown>;
   }>;
-}
+};
 
 /**
- * Read the API interface config from the local dist files.
+ * The API interface config from the local dist files.
  *
- * @param projectRoot  Absolute path to the project root
  * @param appConfig    The parsed AppConfig
  * @returns The API config ready to send to the platform
  * @throws If no API interface is configured or the file is missing/invalid
  */
-export function readApiConfig(
-  projectRoot: string,
-  appConfig: AppConfig,
-): ApiConfigBundle {
+export function readApiConfig(appConfig: AppConfig): ApiConfigBundle {
   const apiInterface = appConfig.interfaces.find(
     (i) => i.type === 'api' && i.enabled !== false,
   );
-  if (!apiInterface) {
+  if (!apiInterface?.config) {
     throw new Error('No API interface config found');
   }
-
-  const apiJsonPath = join(projectRoot, apiInterface.path);
-  const raw = readFileSync(apiJsonPath, 'utf-8');
-  const parsed = JSON.parse(raw);
-
-  if (!parsed.api) {
-    throw new Error('No API interface config found');
-  }
-
-  return parsed.api;
+  return apiInterface.config as ApiConfigBundle;
 }

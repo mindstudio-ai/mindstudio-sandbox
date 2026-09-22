@@ -1,6 +1,8 @@
 import { WebSocket } from 'ws';
 import { randomBytes } from 'node:crypto';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
+
+const log = createLogger('proxy');
 
 export interface ConnectedClient {
   id: string;
@@ -43,7 +45,7 @@ export class ClientRegistry {
       alive: true,
       activeCommandId: null,
     });
-    log.info('proxy', 'Browser client connected', {
+    log.info('Browser client connected', {
       clientId: id,
       mode: hello.mode,
       mirror: !!hello.mirror,
@@ -56,7 +58,7 @@ export class ClientRegistry {
     const client = this.clients.get(id);
     if (client) {
       this.clients.delete(id);
-      log.info('proxy', 'Browser client disconnected', {
+      log.info('Browser client disconnected', {
         clientId: id,
         mode: client.mode,
       });
@@ -165,7 +167,7 @@ export class ClientRegistry {
     const removed: { clientId: string; activeCommandId: string | null }[] = [];
     for (const client of this.clients.values()) {
       if (!client.alive) {
-        log.warn('proxy', 'Browser client timed out (no pong)', {
+        log.warn('Browser client timed out (no pong)', {
           clientId: client.id,
           activeCommandId: client.activeCommandId,
         });

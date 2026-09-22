@@ -14,11 +14,16 @@ import {
   refreshGitRemote,
   configureGit,
   unshallowAsync,
-  readAppConfig,
   installDependencies,
   ensureProdCli,
   setBootstrapRegistry,
 } from './bootstrap/index.ts';
+import {
+  readAppConfig,
+  findWebInterface,
+  getWebInterfaceConfig,
+} from './appConfig/read.ts';
+import { refreshAppConfig } from './server/refreshAppConfig.ts';
 import { ProcessRegistry } from './processes/ProcessRegistry.ts';
 import { ProcessManager } from './processes/ProcessManager.ts';
 import {
@@ -79,7 +84,7 @@ import {
   setOnboardingChangeListener,
 } from './projectStatus/ProjectStatusManager.ts';
 import { readForkSource } from './projectStatus/forkDetection.ts';
-import type { AppConfig } from './types.ts';
+import type { AppConfig } from './appConfig/types.ts';
 import { toolRegistry } from './agentTools/index.ts';
 import { setupFileWatcher } from './fileWatcher/index.ts';
 import { cacheVersions } from './server/versionCache.ts';
@@ -280,18 +285,16 @@ async function startServices(
   lspSidecar.setProcessManager(processManager);
   log.info('LSP sidecar ready on port 4388');
 
-  // Dev server
-  const webInterface = appConfig?.interfaces.find((i) => i.type === 'web');
-  const webConfig = webInterface?.config as
-    | { devCommand?: string; devPort?: number }
-    | undefined;
-  const devPort = webConfig?.devPort ?? 5173;
-  const devCommand = webConfig?.devCommand ?? 'npm run dev';
+  // Dev server. Its port is not our business — the tunnel reads it from
+  // web.json on every session start and points the proxy at it.
+  const webInterface = appConfig ? findWebInterface(appConfig) : null;
+  const devCommand =
+    (appConfig && getWebInterfaceConfig(appConfig)?.devCommand) ??
+    'npm run dev';
   // Keyed on the path, not just the entry: `path` is optional in the manifest
-  // schema, and path.dirname(undefined) throws the same way readAppConfig's loop
-  // did. A web interface that names no config file gives us no directory to run
-  // the dev server in, which the `else` below already reports as "no web
-  // interface" rather than treating as fatal.
+  // schema, and path.dirname(undefined) throws. A web interface that names no
+  // config file gives us no directory to run the dev server in, which the
+  // `else` below already reports as "no web interface" rather than as fatal.
   const webDir = webInterface?.path
     ? path.resolve(config.workspaceDir, path.dirname(webInterface.path))
     : null;
@@ -309,35 +312,25 @@ async function startServices(
 
   // Tunnel
   progress('tunnel', 'Starting dev tunnel...');
-  startTunnel(
-    processManager,
-    {
-      workspaceDir: config.workspaceDir,
-      devPort,
-      apiKey: config.apiKey,
-      apiBaseUrl: config.apiBaseUrl,
-      userId: config.userId,
+  startTunnel(processManager, config.workspaceDir, {
+    onSessionStarted: (session) => {
+      if (session.proxyPort != null) {
+        setProxyTarget(session.proxyPort);
+      }
+      ctx.tunnelSession = session;
     },
-    {
-      onSessionStarted: (session) => {
-        if (session.proxyPort != null) {
-          setProxyTarget(session.proxyPort);
-        }
-        ctx.tunnelSession = session;
-      },
-      onSessionEnded: () => {
-        ctx.tunnelSession = null;
-      },
-      onSandboxBrowserPid: (pid) => {
-        if (pid === null) {
-          ctx.resourceMonitor?.untrackExternalPid('sandboxBrowser');
-        } else {
-          ctx.resourceMonitor?.trackExternalPid('sandboxBrowser', pid);
-        }
-      },
-      broadcast,
+    onSessionEnded: () => {
+      ctx.tunnelSession = null;
     },
-  );
+    onSandboxBrowserPid: (pid) => {
+      if (pid === null) {
+        ctx.resourceMonitor?.untrackExternalPid('sandboxBrowser');
+      } else {
+        ctx.resourceMonitor?.trackExternalPid('sandboxBrowser', pid);
+      }
+    },
+    broadcast,
+  });
 
   // Agent
   progress('agent', 'Starting coding agent...');
@@ -350,10 +343,7 @@ async function startServices(
     sendAgentCommand: (action, params, timeout) =>
       sendAgentCommand(processManager, action, params, timeout),
     workspaceDir: config.workspaceDir,
-    readAppConfig: () => readAppConfig(config.workspaceDir),
-    setAppConfig: (updated) => {
-      ctx.appConfig = updated;
-    },
+    refreshAppConfig,
     // Genuine first build finished — snapshot (the commit carries the final
     // metadata) then notify youai-api to email the creator. Fire-and-forget;
     // never blocks remy's tool result, never throws.
@@ -366,38 +356,22 @@ async function startServices(
       });
     },
   };
-  startAgent(
-    processManager,
-    {
-      workspaceDir: config.workspaceDir,
-      apiKey: config.apiKey,
-      apiBaseUrl: config.apiBaseUrl,
+  startAgent(processManager, config.workspaceDir, {
+    broadcast,
+    onEditsFinished: () => {
+      flushHmr();
+      // chokidar may miss changes on long-running containers (inotify
+      // limits), so an agent turn re-reads the manifest regardless.
+      void refreshAppConfig();
     },
-    {
-      broadcast,
-      onEditsFinished: () => {
-        flushHmr();
-        // Re-read manifest after agent edits — chokidar may miss changes
-        // on long-running containers (inotify limits), so this ensures
-        // manifestChanged fires when the agent updates interface configs.
-        readAppConfig(config.workspaceDir)
-          .then((updated) => {
-            if (updated) {
-              ctx.appConfig = updated;
-              broadcast('manifestChanged', { app: updated });
-            }
-          })
-          .catch(() => {});
-      },
-      onExternalTool: (id, name, input) => {
-        const handler = toolRegistry.get(name);
-        if (!handler) {
-          return false;
-        }
-        return handler.handle(id, input, toolContext);
-      },
+    onExternalTool: (id, name, input) => {
+      const handler = toolRegistry.get(name);
+      if (!handler) {
+        return false;
+      }
+      return handler.handle(id, input, toolContext);
     },
-  );
+  });
 
   return { lspClient, lspSidecar };
 }
@@ -709,10 +683,12 @@ async function main(): Promise<void> {
     }
 
     // 8. Read app config
-    const appConfig = await readAppConfig(config.workspaceDir);
+    const appConfig = await readAppConfig(config.workspaceDir, {
+      repair: true,
+    });
     ctx.appConfig = appConfig;
     if (appConfig) {
-      log.info(`App: ${appConfig.name} (${appConfig.appId})`);
+      log.info(`App: ${appConfig.name} (${appConfig.appId ?? 'no appId'})`);
     } else {
       log.error(
         'App config missing or corrupted — sandbox will start without it',

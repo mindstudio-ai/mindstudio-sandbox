@@ -58,6 +58,13 @@ exponential backoff. It carries commands inbound and results plus log batches ou
 supports several concurrent clients — the editor's iframe, a standalone tab, a phone, the
 sandbox-owned headless Chrome — and routes command-and-control to one preferred client.
 
+**The messages are `protocol.ts`** — `hello`, `result`, `log`, `mirror` up; `ack`, `command`,
+`broadcast` down — along with the step and result shapes inside them. It is import-free on purpose,
+so both TypeScript programs in this package compile it: this one from `ws-client.ts`, the tunnel's
+from `devTunnel/proxy/proxy.ts`. Until it existed each end parsed the other's messages as
+`Record<string, unknown>`. `devTunnel/protocol.ts` re-exports `BrowserStep` and `PreviewMode`, which
+is why the C&C imports nothing from here.
+
 `/__mindstudio_dev__/logs` remains as an HTTP fallback, used by `navigator.sendBeacon` on unload when
 the socket is already closing.
 

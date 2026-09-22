@@ -18,7 +18,11 @@ import puppeteer, {
 } from 'puppeteer-core';
 import { resolveChromePath } from './chrome-path.ts';
 import { FULLPAGE_CAPTURE_TIMEOUT_MS } from './screenshot.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
+import type { PreviewMode } from '../protocol.ts';
+
+const log = createLogger('browser');
+const chromeLog = createLogger('browser-chrome');
 
 export interface LaunchedBrowser {
   browser: Browser;
@@ -28,8 +32,6 @@ export interface LaunchedBrowser {
   previewMode: PreviewMode;
   viewport: string;
 }
-
-export type PreviewMode = 'desktop' | 'mobile';
 
 const LAUNCH_ARGS = [
   '--no-sandbox',
@@ -101,7 +103,6 @@ export async function launchSandboxBrowser(opts: {
   const executablePath = resolveChromePath();
   if (!executablePath) {
     log.warn(
-      'browser',
       'No Chrome executable found — sandbox-browser mode disabled for this session',
     );
     return null;
@@ -116,9 +117,9 @@ export async function launchSandboxBrowser(opts: {
     headless: true,
     // Explicitly allow the loopback proxy port. Chrome refuses to load its
     // ~80 kRestrictedPorts (e.g. 3659) with net::ERR_UNSAFE_PORT; stablePort()
-    // already avoids them, but a --proxy-port override or the OS-assigned
-    // fallback could still land on one. We only ever load a loopback port we
-    // control, so allowing it is safe and makes the automation browser immune.
+    // already avoids them, but the OS-assigned fallback could still land on
+    // one. We only ever load a loopback port we control, so allowing it is
+    // safe and makes the automation browser immune.
     args: [...LAUNCH_ARGS, `--explicitly-allowed-ports=${opts.proxyPort}`],
     defaultViewport: viewport,
     protocolTimeout: PROTOCOL_TIMEOUT_MS,
@@ -130,7 +131,7 @@ export async function launchSandboxBrowser(opts: {
   proc?.stderr?.on('data', (buf: Buffer) => {
     const line = buf.toString().trim();
     if (line) {
-      log.debug('browser-chrome', line);
+      chromeLog.debug(line);
     }
   });
 
@@ -162,7 +163,7 @@ export async function launchSandboxBrowser(opts: {
   // neutral answer to a question nobody asked — apps under test use their own
   // in-DOM modals, so a native dialog here is never a flow worth preserving).
   page.on('dialog', (dialog) => {
-    log.info('browser', 'Auto-answering page dialog', {
+    log.info('Auto-answering page dialog', {
       type: dialog.type(),
       message: dialog.message().slice(0, 200),
     });
@@ -193,7 +194,7 @@ export async function launchSandboxBrowser(opts: {
 
   const viewportStr = viewportToString(viewport);
 
-  log.info('browser', 'Sandbox browser launched', {
+  log.info('Sandbox browser launched', {
     executablePath,
     target,
     previewMode,

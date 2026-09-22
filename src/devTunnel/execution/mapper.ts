@@ -20,9 +20,12 @@ import { executeMethod } from './executor.ts';
 import { Transpiler } from './transpiler.ts';
 import { fetchCallbackToken } from '../api.ts';
 import { getApiBaseUrl, getDbWsUrl } from '../config.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { logMapperExecution } from '../logging/request-log.ts';
-import type { AppDataSource, DevSession } from '../config/types.ts';
+import type { DevSession } from '../api.ts';
+import type { AppDataSource } from '../../appConfig/types.ts';
+
+const log = createLogger('mapper');
 
 // The synthetic identity a platform-triggered invocation runs as (cron,
 // webhook, email — and every mapper frame). Keep in sync with SYSTEM_USER_ID
@@ -148,7 +151,7 @@ export async function runMapperTest(
   const startedAt = Date.now();
   const requestId = randomUUID();
 
-  log.info('mapper', 'Mapper test started', {
+  log.info('Mapper test started', {
     dataSource: dataSource.slug,
     mapperPath: dataSource.mapper.path,
     objects: opts.objects.length,
@@ -199,7 +202,7 @@ export async function runMapperTest(
   });
 
   if (!result.success) {
-    log.warn('mapper', 'Mapper test failed', {
+    log.warn('Mapper test failed', {
       dataSource: dataSource.slug,
       error: result.error?.message,
       duration,
@@ -213,7 +216,7 @@ export async function runMapperTest(
     };
   }
 
-  log.info('mapper', 'Mapper test complete', {
+  log.info('Mapper test complete', {
     dataSource: dataSource.slug,
     objects: opts.objects.length,
     duration,

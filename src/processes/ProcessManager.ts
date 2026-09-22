@@ -4,7 +4,7 @@ import type {
   ProcessState,
   ProcessInfo,
 } from './ProcessRegistry.ts';
-import { attachLineHandler } from './lineSplitter.ts';
+import { attachLineHandler } from '../utils/lineSplitter.ts';
 
 export interface ManagedProcessConfig {
   name: string;

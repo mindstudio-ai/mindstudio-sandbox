@@ -13,7 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { attachLineHandler } from '../../processes/lineSplitter.ts';
+import { attachLineHandler } from '../../utils/lineSplitter.ts';
 import { generateId } from '../../utils/paths.ts';
 import { broadcast } from '../index.ts';
 import { createLogger } from '../../logger.ts';

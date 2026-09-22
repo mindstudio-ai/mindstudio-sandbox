@@ -31,10 +31,12 @@ import {
   launchSandboxBrowser,
   viewportFor,
   viewportToString,
-  type PreviewMode,
 } from './launcher.ts';
-import { log } from '../logging/logger.ts';
+import type { PreviewMode } from '../protocol.ts';
+import { createLogger } from '../logging/logger.ts';
 import { emitEvent } from '../ipc/ipc.ts';
+
+const log = createLogger('browser');
 
 const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 const MAX_FAILURES = 5;
@@ -192,7 +194,7 @@ export class BrowserSupervisor {
 
     const viewport = viewportFor(mode);
     const viewportStr = viewportToString(viewport);
-    log.info('browser', 'Sandbox browser viewport changing', {
+    log.info('Sandbox browser viewport changing', {
       from: this.previewMode,
       to: mode,
       viewport: viewportStr,
@@ -210,7 +212,7 @@ export class BrowserSupervisor {
       // reconnects on its own after the page reload.
       await this.page.reload({ waitUntil: 'load', timeout: 15_000 });
     } catch (err) {
-      log.warn('browser', 'Sandbox browser viewport change failed', {
+      log.warn('Sandbox browser viewport change failed', {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
@@ -248,7 +250,7 @@ export class BrowserSupervisor {
     }
 
     const attempt = this.consecutiveFailures + 1;
-    log.info('browser', 'Sandbox browser launch starting', {
+    log.info('Sandbox browser launch starting', {
       proxyPort: this.proxyPort,
       attempt,
     });
@@ -324,7 +326,7 @@ export class BrowserSupervisor {
 
       this.consecutiveFailures++;
       const message = err instanceof Error ? err.message : String(err);
-      log.warn('browser', 'Failed to launch sandbox browser', {
+      log.warn('Failed to launch sandbox browser', {
         attempt: this.consecutiveFailures,
         error: message,
       });
@@ -356,7 +358,7 @@ export class BrowserSupervisor {
     this.consecutiveFailures++;
     const durationMs = this.runningSince ? Date.now() - this.runningSince : 0;
     this.runningSince = null;
-    log.warn('browser', 'Sandbox browser disconnected', {
+    log.warn('Sandbox browser disconnected', {
       attempt: this.consecutiveFailures,
     });
 
@@ -410,7 +412,7 @@ export class BrowserSupervisor {
       return;
     }
 
-    log.warn('browser', 'Sandbox browser page left the app origin', {
+    log.warn('Sandbox browser page left the app origin', {
       url,
       appOrigin,
     });
@@ -419,7 +421,6 @@ export class BrowserSupervisor {
     const now = Date.now();
     if (now - this.lastOffOriginReturnAt < OFF_ORIGIN_RETURN_COOLDOWN_MS) {
       log.warn(
-        'browser',
         'Skipping auto-return to app origin — returned too recently (possible redirect loop)',
         { cooldownMs: OFF_ORIGIN_RETURN_COOLDOWN_MS },
       );
@@ -434,10 +435,10 @@ export class BrowserSupervisor {
         waitUntil: 'load',
         timeout: 15_000,
       });
-      log.info('browser', 'Sandbox browser returned to app origin');
+      log.info('Sandbox browser returned to app origin');
     } catch (err) {
       // Best effort — the per-run QA reset is the fallback recovery path.
-      log.warn('browser', 'Failed to return sandbox browser to app origin', {
+      log.warn('Failed to return sandbox browser to app origin', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -495,7 +496,6 @@ export class BrowserSupervisor {
       return;
     }
     log.warn(
-      'browser',
       'Sandbox browser page is unresponsive — killing Chrome to trigger a restart',
       { pingTimeoutMs: PAGE_PING_TIMEOUT_MS },
     );
@@ -542,7 +542,6 @@ export class BrowserSupervisor {
       this.degraded = true;
       if (!wasDegraded) {
         log.warn(
-          'browser',
           'Sandbox browser entering degraded mode after repeated failures — automation is unavailable until a retry succeeds',
           { failures: this.consecutiveFailures },
         );
@@ -562,7 +561,7 @@ export class BrowserSupervisor {
 
     const delay =
       BACKOFF_MS[Math.min(this.consecutiveFailures, BACKOFF_MS.length - 1)];
-    log.info('browser', 'Scheduling sandbox browser restart', {
+    log.info('Scheduling sandbox browser restart', {
       delayMs: delay,
       attempt: this.consecutiveFailures,
     });

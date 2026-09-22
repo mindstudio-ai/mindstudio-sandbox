@@ -51,15 +51,7 @@ export const setProjectMetadataTool: ExternalToolHandler = {
         JSON.stringify(manifest, null, 2) + '\n',
         'utf-8',
       );
-      ctx
-        .readAppConfig()
-        .then((updated) => {
-          if (updated) {
-            ctx.setAppConfig(updated);
-            ctx.broadcast('manifestChanged', { app: updated });
-          }
-        })
-        .catch(() => {});
+      void ctx.refreshAppConfig();
       const fields = [
         newName && 'name',
         iconUrl && 'iconUrl',

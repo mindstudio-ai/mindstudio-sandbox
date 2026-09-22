@@ -1,14 +1,15 @@
-// Read the local voice interface config and inline all file references
-// into a single bundle the platform can use to run a voice session.
+// Bundle the voice interface config — inline every file it references — into
+// the shape the platform runs a voice session from.
 //
-// Called via readConfig() on every get-config poll request — no caching,
-// so edits to system.md and tools/*.md are picked up immediately.
+// The config file itself has already been read: `readAppConfig` resolves each
+// interface's file onto `interfaces[].config`, tolerantly. What is left here is
+// following the paths inside it.
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { extractInputSchema } from './schema/extract.ts';
 import { EMPTY_OBJECT_SCHEMA } from './schema/types.ts';
-import type { AppConfig } from '../config/types.ts';
+import type { AppConfig } from '../../appConfig/types.ts';
 
 export interface VoiceToolBundle {
   method: string;
@@ -35,6 +36,20 @@ export interface VoiceConfigBundle {
   [key: string]: unknown;
 }
 
+/** The compiled voice config as written to disk. Paths are relative to its directory. */
+type VoiceConfigFile = {
+  systemPrompt?: string;
+  tools?: Array<{
+    method?: string;
+    name?: string;
+    target?: string;
+    latency?: string;
+    description: string;
+    inputSchema?: Record<string, unknown>;
+  }>;
+  [key: string]: unknown;
+};
+
 /**
  * Read and bundle the voice interface config from local dist files.
  *
@@ -56,20 +71,20 @@ export function readVoiceConfig(
   if (!voiceInterface) {
     throw new Error('No voice interface configured in mindstudio.json');
   }
-
-  const configPath = join(projectRoot, voiceInterface.path);
-  let raw: string;
-  try {
-    raw = readFileSync(configPath, 'utf-8');
-  } catch {
+  if (!voiceInterface.path) {
+    throw new Error(
+      'Voice interface declares no config path in mindstudio.json',
+    );
+  }
+  // Absent when the file is missing or unparseable — "not built yet".
+  if (!voiceInterface.config) {
     throw new Error(
       `Voice config not found at ${voiceInterface.path} — run your build command`,
     );
   }
 
-  const parsed = JSON.parse(raw);
-  const config = parsed.voice ?? parsed; // unwrap "voice" key if present
-  const voiceDir = dirname(configPath);
+  const config = voiceInterface.config as VoiceConfigFile;
+  const voiceDir = dirname(join(projectRoot, voiceInterface.path));
 
   // Read and inline the system prompt
   const systemPromptPath = config.systemPrompt;
@@ -86,45 +101,36 @@ export function readVoiceConfig(
   }
 
   // Read and inline each tool description + extract inputSchema from source
-  const tools: VoiceToolBundle[] = (config.tools ?? []).map(
-    (tool: {
-      method?: string;
-      name?: string;
-      target?: string;
-      latency?: string;
-      description: string;
-      inputSchema?: Record<string, unknown>;
-    }) => {
-      const descPath = join(voiceDir, tool.description);
-      let description: string;
-      try {
-        description = readFileSync(descPath, 'utf-8');
-      } catch {
-        throw new Error(
-          `Voice tool description not found at ${tool.description} for method "${tool.method}" — run your build command`,
-        );
-      }
+  const tools: VoiceToolBundle[] = (config.tools ?? []).map((tool) => {
+    const descPath = join(voiceDir, tool.description);
+    let description: string;
+    try {
+      description = readFileSync(descPath, 'utf-8');
+    } catch {
+      throw new Error(
+        `Voice tool description not found at ${tool.description} for method "${tool.method}" — run your build command`,
+      );
+    }
 
-      // Use compiled inputSchema if present, otherwise extract from TS source
-      let inputSchema: Record<string, unknown>;
-      if (tool.inputSchema) {
-        inputSchema = tool.inputSchema;
-      } else {
-        const method = appConfig.methods.find((m) => m.id === tool.method);
-        inputSchema = method
-          ? extractInputSchema(join(projectRoot, method.path), method.export)
-          : EMPTY_OBJECT_SCHEMA;
-      }
+    // Use compiled inputSchema if present, otherwise extract from TS source
+    let inputSchema: Record<string, unknown>;
+    if (tool.inputSchema) {
+      inputSchema = tool.inputSchema;
+    } else {
+      const method = appConfig.methods.find((m) => m.id === tool.method);
+      inputSchema = method
+        ? extractInputSchema(join(projectRoot, method.path), method.export)
+        : EMPTY_OBJECT_SCHEMA;
+    }
 
-      return {
-        method: (tool.method ?? tool.name) as string,
-        ...(tool.target === 'client' ? { target: 'client' as const } : {}),
-        latency: tool.latency,
-        description,
-        inputSchema,
-      };
-    },
-  );
+    return {
+      method: (tool.method ?? tool.name) as string,
+      ...(tool.target === 'client' ? { target: 'client' as const } : {}),
+      latency: tool.latency,
+      description,
+      inputSchema,
+    };
+  });
 
   return {
     ...config,

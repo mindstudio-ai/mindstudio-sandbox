@@ -12,7 +12,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLogger } from '../logger.ts';
-import type { AppConfig, ServerStatus } from '../types.ts';
+import type { ServerStatus } from '../types.ts';
+import type { AppConfig } from '../appConfig/types.ts';
 import type { TunnelSessionState } from '../processes/tunnel/index.ts';
 import {
   getSandboxBrowserState,

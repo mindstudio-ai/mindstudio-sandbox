@@ -324,13 +324,7 @@ const TUNNEL_ENTRY = fileURLToPath(
 
 export function startTunnel(
   pm: ProcessManager,
-  config: {
-    workspaceDir: string;
-    devPort: number;
-    apiKey: string;
-    apiBaseUrl: string;
-    userId: string;
-  },
+  workspaceDir: string,
   callbacks: TunnelCallbacks,
 ): void {
   broadcastFn = callbacks.broadcast;
@@ -350,33 +344,19 @@ export function startTunnel(
   pm.start({
     name: 'tunnel',
     command: process.execPath,
-    args: [
-      TUNNEL_ENTRY,
-      '--port',
-      String(config.devPort),
-      // Opt in to sandbox-hosted headless Chrome. Tunnel supervises it,
-      // prefers it over user-connected browsers for automation commands,
-      // and falls through to the user-browser path if Chrome isn't
-      // available in the container.
-      '--sandbox-browser',
-      '--log-level',
-      'info',
-    ],
-    // Credentials go on the environment, NOT argv. ProcessManager logs the full
-    // command line, stores it as ProcessInfo.command, and serves that to the
-    // editor in the process list — so an `--api-key` flag is a broadcast
-    // channel. The tunnel reads these in devTunnel/config.ts.
+    // No flags, and no `env`. Everything this used to pass was either constant
+    // or a value the tunnel reads better itself — the dev port, from web.json on
+    // every session start. Credentials and the base URL come from the container
+    // environment, which the child inherits along with everything else in it
+    // (`devTunnel/config.ts` names what it needs); re-injecting the same values
+    // under the same names bought nothing. Never on argv: ProcessManager logs
+    // the full command line and serves it to the editor's process list.
     //
-    // DB_WS_URL is deliberately absent: the container already sets it when the
-    // platform has one, we inherit it, and the child inherits it from us.
-    // Naming it here with a fallback is how a box ends up pointing its database
-    // calls somewhere its auth token is not valid for.
-    env: {
-      MINDSTUDIO_API_KEY: config.apiKey,
-      MINDSTUDIO_BASE_URL: config.apiBaseUrl,
-      USER_ID: config.userId,
-    },
-    cwd: config.workspaceDir,
+    // `DB_WS_URL` in particular must stay inherited rather than named here with
+    // a fallback — that is how a box ends up pointing its database calls
+    // somewhere its auth token is not valid for. See `getDbWsUrl`.
+    args: [TUNNEL_ENTRY],
+    cwd: workspaceDir,
     stdin: true,
     restartOnCrash: true,
     maxRestarts: 5,
@@ -425,7 +405,11 @@ export function sendCommand<A extends TunnelAction>(
     ({ success: false, error }) as TunnelCommandResult[A];
 
   if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve(failure('tunnel not running'));
+    // Not `Promise.resolve(...)`: its `Awaited<>` return type distributes over
+    // every action's result union, which is now large enough that TS refuses to
+    // represent it (TS2590). The executor form below checks against the
+    // declared type directly.
+    return new Promise((resolve) => resolve(failure('tunnel not running')));
   }
   const requestId = `tc-${++requestCounter}`;
   return new Promise((resolve) => {
@@ -456,6 +440,66 @@ export function failPendingCommands(reason: string): void {
     pending.delete(requestId);
     entry.resolve({ success: false, error: reason });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Workspace change notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * The C&C's workspace watcher fires once per chokidar event, and a build
+ * rewrites many files in a burst. These coalesce a burst into one command —
+ * trailing-edge, with the 500 ms the tunnel's own watchers used before this
+ * replaced them. A failure is logged and dropped on purpose: the tunnel re-reads
+ * everything on each session start, so a notification it never received is
+ * caught up on the next one.
+ */
+const NOTIFY_DEBOUNCE_MS = 500;
+/** A full session restart on a slow platform — teardown, `/manage/start`, schema sync. */
+const NOTIFY_TIMEOUT_MS = 60_000;
+
+let configFileChangedTimer: ReturnType<typeof setTimeout> | null = null;
+let tableFileChangedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function warnIfNotApplied(
+  action: 'config-file-changed' | 'table-file-changed',
+  result: { success: boolean; error?: string },
+): void {
+  if (!result.success) {
+    log.warn(`Tunnel did not act on ${action}: ${result.error}`);
+  }
+}
+
+/** `mindstudio.json`, or an interface config it references, changed. */
+export function notifyConfigFileChanged(
+  pm: ProcessManager,
+  absPath: string,
+): void {
+  if (configFileChangedTimer) {
+    clearTimeout(configFileChangedTimer);
+  }
+  configFileChangedTimer = setTimeout(() => {
+    configFileChangedTimer = null;
+    void sendCommand(
+      pm,
+      'config-file-changed',
+      { path: absPath },
+      NOTIFY_TIMEOUT_MS,
+    ).then((result) => warnIfNotApplied('config-file-changed', result));
+  }, NOTIFY_DEBOUNCE_MS);
+}
+
+/** A declared table source file changed. */
+export function notifyTableFileChanged(pm: ProcessManager): void {
+  if (tableFileChangedTimer) {
+    clearTimeout(tableFileChangedTimer);
+  }
+  tableFileChangedTimer = setTimeout(() => {
+    tableFileChangedTimer = null;
+    void sendCommand(pm, 'table-file-changed', {}, NOTIFY_TIMEOUT_MS).then(
+      (result) => warnIfNotApplied('table-file-changed', result),
+    );
+  }, NOTIFY_DEBOUNCE_MS);
 }
 
 // ---------------------------------------------------------------------------

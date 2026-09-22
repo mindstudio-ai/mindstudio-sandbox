@@ -4,7 +4,8 @@
  */
 
 import { NdjsonLog } from './ndjson-log.ts';
-import type { DevSession, AppScenario } from '../config/types.ts';
+import type { DevSession } from '../api.ts';
+import type { AppScenario } from '../../appConfig/types.ts';
 import type { ExecuteMethodResult } from '../execution/executor.ts';
 
 // ---------------------------------------------------------------------------

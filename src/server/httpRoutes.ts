@@ -327,7 +327,7 @@ function buildStatusResponse() {
         methodCount: appConfig.methods.length,
         tableCount: appConfig.tables.length,
         interfaceCount: appConfig.interfaces.length,
-        scenarioCount: appConfig.scenarios?.length ?? 0,
+        scenarioCount: appConfig.scenarios.length,
       }
     : null;
 

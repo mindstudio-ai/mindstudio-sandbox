@@ -24,9 +24,12 @@ import { executeMethod } from './executor.ts';
 import { Transpiler } from './transpiler.ts';
 import { fetchCallbackToken } from '../api.ts';
 import { getApiBaseUrl, getDbWsUrl } from '../config.ts';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
 import { logJewelExecution } from '../logging/request-log.ts';
-import type { AppMethod, DevSession } from '../config/types.ts';
+import type { DevSession } from '../api.ts';
+import type { AppMethod } from '../../appConfig/types.ts';
+
+const log = createLogger('jewel');
 
 // Keep in sync with JEWEL_USER_NAMESPACE in youai-api
 // (src/common/Db/v2Apps/AppReleasesDao/compilers/jewels.ts) — the jewel's
@@ -88,7 +91,7 @@ export async function runJewelTest(
   const startedAt = Date.now();
   const mode = opts.humanInput !== undefined ? 'shadow' : 'eval';
 
-  log.info('jewel', 'Jewel test started', {
+  log.info('Jewel test started', {
     method: method.id,
     jewelPath: jewel.path,
     mode,
@@ -175,14 +178,14 @@ export async function runJewelTest(
   });
 
   if (error) {
-    log.warn('jewel', 'Jewel test failed', {
+    log.warn('Jewel test failed', {
       method: method.id,
       error: error.message,
       duration,
       sessionId: opts.sessionId,
     });
   } else {
-    log.info('jewel', 'Jewel test complete', {
+    log.info('Jewel test complete', {
       method: method.id,
       mode,
       verdict,

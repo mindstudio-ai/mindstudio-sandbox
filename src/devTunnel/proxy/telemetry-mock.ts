@@ -13,7 +13,9 @@
 // returns 401 per backend spec.
 
 import type * as http from 'node:http';
-import { log } from '../logging/logger.ts';
+import { createLogger } from '../logging/logger.ts';
+
+const log = createLogger('telemetry-mock');
 
 const MAX_BODY_BYTES = 1_048_576;
 const SSE_KEEPALIVE_MS = 25_000;
@@ -184,11 +186,11 @@ function handlePresence(
     cleaned = true;
     clearInterval(keepalive);
     sseConnections.delete(res);
-    log.debug('telemetry-mock', 'SSE closed', { open: sseConnections.size });
+    log.debug('SSE closed', { open: sseConnections.size });
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
   res.on('error', cleanup);
 
-  log.debug('telemetry-mock', 'SSE opened', { open: sseConnections.size });
+  log.debug('SSE opened', { open: sseConnections.size });
 }

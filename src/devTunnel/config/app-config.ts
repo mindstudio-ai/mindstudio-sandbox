@@ -1,72 +1,21 @@
-// Reads the project's mindstudio.json manifest and related config files.
-//
-// mindstudio.json is the source of truth for the app — it declares methods,
-// tables, interfaces, and the appId. The CLI reads it on startup to know
-// what to transpile, which dev server to start, and what to send to the platform.
-//
-// Web interface config (e.g. dist/interfaces/web/web.json) provides devPort
-// and devCommand for the frontend dev server.
+// What only the tunnel does with the app manifest. Reading the manifest itself
+// is `appConfig/read.ts`, shared with the C&C.
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { log } from '../logging/logger.ts';
-import type { AppConfig, WebInterfaceConfig } from './types.ts';
+import { join } from 'node:path';
+import { createLogger } from '../logging/logger.ts';
+import { readAppConfig } from '../../appConfig/read.ts';
+import type { AppConfig } from '../../appConfig/types.ts';
+
+const log = createLogger('config');
 
 /**
- * Read and parse mindstudio.json from the given directory.
- * Returns null if not found or invalid.
+ * The manifest as this process reads it: tolerantly, and never repairing on
+ * disk. The C&C is the one writer of config files; a second one in another
+ * process would race it on the same path for the same result.
  */
-export function detectAppConfig(cwd: string = process.cwd()): AppConfig | null {
-  const appJsonPath = join(cwd, 'mindstudio.json');
-  if (!existsSync(appJsonPath)) {
-    return null;
-  }
-
-  try {
-    const raw = readFileSync(appJsonPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-
-    // Minimum validation: must have name and methods
-    if (!parsed.name || !Array.isArray(parsed.methods)) {
-      return null;
-    }
-
-    const config = {
-      appId: parsed.appId,
-      name: parsed.name,
-      description: parsed.description,
-      auth: parsed.auth ?? undefined,
-      roles: parsed.roles ?? [],
-      tables: parsed.tables ?? [],
-      methods: parsed.methods,
-      scenarios: parsed.scenarios ?? [],
-      interfaces: parsed.interfaces ?? [],
-      dataSources: Array.isArray(parsed.dataSources)
-        ? parsed.dataSources.filter(
-            (d: unknown) =>
-              d &&
-              typeof (d as { slug?: unknown }).slug === 'string' &&
-              typeof (d as { mapper?: { path?: unknown } }).mapper?.path ===
-                'string',
-          )
-        : [],
-    };
-    log.info('config', 'Loaded mindstudio.json', {
-      appId: config.appId,
-      roles: config.roles.length,
-      methods: config.methods.length,
-      tables: config.tables.length,
-      scenarios: config.scenarios.length,
-      interfaces: config.interfaces.length,
-      dataSources: config.dataSources.length,
-    });
-    return config;
-  } catch (err) {
-    log.warn('config', 'Failed to parse mindstudio.json', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
+export function detectAppConfig(cwd: string): Promise<AppConfig | null> {
+  return readAppConfig(cwd, { repair: false });
 }
 
 /**
@@ -87,7 +36,7 @@ export async function detectAppConfigUntil(
 ): Promise<AppConfig | null> {
   let last: AppConfig | null = null;
   for (let i = 0; i < attempts; i++) {
-    const config = detectAppConfig(cwd);
+    const config = await detectAppConfig(cwd);
     if (config) {
       last = config;
       if (predicate(config)) {
@@ -102,82 +51,20 @@ export async function detectAppConfigUntil(
 }
 
 /**
- * Find the web interface config from mindstudio.json and read its devPort/devCommand.
- * Returns null if no web interface is declared or config file doesn't exist.
- */
-export function getWebInterfaceConfig(
-  appConfig: AppConfig,
-  cwd: string = process.cwd(),
-): WebInterfaceConfig | null {
-  const webInterface = appConfig.interfaces.find(
-    (i) => i.type === 'web' && i.enabled !== false,
-  );
-  if (!webInterface) {
-    return null;
-  }
-
-  const configPath = join(cwd, webInterface.path);
-  if (!existsSync(configPath)) {
-    return null;
-  }
-
-  try {
-    const raw = readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const web = parsed.web;
-    if (!web || typeof web !== 'object') {
-      return null;
-    }
-
-    return {
-      devPort: typeof web.devPort === 'number' ? web.devPort : undefined,
-      devCommand:
-        typeof web.devCommand === 'string' ? web.devCommand : undefined,
-      defaultPreviewMode:
-        web.defaultPreviewMode === 'mobile'
-          ? 'mobile'
-          : web.defaultPreviewMode === 'desktop'
-            ? 'desktop'
-            : undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Get the web interface project directory from mindstudio.json.
- * The convention is that the config file lives inside the web project directory.
- */
-export function getWebProjectDir(
-  appConfig: AppConfig,
-  cwd: string = process.cwd(),
-): string | null {
-  const webInterface = appConfig.interfaces.find(
-    (i) => i.type === 'web' && i.enabled !== false,
-  );
-  if (!webInterface) {
-    return null;
-  }
-
-  return dirname(join(cwd, webInterface.path));
-}
-
-/**
  * Read raw TypeScript source for each table file listed in mindstudio.json.
  * Returns array of { name, source } for sending to sync-schema endpoint.
  * Skips files that don't exist.
  */
 export function readTableSources(
   appConfig: AppConfig,
-  cwd: string = process.cwd(),
+  cwd: string,
 ): Array<{ name: string; source: string }> {
   const results: Array<{ name: string; source: string }> = [];
 
   for (const table of appConfig.tables) {
     const filePath = join(cwd, table.path);
     if (!existsSync(filePath)) {
-      log.warn('config', 'Table source file not found', {
+      log.warn('Table source file not found', {
         table: table.export,
         path: table.path,
       });
@@ -190,7 +77,7 @@ export function readTableSources(
       const name = table.export;
       results.push({ name, source });
     } catch (err) {
-      log.warn('config', 'Table source file unreadable', {
+      log.warn('Table source file unreadable', {
         table: table.export,
         path: table.path,
         error: err instanceof Error ? err.message : String(err),
@@ -199,7 +86,7 @@ export function readTableSources(
   }
 
   if (results.length < appConfig.tables.length) {
-    log.warn('config', 'Table source files missing', {
+    log.warn('Table source files missing', {
       missing: appConfig.tables.length - results.length,
       found: results.length,
       expected: appConfig.tables.length,
@@ -207,41 +94,4 @@ export function readTableSources(
   }
 
   return results;
-}
-
-/**
- * Find project directories that have a package.json but no node_modules.
- * Returns paths that need `npm install`.
- */
-export function findDirsNeedingInstall(
-  appConfig: AppConfig,
-  cwd: string = process.cwd(),
-): string[] {
-  const dirs: string[] = [];
-
-  // Backend directory (derived from first method path, e.g. dist/backend/src/foo.ts → dist/backend)
-  if (appConfig.methods.length > 0) {
-    const firstMethodPath = appConfig.methods[0].path;
-    // Walk up from the method file to find the nearest package.json
-    const parts = firstMethodPath.split('/');
-    for (let i = parts.length - 1; i >= 1; i--) {
-      const candidate = join(cwd, ...parts.slice(0, i));
-      if (existsSync(join(candidate, 'package.json'))) {
-        if (!existsSync(join(candidate, 'node_modules'))) {
-          dirs.push(candidate);
-        }
-        break;
-      }
-    }
-  }
-
-  // Web frontend directory
-  const webProjectDir = getWebProjectDir(appConfig, cwd);
-  if (webProjectDir && existsSync(join(webProjectDir, 'package.json'))) {
-    if (!existsSync(join(webProjectDir, 'node_modules'))) {
-      dirs.push(webProjectDir);
-    }
-  }
-
-  return dirs;
 }
