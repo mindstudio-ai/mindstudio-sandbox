@@ -3,17 +3,15 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Config } from '../config.js';
-import type { AppConfig } from '../types.js';
-import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import { createLogger } from '../logger.js';
-import { bootPhase } from '../bootProgress.js';
-import { loadJsonConfigFile } from '../utils/jsonConfig.js';
+import type { Config } from '../config.ts';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.ts';
+import { createLogger } from '../logger.ts';
+import { bootPhase } from '../bootProgress.ts';
 import {
   findGlobalPackage,
   HOME_GLOBAL_NODE_MODULES,
   IMAGE_GLOBAL_NODE_MODULES,
-} from '../utils/globalPackages.js';
+} from '../utils/globalPackages.ts';
 import {
   run,
   runAsync,
@@ -22,7 +20,7 @@ import {
   globalTscMajor,
   installFromSource,
   setRegistry,
-} from './helpers.js';
+} from './helpers.ts';
 
 const log = createLogger('bootstrap');
 
@@ -46,40 +44,6 @@ export function setBootstrapRegistry(r: ProcessRegistry): void {
 // ---------------------------------------------------------------------------
 // Binary installers
 // ---------------------------------------------------------------------------
-
-export async function installTunnel(
-  progress: ProgressFn,
-): Promise<ToolingInstall> {
-  const devBranch = process.env['TUNNEL_DEV_BRANCH'];
-
-  if (!devBranch && isInstalled('mindstudio-local')) {
-    progress('installTunnel', 'Already installed, skipping');
-    log.info('mindstudio-local already installed, skipping');
-    return { fromImage: true };
-  }
-
-  if (devBranch) {
-    progress(
-      'installTunnel',
-      `Installing tunnel from source (${devBranch})...`,
-    );
-    installFromSource({
-      repoUrl:
-        'https://github.com/mindstudio-ai/mindstudio-local-model-tunnel.git',
-      branch: devBranch,
-      tmpDir: '/tmp/mindstudio-local-tunnel',
-      label: 'tunnel',
-    });
-  } else {
-    progress('installTunnel', 'Installing mindstudio-local tunnel...');
-    run('npm install -g @mindstudio-ai/local-model-tunnel', {
-      label: 'npm install -g @mindstudio-ai/local-model-tunnel',
-    });
-  }
-
-  verifyInstalled('mindstudio-local');
-  return { fromImage: false };
-}
 
 export async function installAgent(
   progress: ProgressFn,
@@ -218,36 +182,6 @@ export async function installLsp(
 // ---------------------------------------------------------------------------
 // Workspace setup
 // ---------------------------------------------------------------------------
-
-export async function writeTunnelConfig(config: Config): Promise<void> {
-  const configDir = path.join(os.homedir(), '.mindstudio-local-tunnel');
-  const configPath = path.join(configDir, 'config.json');
-  log.debug(`Writing tunnel config to ${configPath}`);
-
-  await fs.mkdir(configDir, { recursive: true });
-
-  const configData = {
-    environment: 'prod',
-    environments: {
-      prod: {
-        apiBaseUrl: config.apiBaseUrl,
-        apiKey: config.apiKey,
-        userId: config.userId,
-      },
-      local: {
-        apiBaseUrl: 'http://localhost:3129',
-      },
-    },
-    providerBaseUrls: {},
-    providerInstallPaths: {},
-    localInterfaces: {},
-  };
-
-  await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
-  log.info(
-    `Tunnel config written (apiBaseUrl=${config.apiBaseUrl}, userId=${config.userId})`,
-  );
-}
 
 /** Clone the app's repo into an empty workspace (an app with no snapshot yet). */
 export async function cloneAppRepo(
@@ -547,95 +481,6 @@ export function ensureProdCli(): void {
   } catch (err) {
     log.warn(`Failed to install remy-admin CLI: ${err}`);
   }
-}
-
-// ---------------------------------------------------------------------------
-// App config
-// ---------------------------------------------------------------------------
-
-export async function readAppConfig(
-  workspaceDir: string,
-): Promise<AppConfig | null> {
-  const manifestPath = path.join(workspaceDir, 'mindstudio.json');
-  log.debug(`Reading app config from ${manifestPath}`);
-
-  // Parse the full manifest — AppConfig is the typed subset but we
-  // store the complete object so we can forward it to clients.
-  //
-  // Tolerant + self-repairing: a trailing comma from an agent edit is
-  // rescued by JSON5 and the file is rewritten as strict JSON. The repair
-  // happens inside this call, i.e. BEFORE the interface-resolution loop
-  // below mutates `iface.config` — writing after that point would persist
-  // the resolved interface blobs back into mindstudio.json.
-  const result = await loadJsonConfigFile<AppConfig>(manifestPath, {
-    normalize: true,
-  });
-  if (!result.ok) {
-    if (result.notFound) {
-      log.error(`App config not found at ${manifestPath}`);
-    } else {
-      log.error(`Failed to parse app config: ${result.error}`);
-    }
-    return null;
-  }
-  const config = result.value;
-
-  log.info(`App: "${config.name}" (${config.appId})`);
-  log.debug(
-    `  Methods: ${config.methods?.length ?? 0} (${config.methods?.map((m) => m.id).join(', ') || 'none'})`,
-  );
-  log.debug(
-    `  Tables: ${config.tables?.length ?? 0} (${config.tables?.map((t) => t.export).join(', ') || 'none'})`,
-  );
-  log.debug(
-    `  Interfaces: ${config.interfaces?.length ?? 0} (${config.interfaces?.map((i) => i.type).join(', ') || 'none'})`,
-  );
-
-  // Resolve interface configs — read each config file and extract the
-  // inner object keyed by type (e.g. web.json → { "web": {...} } → {...}).
-  // Mirrors the deploy pipeline's readManifestFromRepo behavior.
-  for (const iface of config.interfaces ?? []) {
-    // An entry with no path has no file to resolve — either its config is inline
-    // under `config` (already carried by the parsed manifest, so leaving it
-    // untouched is correct), or the type has nothing to configure at all.
-    // Skipping matches the pipeline this loop mirrors, which logs and continues.
-    //
-    // This was fatal rather than cosmetic: `path.join(dir, undefined)` throws,
-    // and the throw escapes readAppConfig's null-return contract into main()'s
-    // catch, so one absent optional field on one interface took the whole
-    // sandbox down at bootstrap instead of reaching the degraded mode the caller
-    // already handles. The not-found branch below has always tolerated the file
-    // being absent; only the field itself was unguarded.
-    if (!iface.path) {
-      log.debug(`  ${iface.type} declares no config path — nothing to resolve`);
-      continue;
-    }
-    const configPath = path.join(workspaceDir, iface.path);
-    const ifaceResult = await loadJsonConfigFile<Record<string, unknown>>(
-      configPath,
-      { normalize: true },
-    );
-    if (!ifaceResult.ok) {
-      if (ifaceResult.notFound) {
-        log.debug(`  ${iface.type} config not found at ${iface.path}`);
-      } else {
-        // Previously silent: an unparseable web.json fell through to the
-        // default devCommand/devPort, which can silently point the tunnel at
-        // the wrong port.
-        log.warn(
-          `  ${iface.type} config at ${iface.path} is unparseable: ${ifaceResult.error}`,
-        );
-      }
-      continue;
-    }
-    const inner = ifaceResult.value[iface.type];
-    if (inner && typeof inner === 'object') {
-      iface.config = inner as Record<string, unknown>;
-      log.debug(`  ${iface.type} config resolved from ${iface.path}`);
-    }
-  }
-
-  return config;
 }
 
 // ---------------------------------------------------------------------------

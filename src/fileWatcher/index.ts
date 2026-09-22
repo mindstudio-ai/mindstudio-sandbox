@@ -1,31 +1,34 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Config } from '../config.js';
-import type { BroadcastBatcher } from '../server/BroadcastBatcher.js';
-import type { EditorStateManager } from '../server/states/EditorStateManager.js';
-import type { FileTreeManager } from '../server/states/FileTreeManager.js';
-import type { SpecFileTreeManager } from '../server/states/SpecFileTreeManager.js';
-import type { SpecEditorStateManager } from '../server/states/SpecEditorStateManager.js';
-import type { LspSidecar } from '../lsp/sidecar.js';
-// AppConfig type removed — setupFileWatcher reads from ctx.appConfig directly
-import { ctx } from '../server/context.js';
-import { broadcast } from '../server/index.js';
-import { readAppConfig } from '../bootstrap/index.js';
-import { startWatcher } from './watcher.js';
+import type { Config } from '../config.ts';
+import type { BroadcastBatcher } from '../server/BroadcastBatcher.ts';
+import type { EditorStateManager } from '../server/states/EditorStateManager.ts';
+import type { FileTreeManager } from '../server/states/FileTreeManager.ts';
+import type { SpecFileTreeManager } from '../server/states/SpecFileTreeManager.ts';
+import type { SpecEditorStateManager } from '../server/states/SpecEditorStateManager.ts';
+import type { LspSidecar } from '../lsp/sidecar.ts';
+import { ctx } from '../server/context.ts';
+import { broadcast } from '../server/index.ts';
+import { refreshAppConfig } from '../server/refreshAppConfig.ts';
+import {
+  notifyConfigFileChanged,
+  notifyTableFileChanged,
+} from '../processes/tunnel/notify.ts';
+import { startWatcher } from './watcher.ts';
 export {
   stopWatcher,
-  suppressPath,
   TREE_HIDDEN,
   TREE_HIDDEN_WATCHED,
   TREE_COLLAPSED,
-} from './watcher.js';
+} from './watcher.ts';
+export { suppressPath } from './suppress.ts';
 import {
   getProjectStatus,
   reloadProjectStatus,
-} from '../projectStatus/ProjectStatusManager.js';
-import { readAgentStats } from '../processes/agent/agentStats.js';
-import { readAppBrand } from '../projectStatus/appBrand.js';
-import { createLogger } from '../logger.js';
+} from '../projectStatus/ProjectStatusManager.ts';
+import { readAgentStats } from '../processes/agent/agentStats.ts';
+import { readAppBrand } from '../projectStatus/appBrand.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('fileWatcher');
 
@@ -59,23 +62,16 @@ export function setupFileWatcher(
   ): void {
     batcher.push('fileChanged', { path: filePath, changeType });
 
+    const isManifest = filePath === 'mindstudio.json';
+    const iface = ctx.appConfig?.interfaces.find((i) => i.path === filePath);
+
     if (changeType === 'modified' || changeType === 'created') {
       lspSidecar.onFileChanged(filePath).catch(() => {});
 
-      // Re-read and broadcast app config when manifest or any interface
-      // config file changes (e.g. web.json, cron.json).
-      const isInterfaceConfig = ctx.appConfig?.interfaces.some(
-        (i) => i.path === filePath,
-      );
-      if (filePath === 'mindstudio.json' || isInterfaceConfig) {
-        readAppConfig(config.workspaceDir)
-          .then((updated) => {
-            if (updated) {
-              ctx.appConfig = updated;
-              broadcast('manifestChanged', { app: updated });
-            }
-          })
-          .catch(() => {});
+      // The manifest, or an interface config it references (web.json,
+      // cron.json…): re-read and tell the editor.
+      if (isManifest || iface) {
+        void refreshAppConfig();
       }
     }
 
@@ -83,6 +79,24 @@ export function setupFileWatcher(
       lspSidecar.onFileDeleted(filePath);
       editorManager.onFileDeleted(filePath);
       specEditorManager.onFileDeleted(filePath);
+    }
+
+    // The tunnel's turn, on every change type — a deleted manifest is a
+    // `config-error` it should get to report. It used to watch these files with
+    // two chokidar trees of its own over this same workspace, which also saw
+    // this process's JSON repairs as edits and restarted the session for them.
+    // One watcher now, and `suppressPath` covers every consumer of it. Only
+    // enabled interfaces: a disabled one's config is not part of the session.
+    if (ctx.processManager) {
+      if (isManifest || (iface && iface.enabled !== false)) {
+        notifyConfigFileChanged(
+          ctx.processManager,
+          path.join(config.workspaceDir, filePath),
+        );
+      }
+      if (ctx.appConfig?.tables.some((t) => t.path === filePath)) {
+        notifyTableFileChanged(ctx.processManager);
+      }
     }
 
     // Plan file changes

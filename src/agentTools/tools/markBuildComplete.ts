@@ -1,8 +1,8 @@
 import {
   getOnboardingState,
   setOnboardingState,
-} from '../../projectStatus/ProjectStatusManager.js';
-import type { ExternalToolHandler } from '../types.js';
+} from '../../projectStatus/ProjectStatusManager.ts';
+import type { ExternalToolHandler } from '../types.ts';
 
 /**
  * Remy marks the genuine first build as finished → onboarding advances to

@@ -15,14 +15,14 @@
  * `LocalEditorState.ts`, `DbConnectionState.ts` — all identical): one interval
  * per connection, a count of outstanding pings, terminate once that count
  * reaches UNANSWERED_PINGS_BEFORE_GONE, and reset it on every pong. Cadence is
- * the tunnel dev proxy's 30s (`mindstudio-local-model-tunnel/src/dev/proxy/
+ * the tunnel dev proxy's 30s (`src/devTunnel/proxy/
  * proxy.ts`) rather than youai-api's 10s, because this socket's client is a
  * browser and a needless reconnect costs it a ~3MB init frame.
  */
 
 import type { IncomingMessage } from 'node:http';
 import type { WebSocket, WebSocketServer } from 'ws';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('ws-server');
 

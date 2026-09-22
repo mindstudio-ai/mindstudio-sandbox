@@ -1,10 +1,10 @@
-import { ctx } from '../context.js';
-import { sendToolResult } from '../../processes/agent/index.js';
+import { ctx } from '../context.ts';
+import { sendToolResult } from '../../processes/agent/index.ts';
 import {
   setOnboardingState,
   type ProjectOnboardingState,
-} from '../../projectStatus/ProjectStatusManager.js';
-import type { ActionHandler } from './index.js';
+} from '../../projectStatus/ProjectStatusManager.ts';
+import type { ActionHandler } from './index.ts';
 
 export const miscHandlers: Record<string, ActionHandler> = {
   setProjectOnboardingState: async (p) => {

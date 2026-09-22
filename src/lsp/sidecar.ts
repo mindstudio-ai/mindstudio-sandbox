@@ -6,14 +6,15 @@
  */
 
 import http from 'node:http';
-import type { LspClient } from './client.js';
-import type { ProcessManager } from '../processes/ProcessManager.js';
+import type { LspClient } from './client.ts';
+import type { ProcessManager } from '../processes/ProcessManager.ts';
+import { sendCommand as sendTunnelCommand } from '../processes/tunnel/index.ts';
 import {
-  sendCommand as sendTunnelCommand,
   startRecordingExport,
-} from '../processes/tunnel/index.js';
-import type { RecordingExportRequest } from '../processes/tunnel/index.js';
-import { createLogger } from '../logger.js';
+  type RecordingExportRequest,
+} from '../processes/tunnel/recording.ts';
+import { restartProcess } from '../server/restartProcess.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('lsp/sidecar');
 
@@ -42,14 +43,15 @@ interface DiagnosticItem {
 //   whole browser command  100s  <  120s                 (no timer; owned here)
 //   replay export          450s  <  600s             <  660s (remy-admin CLI)
 //
-// See mindstudio-local-model-tunnel/src/dev/browser/screenshot.ts and
-// src/dev/stdin-commands/browser.ts for the inner values. The setup-browser
+// See src/devTunnel/browser/screenshot.ts and
+// src/devTunnel/stdin-commands/browser.ts for the inner values. The setup-browser
 // handler's inner rung is its 15s page.goto (setup-browser.ts) — this rung
 // used to match it at 15s, so the caller saw a bare "timeout (15s)" instead
 // of the navigation error that names the path and the cause.
 const SCREENSHOT_VIEWPORT_TIMEOUT_MS = 30_000;
 const SCREENSHOT_FULLPAGE_TIMEOUT_MS = 120_000;
 const SETUP_BROWSER_TIMEOUT_MS = 25_000;
+
 // Exceeds the 15s page.reload inside the supervisor's setPreviewMode.
 const SET_VIEWPORT_TIMEOUT_MS = 20_000;
 // A replay render plays the clip in real time, then encodes and uploads it.
@@ -57,6 +59,38 @@ const SET_VIEWPORT_TIMEOUT_MS = 20_000;
 // this only has to be no tighter than that; it also sets the server's
 // `requestTimeout` above.
 const EXPORT_RECORDING_TIMEOUT_MS = 600_000;
+// ---------------------------------------------------------------------------
+// Request-body narrowing
+//
+// Every route here is reached over HTTP with a JSON body, so each field is
+// `unknown` until checked. These used to be spread straight into tunnel
+// commands; the typed protocol is what surfaced that. The tunnel validates its
+// own inputs too and still should — this is the near end of the same check,
+// and it is what lets a bad body fail here with a useful message instead of
+// travelling one process further to be rejected.
+// ---------------------------------------------------------------------------
+
+const asString = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : undefined;
+
+const asNumber = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+
+const asBoolean = (v: unknown): boolean | undefined =>
+  typeof v === 'boolean' ? v : undefined;
+
+const asImageFormat = (v: unknown): 'png' | 'jpeg' | undefined =>
+  v === 'png' || v === 'jpeg' ? v : undefined;
+
+const asPreviewMode = (v: unknown): 'desktop' | 'mobile' | undefined =>
+  v === 'desktop' || v === 'mobile' ? v : undefined;
+
+/** `{ k: v }` when v is defined, `{}` otherwise — keeps the spread idiom. */
+const opt = <K extends string, V>(
+  key: K,
+  value: V | undefined,
+): Partial<Record<K, V>> =>
+  value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 
 const SEVERITY_MAP: Record<number, string> = {
   1: 'error',
@@ -212,8 +246,18 @@ export class LspSidecar {
                     this.pm,
                     'setup-browser',
                     {
-                      ...(params.auth ? { auth: params.auth } : {}),
-                      ...(params.path ? { path: params.path } : {}),
+                      // `auth` is a nested object the tunnel re-validates; the
+                      // shape check here is just "is it an object at all".
+                      ...(params.auth && typeof params.auth === 'object'
+                        ? {
+                            auth: params.auth as {
+                              email?: string;
+                              phone?: string;
+                              roles?: string[];
+                            },
+                          }
+                        : {}),
+                      ...opt('path', asString(params.path)),
                     },
                     SETUP_BROWSER_TIMEOUT_MS,
                   )
@@ -225,8 +269,8 @@ export class LspSidecar {
                     this.pm,
                     'screenshotFullPage',
                     {
-                      ...(params.path ? { path: params.path } : {}),
-                      ...(params.format ? { format: params.format } : {}),
+                      ...opt('path', asString(params.path)),
+                      ...opt('format', asImageFormat(params.format)),
                     },
                     SCREENSHOT_FULLPAGE_TIMEOUT_MS,
                   )
@@ -240,12 +284,10 @@ export class LspSidecar {
                     this.pm,
                     'screenshotViewport',
                     {
-                      ...(params.path ? { path: params.path } : {}),
-                      ...(params.width != null ? { width: params.width } : {}),
-                      ...(params.height != null
-                        ? { height: params.height }
-                        : {}),
-                      ...(params.format ? { format: params.format } : {}),
+                      ...opt('path', asString(params.path)),
+                      ...opt('width', asNumber(params.width)),
+                      ...opt('height', asNumber(params.height)),
+                      ...opt('format', asImageFormat(params.format)),
                     },
                     SCREENSHOT_VIEWPORT_TIMEOUT_MS,
                   )
@@ -261,15 +303,15 @@ export class LspSidecar {
                     this.pm,
                     'renderHtml',
                     {
-                      ...(params.html ? { html: params.html } : {}),
-                      ...(params.width != null ? { width: params.width } : {}),
-                      ...(params.height != null
-                        ? { height: params.height }
-                        : {}),
-                      ...(params.transparent != null
-                        ? { transparent: params.transparent }
-                        : {}),
-                      ...(params.scale != null ? { scale: params.scale } : {}),
+                      // Required by the protocol, so they are checked here
+                      // rather than sent hollow for the tunnel to reject one
+                      // process later. Its own validator still runs — it owns
+                      // the min/max dimension bounds.
+                      html: asString(params.html) ?? '',
+                      width: asNumber(params.width) ?? 0,
+                      height: asNumber(params.height) ?? 0,
+                      ...opt('transparent', asBoolean(params.transparent)),
+                      ...opt('scale', asNumber(params.scale)),
                     },
                     SCREENSHOT_VIEWPORT_TIMEOUT_MS,
                   )
@@ -277,7 +319,7 @@ export class LspSidecar {
               break;
             case '/export-recording':
               // Render a QA replay to an mp4 and answer with where it landed.
-              // This is what `remy-admin recordings export` calls, which is how
+              // This is what `remy-admin qa-recordings export` calls, which is how
               // the agent reaches it — the capability is a CLI command rather
               // than a tool, so it costs nothing in the prompt.
               //
@@ -305,7 +347,7 @@ export class LspSidecar {
                       steps: [
                         {
                           command: 'setViewport',
-                          mode: params.mode ?? 'default',
+                          mode: asPreviewMode(params.mode) ?? 'default',
                         },
                       ],
                     },
@@ -378,33 +420,8 @@ export class LspSidecar {
     if (!this.pm) {
       throw new Error('Process manager not available');
     }
-    log.info('Restarting process', { name });
-    // The methods worker is forked inside the tunnel, not a ProcessManager
-    // process — relay to the tunnel, which kills it; the next method run
-    // respawns it fresh (picking up e.g. a newly installed SDK).
-    if (name === 'methodsWorker') {
-      const result = await sendTunnelCommand(
-        this.pm,
-        'restart-worker',
-        {},
-        10_000,
-      );
-      if (result.success === false) {
-        throw new Error(
-          `Failed to restart methods worker: ${result.error ?? 'unknown error'}`,
-        );
-      }
-      return { ok: true };
-    }
-    if (name === 'devServer') {
-      await sendTunnelCommand(this.pm!, 'dev-server-restarting', {}, 5_000);
-    }
-    const restarted = await this.pm.restart(name);
-    if (!restarted) {
-      throw new Error(
-        `Unknown process "${name}" — known: devServer, methodsWorker`,
-      );
-    }
+    // Same operation the editor's WS action runs — see server/restartProcess.ts.
+    await restartProcess(this.pm, name);
     return { ok: true };
   }
 

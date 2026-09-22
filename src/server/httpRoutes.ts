@@ -4,13 +4,13 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
 import { createGzip } from 'node:zlib';
-import type httpProxy from 'http-proxy';
-import { ctx } from './context.js';
-import { getVersions } from './versionCache.js';
-import { getAgentActivity } from '../processes/agent/activity.js';
-import { getSandboxBrowserState } from '../processes/tunnel/index.js';
-import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
-import { sendPreviewPlaceholder } from './previewPlaceholder.js';
+import { ctx } from './context.ts';
+import { relayRequest } from '../utils/httpRelay.ts';
+import { getVersions } from './versionCache.ts';
+import { getAgentActivity } from '../processes/agent/activity.ts';
+import { getSandboxBrowserState } from '../processes/tunnel/browserState.ts';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
+import { sendPreviewPlaceholder } from './previewPlaceholder.ts';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -90,8 +90,8 @@ function sendWorkspaceFile(
 
 interface HttpHandlerOpts {
   workspaceDir: string;
+  /** The tunnel proxy's port once a session has started; null before. */
   getProxyTarget: () => number | null;
-  getProxy: () => httpProxy | null;
   /** Whether a request carries the box's own SANDBOX_TOKEN — see `/flush`. */
   verifyToken: (url: string | undefined) => boolean;
   /**
@@ -102,13 +102,7 @@ interface HttpHandlerOpts {
 }
 
 export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
-  const {
-    workspaceDir,
-    getProxyTarget,
-    getProxy,
-    verifyToken,
-    verifyTokenStrict,
-  } = opts;
+  const { workspaceDir, getProxyTarget, verifyToken, verifyTokenStrict } = opts;
 
   return (req, res) => {
     // CORS preflight — allow everything
@@ -267,13 +261,15 @@ export function createHttpHandler(opts: HttpHandlerOpts): http.RequestListener {
       return;
     }
 
-    const proxy = getProxy();
-    if (!proxy) {
+    // Everything else is the preview: relayed to the tunnel's proxy, which
+    // fronts the dev server. This hop adds nothing to the bytes — the two
+    // placeholders are what a visitor gets when there is nothing to relay to.
+    const port = getProxyTarget();
+    if (!port) {
       sendPreviewPlaceholder(req, res, 'starting');
       return;
     }
-
-    proxy.web(req, res, {}, () => {
+    relayRequest(req, res, port, () => {
       sendPreviewPlaceholder(req, res, 'unavailable');
     });
   };
@@ -327,7 +323,7 @@ function buildStatusResponse() {
         methodCount: appConfig.methods.length,
         tableCount: appConfig.tables.length,
         interfaceCount: appConfig.interfaces.length,
-        scenarioCount: appConfig.scenarios?.length ?? 0,
+        scenarioCount: appConfig.scenarios.length,
       }
     : null;
 

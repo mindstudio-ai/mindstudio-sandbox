@@ -29,8 +29,8 @@ export interface SystemResourceMetrics {
   };
   processes: Record<string, ProcessResourceMetrics>;
 }
-import type { ProcessRegistry } from './ProcessRegistry.js';
-import { createLogger } from '../logger.js';
+import type { ProcessRegistry } from './ProcessRegistry.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('monitor');
 

@@ -15,7 +15,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('fork-detect');
 

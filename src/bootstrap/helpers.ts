@@ -7,8 +7,8 @@
  */
 
 import { exec, execSync, type ExecSyncOptions } from 'node:child_process';
-import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import { createLogger } from '../logger.js';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('bootstrap');
 

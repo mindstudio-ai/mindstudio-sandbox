@@ -11,35 +11,34 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createLogger } from '../logger.js';
-import type { AppConfig, ServerStatus } from '../types.js';
-import type { TunnelSessionState } from '../processes/tunnel/index.js';
-import {
-  getSandboxBrowserState,
-  getRecordingExportStatus,
-} from '../processes/tunnel/index.js';
-import type { InstallFailure } from '../bootstrap/index.js';
-import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
-import type { ProcessManager } from '../processes/ProcessManager.js';
-import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import type { BroadcastBatcher } from './BroadcastBatcher.js';
-import type { EditorStateManager } from './states/EditorStateManager.js';
-import type { SpecEditorStateManager } from './states/SpecEditorStateManager.js';
-import type { FileTreeManager } from './states/FileTreeManager.js';
-import type { SpecFileTreeManager } from './states/SpecFileTreeManager.js';
-import type { ResourceMonitor } from '../processes/ResourceMonitor.js';
-import type { LspClient } from '../lsp/client.js';
+import { createLogger } from '../logger.ts';
+import type { ServerStatus } from '../types.ts';
+import type { AppConfig } from '../appConfig/types.ts';
+import type { TunnelSessionState } from '../processes/tunnel/index.ts';
+import { getSandboxBrowserState } from '../processes/tunnel/browserState.ts';
+import { getRecordingExportStatus } from '../processes/tunnel/recording.ts';
+import type { InstallFailure } from '../bootstrap/index.ts';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
+import type { ProcessManager } from '../processes/ProcessManager.ts';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.ts';
+import type { BroadcastBatcher } from './BroadcastBatcher.ts';
+import type { EditorStateManager } from './states/EditorStateManager.ts';
+import type { SpecEditorStateManager } from './states/SpecEditorStateManager.ts';
+import type { FileTreeManager } from './states/FileTreeManager.ts';
+import type { SpecFileTreeManager } from './states/SpecFileTreeManager.ts';
+import type { ResourceMonitor } from '../processes/ResourceMonitor.ts';
+import type { LspClient } from '../lsp/client.ts';
 import type {
   HomeSnapshotManager,
   SnapshotOutcome,
-} from '../projectStatus/HomeSnapshotManager.js';
-import { getAgentHistory, getAgentActivity } from '../processes/agent/index.js';
+} from '../projectStatus/HomeSnapshotManager.ts';
+import { getAgentHistory, getAgentActivity } from '../processes/agent/index.ts';
 import {
   readAgentStats,
   type AgentStats,
-} from '../processes/agent/agentStats.js';
-import { readAppBrand, type AppBrand } from '../projectStatus/appBrand.js';
-import { getActiveSessionIds } from './wsHandlers/pty.js';
+} from '../processes/agent/agentStats.ts';
+import { readAppBrand, type AppBrand } from '../projectStatus/appBrand.ts';
+import { getActiveSessionIds } from './wsHandlers/pty.ts';
 
 export interface ServerContext {
   workspaceDir: string | null;

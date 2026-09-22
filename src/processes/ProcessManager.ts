@@ -3,8 +3,8 @@ import type {
   ProcessRegistry,
   ProcessState,
   ProcessInfo,
-} from './ProcessRegistry.js';
-import { attachLineHandler } from './lineSplitter.js';
+} from './ProcessRegistry.ts';
+import { attachLineHandler } from '../utils/lineSplitter.ts';
 
 export interface ManagedProcessConfig {
   name: string;
@@ -21,7 +21,7 @@ export interface ManagedProcessConfig {
   onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
 }
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('procman');
 

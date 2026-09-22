@@ -4,23 +4,23 @@
  * WebSocket servers on a single HTTP port:
  *   /ws                      — C&C (command & control) for the frontend
  *   /lsp                     — TypeScript language server bridge for Monaco
- *   /__mindstudio_dev__/ws   — tunnel automation (direct proxy, no buffering)
+ *   /__mindstudio_dev__/ws   — tunnel automation, spliced through (no buffering)
  *   *                        — HMR relay with buffering during agent turns
  */
 
 import http from 'node:http';
 import net from 'node:net';
 import { URL } from 'node:url';
-import httpProxy from 'http-proxy';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { WsEvent, ServerStatus } from '../types.js';
-import { ctx } from './context.js';
-import { HmrRelay, HmrRelayManager } from './HmrRelay.js';
-import { createHttpHandler } from './httpRoutes.js';
-import { createLspConnectionHandler } from './lspBridge.js';
-import { createCncConnectionHandler } from './cncConnection.js';
-import { startCncHeartbeat } from './cncHeartbeat.js';
-import { createLogger } from '../logger.js';
+import { relayUpgrade } from '../utils/httpRelay.ts';
+import type { WsEvent, ServerStatus } from '../types.ts';
+import { ctx } from './context.ts';
+import { HmrRelay, HmrRelayManager } from './HmrRelay.ts';
+import { createHttpHandler } from './httpRoutes.ts';
+import { createLspConnectionHandler } from './lspBridge.ts';
+import { createCncConnectionHandler } from './cncConnection.ts';
+import { startCncHeartbeat } from './cncHeartbeat.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('ws-server');
 
@@ -29,17 +29,12 @@ let proxyTarget: number | null = null;
 /** Clients that haven't received their init frame yet — skip in broadcast. */
 const pendingInit = new Set<WebSocket>();
 let stopCncHeartbeat: (() => void) | null = null;
-let proxy: httpProxy | null = null;
 
 let httpServer: http.Server;
 let wss: WebSocketServer;
 let lspWss: WebSocketServer;
 let hmrWss: WebSocketServer;
 const hmrRelayManager = new HmrRelayManager();
-
-export function getStatus(): ServerStatus {
-  return ctx.status;
-}
 
 export function setStatus(s: ServerStatus): void {
   log.info(`Status: ${ctx.status} → ${s}`);
@@ -65,42 +60,25 @@ export function closeLspClients(code: number, reason: string): void {
   }
 }
 
-/** Set the tunnel proxy port for reverse proxying preview/HMR traffic. */
+/**
+ * Set the tunnel proxy port that preview/HMR traffic is relayed to.
+ *
+ * Called on every `session-started`, which is usually a RESTART rather than a
+ * new port: the tunnel reuses its `DevProxy` across restarts and keeps the same
+ * listener, so `port` is normally unchanged. Hence the early return — tearing
+ * down every HMR relay dropped the hot-reload socket in every open preview on
+ * each config change, for nothing.
+ */
 export function setProxyTarget(port: number): void {
-  proxyTarget = port;
-  hmrRelayManager.destroyAll();
-  if (proxy) {
-    proxy.close();
+  if (proxyTarget === port) {
+    return;
   }
-  proxy = httpProxy.createProxyServer({
-    target: `http://127.0.0.1:${port}`,
-    ws: true,
-  });
-  proxy.on('error', () => {
-    // Handled per-request in httpRoutes
-  });
-  // Server-Sent Events need their headers on the wire immediately. http-proxy
-  // writeHead()s and pipes, and Node holds staged headers until the first body
-  // byte — which for an idle stream is the platform's keepalive 15s later, so
-  // the subscriber's fetch() promise doesn't settle until then.
-  //
-  // This CANNOT flush synchronously: http-proxy emits 'proxyRes' BEFORE the
-  // outgoing passes that call res.writeHead(), and that loop is guarded by
-  // `if (!res.headersSent)`. Flushing here would put a bare 200 on the wire
-  // with none of the upstream headers and skip the passes that set the real
-  // ones. The passes run synchronously right after this emit, so defer a tick.
-  proxy.on('proxyRes', (proxyRes, _req, res) => {
-    const contentType = String(proxyRes.headers['content-type'] ?? '');
-    if (!contentType.includes('text/event-stream')) {
-      return;
-    }
-    setImmediate(() => {
-      if (!res.writableEnded) {
-        res.flushHeaders();
-      }
-    });
-  });
-  log.info(`Preview proxy target set to localhost:${port}`);
+  proxyTarget = port;
+  // Only on a real target change: these relays hold a socket to the OLD port,
+  // so they cannot survive it. Browsers reconnect. In-flight HTTP relays finish
+  // against the old port on their own — each holds its own upstream request.
+  hmrRelayManager.destroyAll();
+  log.info(`Preview relay target set to localhost:${port}`);
 }
 
 /**
@@ -159,7 +137,6 @@ export function startServer(
       createHttpHandler({
         workspaceDir,
         getProxyTarget: () => proxyTarget,
-        getProxy: () => proxy,
         verifyToken,
         verifyTokenStrict,
       }),
@@ -175,7 +152,7 @@ export function startServer(
       'connection',
       createCncConnectionHandler({
         pendingInit,
-        getProxyActive: () => proxy !== null,
+        getProxyActive: () => proxyTarget !== null,
         getClientCount: () => wss.clients.size,
       }),
     );
@@ -203,15 +180,17 @@ export function startServer(
           wss.emit('connection', ws, req);
         });
       } else if (pathname === '/__mindstudio_dev__/ws') {
-        // Tunnel automation WebSocket — direct proxy, no HMR relay/buffering
-        if (!proxy) {
+        // The page agent's channel to the tunnel — spliced straight through.
+        // Not the HMR relay: buffering during agent turns is for the dev
+        // server's hot-reload socket, and this one carries commands.
+        if (!proxyTarget) {
           log.warn('Tunnel proxy not ready, returning 503 for automation WS');
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
           return;
         }
-        log.debug('Proxying tunnel automation WebSocket');
-        proxy.ws(req, socket, head);
+        log.debug('Splicing tunnel automation WebSocket');
+        relayUpgrade(req, socket, head, proxyTarget);
       } else {
         if (!proxyTarget) {
           log.warn(`HMR proxy not ready, returning 503 for ${pathname}`);
@@ -285,9 +264,6 @@ export function flushHmr(): void {
 export function stopServer(): Promise<void> {
   return new Promise((resolve) => {
     hmrRelayManager.destroyAll();
-    if (proxy) {
-      proxy.close();
-    }
     if (hmrWss) {
       hmrWss.close();
     }

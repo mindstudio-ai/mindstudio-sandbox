@@ -12,8 +12,8 @@
  * This module is invoked fire-and-forget and never throws.
  */
 
-import { createLogger } from '../logger.js';
-import type { HomeSnapshotManager } from './HomeSnapshotManager.js';
+import { createLogger } from '../logger.ts';
+import type { HomeSnapshotManager } from './HomeSnapshotManager.ts';
 
 const log = createLogger('initial-build-email');
 

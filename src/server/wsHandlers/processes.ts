@@ -1,9 +1,6 @@
-import { ctx } from '../context.js';
-import { createLogger } from '../../logger.js';
-import { sendCommand as sendTunnelCommand } from '../../processes/tunnel/index.js';
-import type { ActionHandler } from './index.js';
-
-const log = createLogger('handlers');
+import { ctx } from '../context.ts';
+import { restartProcess } from '../restartProcess.ts';
+import type { ActionHandler } from './index.ts';
 
 export const processHandlers: Record<string, ActionHandler> = {
   getProcesses: async () => {
@@ -17,37 +14,7 @@ export const processHandlers: Record<string, ActionHandler> = {
     if (!ctx.processManager) {
       throw new Error('Process manager not initialized');
     }
-    log.info(`Restarting process: ${name}`);
-
-    // The methods worker is forked inside the tunnel, not a ProcessManager
-    // process — relay to the tunnel (mirrors the LSP sidecar's mapping).
-    if (name === 'methodsWorker') {
-      const result = await sendTunnelCommand(
-        ctx.processManager,
-        'restart-worker',
-        {},
-        10_000,
-      );
-      if (result.success === false) {
-        throw new Error(
-          `Failed to restart methods worker: ${result.error ?? 'unknown error'}`,
-        );
-      }
-      return {};
-    }
-
-    // Treat dev server restart as an implicit mindstudio.json change —
-    // file watchers don't always pick up changes reliably.
-    if (name === 'devServer') {
-      ctx.onFileChanged?.('mindstudio.json', 'modified');
-    }
-
-    const restarted = await ctx.processManager.restart(name);
-    if (!restarted) {
-      throw new Error(
-        `Unknown process "${name}" — known: devServer, methodsWorker`,
-      );
-    }
+    await restartProcess(ctx.processManager, name);
     return {};
   },
 };

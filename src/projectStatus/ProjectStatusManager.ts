@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('project');
 

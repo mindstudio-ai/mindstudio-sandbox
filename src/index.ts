@@ -5,39 +5,42 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, type Config } from './config.ts';
 import {
-  installTunnel,
   installAgent,
   installAgentSdk,
   installLsp,
-  writeTunnelConfig,
   cloneAppRepo,
   refreshGitRemote,
   configureGit,
   unshallowAsync,
-  readAppConfig,
   installDependencies,
   ensureProdCli,
   setBootstrapRegistry,
-} from './bootstrap/index.js';
-import { ProcessRegistry } from './processes/ProcessRegistry.js';
-import { ProcessManager } from './processes/ProcessManager.js';
+} from './bootstrap/index.ts';
+import {
+  readAppConfig,
+  findWebInterface,
+  getWebInterfaceConfig,
+} from './appConfig/read.ts';
+import { refreshAppConfig } from './server/refreshAppConfig.ts';
+import { ProcessRegistry } from './processes/ProcessRegistry.ts';
+import { ProcessManager } from './processes/ProcessManager.ts';
 import {
   startTunnel,
-  createTunnelActions,
   failPendingCommands,
   sendCommand as sendTunnelCommand,
-} from './processes/tunnel/index.js';
+} from './processes/tunnel/index.ts';
+import { createTunnelActions } from './processes/tunnel/actions.ts';
 import {
   startAgent,
   sendAgentCommand,
   sendToolResult,
-} from './processes/agent/index.js';
-import { createAgentActions, quiesceAgent } from './processes/agent/actions.js';
-import { startDevServer } from './processes/devServer/index.js';
-import { ResourceMonitor } from './processes/ResourceMonitor.js';
-import { BroadcastBatcher } from './server/BroadcastBatcher.js';
+} from './processes/agent/index.ts';
+import { createAgentActions, quiesceAgent } from './processes/agent/actions.ts';
+import { startDevServer } from './processes/devServer/index.ts';
+import { ResourceMonitor } from './processes/ResourceMonitor.ts';
+import { BroadcastBatcher } from './server/BroadcastBatcher.ts';
 import {
   startServer,
   broadcast,
@@ -46,45 +49,45 @@ import {
   setProxyTarget,
   flushHmr,
   closeLspClients,
-} from './server/index.js';
-import { ctx } from './server/context.js';
-import { handlers } from './server/wsHandlers/index.js';
-import { EditorStateManager } from './server/states/EditorStateManager.js';
-import { FileTreeManager } from './server/states/FileTreeManager.js';
-import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.js';
-import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.js';
-import { LspClient } from './lsp/client.js';
-import { LspSidecar } from './lsp/sidecar.js';
-import { initFilesystem } from './server/wsHandlers/filesystem.js';
-import { initShell } from './server/wsHandlers/shell.js';
-import { initSearch, probeRipgrep } from './server/wsHandlers/search.js';
-import { initWorkspaceEdit } from './server/wsHandlers/workspaceEdit.js';
-import { initPty, closeAllPty } from './server/wsHandlers/pty.js';
-import { stopWatcher } from './fileWatcher/index.js';
+} from './server/index.ts';
+import { ctx } from './server/context.ts';
+import { handlers } from './server/wsHandlers/index.ts';
+import { EditorStateManager } from './server/states/EditorStateManager.ts';
+import { FileTreeManager } from './server/states/FileTreeManager.ts';
+import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.ts';
+import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.ts';
+import { LspClient } from './lsp/client.ts';
+import { LspSidecar } from './lsp/sidecar.ts';
+import { initFilesystem } from './server/wsHandlers/filesystem.ts';
+import { initShell } from './server/wsHandlers/shell.ts';
+import { initSearch, probeRipgrep } from './server/wsHandlers/search.ts';
+import { initWorkspaceEdit } from './server/wsHandlers/workspaceEdit.ts';
+import { initPty, closeAllPty } from './server/wsHandlers/pty.ts';
+import { stopWatcher } from './fileWatcher/index.ts';
 import {
   initState,
   restoreState,
   saveState,
   stopAutoSave,
   markDirty,
-} from './state.js';
-import { createLogger, onLog } from './logger.js';
-import { bootPhase } from './bootProgress.js';
-import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.js';
-import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.js';
-import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
+} from './state.ts';
+import { createLogger, onLog } from './logger.ts';
+import { bootPhase } from './bootProgress.ts';
+import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.ts';
+import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.ts';
+import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.ts';
 import {
   initProjectStatus,
   getProjectStatus,
   getOnboardingState,
   setOnboardingState,
   setOnboardingChangeListener,
-} from './projectStatus/ProjectStatusManager.js';
-import { readForkSource } from './projectStatus/forkDetection.js';
-import type { AppConfig } from './types.js';
-import { toolRegistry } from './agentTools/index.js';
-import { setupFileWatcher } from './fileWatcher/index.js';
-import { cacheVersions } from './server/versionCache.js';
+} from './projectStatus/ProjectStatusManager.ts';
+import { readForkSource } from './projectStatus/forkDetection.ts';
+import type { AppConfig } from './appConfig/types.ts';
+import { toolRegistry } from './agentTools/index.ts';
+import { setupFileWatcher } from './fileWatcher/index.ts';
+import { cacheVersions } from './server/versionCache.ts';
 
 const log = createLogger('controller');
 
@@ -93,7 +96,8 @@ const log = createLogger('controller');
 // whole shutdown, so these must sum to well under it.
 //
 // INJECTED, not decided here. The grace period that bounds them belongs to whoever writes the pod
-// spec, so the budgets live beside it in CFES's `sandboxLifecycle.ts` (`dev.shutdown`, delivered by
+// spec, so the budgets live beside it in the orchestrator —
+// `youai-api/src/sandboxOrchestrator/Config/sandboxLifecycle.ts` (`dev.shutdown`, delivered by
 // `devLifecycleEnv()`). A box that keeps its own copy is a box whose margin can silently vanish
 // when the grace period moves — which is exactly what had happened: the comment here claimed a 60s
 // snapshot budget against an actual 75s, leaving ~3s of headroom rather than ~18s.
@@ -282,18 +286,16 @@ async function startServices(
   lspSidecar.setProcessManager(processManager);
   log.info('LSP sidecar ready on port 4388');
 
-  // Dev server
-  const webInterface = appConfig?.interfaces.find((i) => i.type === 'web');
-  const webConfig = webInterface?.config as
-    | { devCommand?: string; devPort?: number }
-    | undefined;
-  const devPort = webConfig?.devPort ?? 5173;
-  const devCommand = webConfig?.devCommand ?? 'npm run dev';
+  // Dev server. Its port is not our business — the tunnel reads it from
+  // web.json on every session start and points the proxy at it.
+  const webInterface = appConfig ? findWebInterface(appConfig) : null;
+  const devCommand =
+    (appConfig && getWebInterfaceConfig(appConfig)?.devCommand) ??
+    'npm run dev';
   // Keyed on the path, not just the entry: `path` is optional in the manifest
-  // schema, and path.dirname(undefined) throws the same way readAppConfig's loop
-  // did. A web interface that names no config file gives us no directory to run
-  // the dev server in, which the `else` below already reports as "no web
-  // interface" rather than treating as fatal.
+  // schema, and path.dirname(undefined) throws. A web interface that names no
+  // config file gives us no directory to run the dev server in, which the
+  // `else` below already reports as "no web interface" rather than as fatal.
   const webDir = webInterface?.path
     ? path.resolve(config.workspaceDir, path.dirname(webInterface.path))
     : null;
@@ -311,33 +313,29 @@ async function startServices(
 
   // Tunnel
   progress('tunnel', 'Starting dev tunnel...');
-  startTunnel(
-    processManager,
-    { workspaceDir: config.workspaceDir, devPort },
-    {
-      onSessionStarted: (session) => {
-        if (session.proxyPort != null) {
-          setProxyTarget(session.proxyPort);
-        }
-        ctx.tunnelSession = session;
-      },
-      onSessionEnded: () => {
-        ctx.tunnelSession = null;
-      },
-      onSandboxBrowserPid: (pid) => {
-        if (pid === null) {
-          ctx.resourceMonitor?.untrackExternalPid('sandboxBrowser');
-        } else {
-          ctx.resourceMonitor?.trackExternalPid('sandboxBrowser', pid);
-        }
-      },
-      broadcast,
+  startTunnel(processManager, config.workspaceDir, {
+    onSessionStarted: (session) => {
+      if (session.proxyPort != null) {
+        setProxyTarget(session.proxyPort);
+      }
+      ctx.tunnelSession = session;
     },
-  );
+    onSessionEnded: () => {
+      ctx.tunnelSession = null;
+    },
+    onSandboxBrowserPid: (pid) => {
+      if (pid === null) {
+        ctx.resourceMonitor?.untrackExternalPid('sandboxBrowser');
+      } else {
+        ctx.resourceMonitor?.trackExternalPid('sandboxBrowser', pid);
+      }
+    },
+    broadcast,
+  });
 
   // Agent
   progress('agent', 'Starting coding agent...');
-  const toolContext: import('./agentTools/types.js').ToolContext = {
+  const toolContext: import('./agentTools/types.ts').ToolContext = {
     sendToolResult: (id, result) => sendToolResult(processManager, id, result),
     broadcast,
     getProjectStatus,
@@ -346,10 +344,7 @@ async function startServices(
     sendAgentCommand: (action, params, timeout) =>
       sendAgentCommand(processManager, action, params, timeout),
     workspaceDir: config.workspaceDir,
-    readAppConfig: () => readAppConfig(config.workspaceDir),
-    setAppConfig: (updated) => {
-      ctx.appConfig = updated;
-    },
+    refreshAppConfig,
     // Genuine first build finished — snapshot (the commit carries the final
     // metadata) then notify youai-api to email the creator. Fire-and-forget;
     // never blocks remy's tool result, never throws.
@@ -362,38 +357,22 @@ async function startServices(
       });
     },
   };
-  startAgent(
-    processManager,
-    {
-      workspaceDir: config.workspaceDir,
-      apiKey: config.apiKey,
-      apiBaseUrl: config.apiBaseUrl,
+  startAgent(processManager, config.workspaceDir, {
+    broadcast,
+    onEditsFinished: () => {
+      flushHmr();
+      // chokidar may miss changes on long-running containers (inotify
+      // limits), so an agent turn re-reads the manifest regardless.
+      void refreshAppConfig();
     },
-    {
-      broadcast,
-      onEditsFinished: () => {
-        flushHmr();
-        // Re-read manifest after agent edits — chokidar may miss changes
-        // on long-running containers (inotify limits), so this ensures
-        // manifestChanged fires when the agent updates interface configs.
-        readAppConfig(config.workspaceDir)
-          .then((updated) => {
-            if (updated) {
-              ctx.appConfig = updated;
-              broadcast('manifestChanged', { app: updated });
-            }
-          })
-          .catch(() => {});
-      },
-      onExternalTool: (id, name, input) => {
-        const handler = toolRegistry.get(name);
-        if (!handler) {
-          return false;
-        }
-        return handler.handle(id, input, toolContext);
-      },
+    onExternalTool: (id, name, input) => {
+      const handler = toolRegistry.get(name);
+      if (!handler) {
+        return false;
+      }
+      return handler.handle(id, input, toolContext);
     },
-  );
+  });
 
   return { lspClient, lspSidecar };
 }
@@ -552,8 +531,8 @@ async function main(): Promise<void> {
     broadcast('bootstrapProgress', { step, message });
   };
 
-  // The control server is up, which is the first thing this process can honestly claim. CFES has
-  // already reported everything before it (schedule, image, VM) from outside.
+  // The control server is up, which is the first thing this process can honestly claim. The
+  // orchestrator has already reported everything before it (schedule, image, VM) from outside.
   bootPhase(`Control server listening on ${config.port}`, {
     phase: 'server',
     state: 'done',
@@ -565,12 +544,13 @@ async function main(): Promise<void> {
     // against the home directory, so it has to run on the home directory the box ends up with.
     bootPhase('Preparing tooling', { phase: 'tooling', state: 'active' });
     const toolingStart = Date.now();
+    // No tunnel install: it is this package's own second bin now, so it is
+    // present whenever this file is.
     const tooling = await Promise.all([
-      installTunnel(progress),
       installAgent(progress),
       installLsp(progress),
     ]);
-    // `cached` only when every one of the three came from the image. Any install that actually ran
+    // `cached` only when every one of the two came from the image. Any install that actually ran
     // is a slower boot for a reason worth showing, so it must not be reported as free.
     const toolingFromImage = tooling.every((t) => t?.fromImage !== false);
     bootPhase(
@@ -582,7 +562,7 @@ async function main(): Promise<void> {
         state: 'done',
         cached: toolingFromImage,
         detail: toolingFromImage
-          ? '3 of 3 from the image'
+          ? '2 of 2 from the image'
           : `Installed in ${Date.now() - toolingStart}ms`,
       },
     );
@@ -630,7 +610,6 @@ async function main(): Promise<void> {
       // credential, which the platform has since revoked.
       refreshGitRemote(config);
     }
-    await writeTunnelConfig(config);
     configureGit(config.workspaceDir);
     ensureProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
@@ -705,10 +684,12 @@ async function main(): Promise<void> {
     }
 
     // 8. Read app config
-    const appConfig = await readAppConfig(config.workspaceDir);
+    const appConfig = await readAppConfig(config.workspaceDir, {
+      repair: true,
+    });
     ctx.appConfig = appConfig;
     if (appConfig) {
-      log.info(`App: ${appConfig.name} (${appConfig.appId})`);
+      log.info(`App: ${appConfig.name} (${appConfig.appId ?? 'no appId'})`);
     } else {
       log.error(
         'App config missing or corrupted — sandbox will start without it',

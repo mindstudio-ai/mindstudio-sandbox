@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
-import { ctx } from './context.js';
-import { createLogger } from '../logger.js';
+import { ctx } from './context.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('lsp/ws');
 

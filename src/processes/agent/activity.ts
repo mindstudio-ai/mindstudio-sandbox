@@ -7,7 +7,7 @@
  * actions.ts (WS actions) can import freely.
  */
 
-import type { ModelOverride, QueuedMessage } from './events.js';
+import type { ModelOverride, QueuedMessage } from './events.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,7 +43,7 @@ export interface ActiveTurnModel {
 // ---------------------------------------------------------------------------
 
 /** Maps remy tool names to file actions. */
-export const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
+const FILE_TOOL_ACTIONS: Record<string, AgentFileAction> = {
   readFile: 'reading',
   writeFile: 'writing',
   editFile: 'editing',
@@ -170,12 +170,6 @@ export function startTurn(requestId: string): void {
 /** The requestId of the active foreground turn, or null if none. */
 export function getActiveTurnId(): string | null {
   return activeMessageRequestId;
-}
-
-/** Track a background turn (no busy state, no activity broadcast). */
-export function startBackgroundTurn(requestId: string): void {
-  activeMessageRequestId = requestId;
-  activeTurnModel = null;
 }
 
 /**

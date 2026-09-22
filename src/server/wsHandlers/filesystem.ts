@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { suppressPath } from '../../fileWatcher/index.js';
-import { resolveSafe } from '../../utils/paths.js';
-import { withFileLock } from '../../utils/fileLock.js';
+import { suppressPath } from '../../fileWatcher/index.ts';
+import { resolveSafe } from '../../utils/paths.ts';
+import { withFileLock } from '../../utils/fileLock.ts';
 
 let workspaceDir: string;
 

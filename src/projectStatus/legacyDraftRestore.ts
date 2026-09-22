@@ -11,7 +11,7 @@
  */
 
 import { exec as execCb } from 'node:child_process';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('legacy-draft');
 

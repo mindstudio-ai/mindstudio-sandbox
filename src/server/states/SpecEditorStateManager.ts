@@ -6,7 +6,7 @@
  * Same tab semantics: preview tabs, pinned tabs, adjacent activation.
  */
 
-import type { EditorTab } from './EditorStateManager.js';
+import type { EditorTab } from './EditorStateManager.ts';
 
 export interface SpecEditorState {
   tabs: EditorTab[];

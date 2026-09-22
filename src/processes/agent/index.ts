@@ -6,10 +6,10 @@
  * activity.ts; WS action handlers live in actions.ts.
  */
 
-import type { ProcessManager } from '../ProcessManager.js';
-import { parseAgentMessage } from './events.js';
-import type { QueuedMessage } from './events.js';
-import { transformHistory } from './history.js';
+import type { ProcessManager } from '../ProcessManager.ts';
+import { parseAgentMessage } from './events.ts';
+import type { QueuedMessage } from './events.ts';
+import { transformHistory } from './history.ts';
 import {
   broadcastActivity,
   getQueuedMessages,
@@ -30,18 +30,18 @@ import {
   addServerHandledToolId,
   isServerHandledToolId,
   deleteServerHandledToolId,
-} from './activity.js';
-import { createLogger } from '../../logger.js';
+} from './activity.ts';
+import { createLogger } from '../../logger.ts';
 
 const log = createLogger('agent');
 
 // Re-export types and functions used by external consumers
-export { getAgentActivity } from './activity.js';
+export { getAgentActivity } from './activity.ts';
 export type {
   AgentActivity,
   AgentFileOp,
   AgentFileAction,
-} from './activity.js';
+} from './activity.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,7 +115,10 @@ const INTERNAL_TOOLS = new Set([
 
 /**
  * External tools handled by the sandbox server that are HIDDEN from frontend.
- * Suppressed from broadcast and filtered from chat history.
+ * Suppressed from broadcast and filtered from chat history. Every other
+ * server-handled tool (runScenario, runMethod, testJewel, browserCommand,
+ * queryDatabase, …) stays visible: the server sends the tool_result, but the
+ * events are broadcast and the blocks appear in history.
  */
 export const SERVER_HANDLED_TOOLS = new Set([
   'editsFinished',
@@ -124,18 +127,6 @@ export const SERVER_HANDLED_TOOLS = new Set([
   // Legacy name of markBuildComplete — never called anymore, kept only so
   // the history filter keeps hiding the blocks persisted in older sessions.
   'setProjectOnboardingState',
-]);
-
-/**
- * External tools handled by the sandbox server that are VISIBLE to frontend.
- * The sandbox sends tool_result, but events are still broadcast and shown in history.
- */
-export const SERVER_VISIBLE_TOOLS = new Set([
-  'runScenario',
-  'runMethod',
-  'testJewel',
-  'browserCommand',
-  'queryDatabase',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -197,24 +188,24 @@ export function sendAgentCommand(
 
 export function startAgent(
   pm: ProcessManager,
-  config: { workspaceDir: string; apiKey: string; apiBaseUrl: string },
+  workspaceDir: string,
   callbacks: AgentCallbacks,
 ): void {
   pm.start({
     name: 'agent',
     command: 'remy',
-    args: [
-      '--headless',
-      '--api-key',
-      config.apiKey,
-      '--base-url',
-      config.apiBaseUrl,
-      '--lsp-url',
-      'http://localhost:4388',
-      '--log-level',
-      'debug',
-    ],
-    cwd: config.workspaceDir,
+    // No `--headless`: the stdin/stdout JSON protocol is remy's only mode as of
+    // Sep 2026, so the flag stopped meaning anything. remy still tolerates it
+    // (unrecognized args are ignored), which is what let this drop land
+    // without pinning the devbox image to a remy version.
+    //
+    // No credentials either. remy reads MINDSTUDIO_API_KEY and
+    // MINDSTUDIO_BASE_URL from the environment it inherits from this process,
+    // which inherits them from the container. They were `--api-key`/`--base-url`
+    // once, and ProcessManager logs the full command line and serves it to the
+    // editor's process list, which put a live API key in three places at once.
+    args: ['--lsp-url', 'http://localhost:4388', '--log-level', 'debug'],
+    cwd: workspaceDir,
     stdin: true,
     restartOnCrash: false,
     maxRestarts: 0,

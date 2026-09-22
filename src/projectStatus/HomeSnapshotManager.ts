@@ -30,14 +30,14 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { createLogger } from '../logger.js';
-import { makeCounterEmitter } from '../bootProgress.js';
+import { createLogger } from '../logger.ts';
+import { makeCounterEmitter } from '../bootProgress.ts';
 import {
   getOnboardingState,
   isProjectOnboardingState,
   isProjectStatusInitialized,
   type ProjectOnboardingState,
-} from './ProjectStatusManager.js';
+} from './ProjectStatusManager.ts';
 
 const log = createLogger('snapshot');
 
@@ -195,7 +195,7 @@ export type RestoreResult =
 export type SnapshotOutcome = 'committed' | 'unchanged' | 'failed' | 'fenced';
 
 /** Whether an outcome means the user's work is durable in S3. */
-export const isSafe = (outcome: SnapshotOutcome): boolean =>
+const isSafe = (outcome: SnapshotOutcome): boolean =>
   outcome === 'committed' || outcome === 'unchanged';
 
 export interface HomeSnapshotManagerOptions {
@@ -668,8 +668,9 @@ export class HomeSnapshotManager {
         // `zstd -T0` (every core) rather than tar's own `--zstd`, which is single-threaded.
         //
         // This is a DATA-LOSS budget, not a latency one. On the shutdown path the whole cycle has
-        // to finish inside SHUTDOWN_SNAPSHOT_BUDGET_MS (75s) before CFES's 90s pod grace turns
-        // into a SIGKILL, and losing that race means the user loses the session's work. Kept even
+        // to finish inside SHUTDOWN_SNAPSHOT_BUDGET_MS (75s) before the orchestrator's 90s pod
+        // grace (`sandboxLifecycle.ts`) turns into a SIGKILL, and losing that race means the user
+        // loses the session's work. Kept even
         // though SNAPSHOT_EXCLUDES took the typical archive down to single-digit MB: what remains
         // is the user's own material, which is the part with no ceiling — a repo full of committed
         // assets is one commit away — and 4 cores make this ~3-4x for free.
