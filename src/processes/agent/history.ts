@@ -1,4 +1,4 @@
-import { SERVER_HANDLED_TOOLS } from './index.js';
+import { SERVER_HANDLED_TOOLS } from './index.ts';
 
 /**
  * Transform remy's history into frontend-friendly format.

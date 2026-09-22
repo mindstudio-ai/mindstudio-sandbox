@@ -6,22 +6,22 @@
  * at runtime via Object.assign when the process manager becomes available.
  */
 
-import { readFile, writeFile, deleteFile, renameFile } from './filesystem.js';
-import { shell } from './shell.js';
+import { readFile, writeFile, deleteFile, renameFile } from './filesystem.ts';
+import { shell } from './shell.ts';
 import {
   ptyCreate,
   ptyWrite,
   ptyResize,
   ptyClose,
   ptyGetScrollback,
-} from './pty.js';
-import { ctx } from '../context.js';
-import { editorHandlers } from './editor.js';
-import { specEditorHandlers } from './specEditor.js';
-import { processHandlers } from './processes.js';
-import { miscHandlers } from './misc.js';
-import { searchWorkspace, cancelSearch } from './search.js';
-import { applyWorkspaceEdits } from './workspaceEdit.js';
+} from './pty.ts';
+import { ctx } from '../context.ts';
+import { editorHandlers } from './editor.ts';
+import { specEditorHandlers } from './specEditor.ts';
+import { processHandlers } from './processes.ts';
+import { miscHandlers } from './misc.ts';
+import { searchWorkspace, cancelSearch } from './search.ts';
+import { applyWorkspaceEdits } from './workspaceEdit.ts';
 
 export type ActionHandler = (
   params: Record<string, unknown>,

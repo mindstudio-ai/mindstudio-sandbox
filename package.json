@@ -9,7 +9,8 @@
   },
   "type": "module",
   "bin": {
-    "remy-sandbox": "dist/index.js"
+    "remy-sandbox": "dist/index.js",
+    "remy-tunnel": "dist/devTunnel/cli.js"
   },
   "files": [
     "dist"
@@ -21,29 +22,38 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-browser-agent.mjs && node scripts/assert-worker-standalone.mjs",
     "start": "node dist/index.js",
     "dev": "tsx --env-file=.env src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "//typecheck": "Two programs, and both must pass: the root Node one, and the browser-agent one that the root tsconfig excludes. `tsc -p` needs no --noEmit — tsconfig.browser.json sets it.",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json",
     "lint:fix": "prettier --write ./src",
     "prepare": "husky",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@typescript/typescript6": "^6.0.2",
     "chokidar": "^5.0.0",
+    "esbuild": "^0.28.0",
     "http-proxy": "^1.18.1",
     "json5": "^2.2.3",
     "node-pty": "^1.1.0",
+    "puppeteer-core": "^24.42.0",
     "ws": "^8.18.0"
   },
+  "//@typescript/typescript6": "The TypeScript 6 JS compiler API, used by devTunnel/interfaces/schema/* to parse an app's source and derive JSON schemas for method inputs. It is imported under this exact specifier rather than aliased over `typescript`, which is what the dev tunnel's old repo did: an alias puts two packages that both ship a `tsc` bin in the same tree, and `node_modules/.bin/tsc` then becomes whichever npm linked last. `typescript` here stays the TS7 native compiler that builds this package. A real dependency rather than a dev one, because the schema code imports it at RUNTIME — the old repo left it a devDependency and relied on the devbox image's global `typescript@6` (CLASSIC_TS_MAJOR) resolving by an upward walk from the global node_modules.",
+  "//browser-agent deps": "`rrweb` and `@zumer/snapdom` are the browser agent's only external imports, and they are devDependencies ON PURPOSE: scripts/build-browser-agent.mjs inlines them into dist/browserAgent/index.js, so they are build-time inputs rather than runtime ones and the published package's dependency tree does not carry them. A box installs neither.",
+  "//rrweb pin": "EXACT versions, no caret, and rrweb especially. The old browser-agent repo asked for `^2.0.0-alpha.4` and was held at alpha.4 only by its lockfile; installing that same range fresh here resolved rrweb 2.1.6, because a caret on a prerelease still admits the whole 2.x stable line. That would have swapped the recording engine underneath replay as a side effect of moving files. The event format is a cross-repo contract — the editor's rrweb player and youai-api's common/Recordings/stitch.ts both read these events — so an rrweb upgrade needs to be its own deliberate, tested change. Pinning makes the bundle reproducible and byte-comparable to what unpkg serves.",
   "devDependencies": {
     "@types/http-proxy": "^1.17.17",
     "@types/node": "^25.0.0",
     "@types/ws": "^8.5.0",
+    "@zumer/snapdom": "2.24.10",
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2",
     "prettier": "^3.8.1",
     "prettier-plugin-curly": "^0.4.1",
+    "rrweb": "2.0.0-alpha.4",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2"
   },
@@ -52,6 +62,8 @@
   },
   "allowScripts": {
     "node-pty@1.1.0": true,
+    "//esbuild": "Two entries on purpose, and both are needed: 0.28.x is the direct dependency devTunnel/execution/transpiler.ts uses, 0.27.7 is what `tsx` pins, and npm matches these keys on exact version. esbuild's postinstall links its platform binary — without it the JS API throws at runtime, which in a box means every method transpile fails. The devbox image passes `--allow-scripts=...,esbuild,...` by name, so it is covered there regardless; these keys are what make a local install and CI agree with it.",
+    "esbuild@0.28.2": true,
     "esbuild@0.27.7": true,
     "fsevents@2.3.3": true
   }

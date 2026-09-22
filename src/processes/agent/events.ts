@@ -1,4 +1,4 @@
-import { parseJsonEvent } from '../parseJsonEvent.js';
+import { parseJsonEvent } from '../parseJsonEvent.ts';
 
 // ---------------------------------------------------------------------------
 // Agent stdout event types

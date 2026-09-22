@@ -2,20 +2,20 @@
  * Agent WS action handlers — frontend-facing commands for the agent.
  */
 
-import type { ProcessManager } from '../ProcessManager.js';
-import { sendAgentCommand, getAgentHistory } from './index.js';
+import type { ProcessManager } from '../ProcessManager.ts';
+import { sendAgentCommand, getAgentHistory } from './index.ts';
 import {
   hasPendingUserBlockingTool,
   clearPendingExternalTools,
   startTurn,
   getAgentActivity,
   willQueueMessage,
-} from './activity.js';
+} from './activity.ts';
 import {
   getOnboardingState,
   setOnboardingState,
-} from '../../projectStatus/ProjectStatusManager.js';
-import { createLogger } from '../../logger.js';
+} from '../../projectStatus/ProjectStatusManager.ts';
+import { createLogger } from '../../logger.ts';
 
 const log = createLogger('agent');
 

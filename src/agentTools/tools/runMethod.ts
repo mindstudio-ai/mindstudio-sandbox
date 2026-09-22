@@ -1,5 +1,6 @@
-import { createLogger } from '../../logger.js';
-import type { ExternalToolHandler } from '../types.js';
+import { createLogger } from '../../logger.ts';
+import type { ExternalToolHandler } from '../types.ts';
+import type { TunnelCommandParams } from '../../devTunnel/protocol.ts';
 
 const log = createLogger('tool:runMethod');
 
@@ -14,11 +15,19 @@ export const runMethodTool: ExternalToolHandler = {
       return true;
     }
     const methodInput = (input.input as Record<string, unknown>) ?? {};
-    const params: Record<string, unknown> = { method, input: methodInput };
-    if (input.roles) {
-      params.roles = input.roles;
+    const params: TunnelCommandParams['run-method'] = {
+      method,
+      input: methodInput,
+    };
+    // Narrowed rather than forwarded. This is model-authored input and `roles`
+    // decides which identity the method runs as; the tunnel's handler defends
+    // itself too, but it should not be the only thing that does.
+    if (Array.isArray(input.roles)) {
+      params.roles = input.roles.filter(
+        (r): r is string => typeof r === 'string',
+      );
     }
-    if (input.userId) {
+    if (typeof input.userId === 'string') {
       params.userId = input.userId;
     }
     log.info('Agent running method', { toolCallId: id, method });

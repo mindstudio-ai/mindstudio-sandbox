@@ -5,12 +5,12 @@ import path from 'node:path';
 import { pipeline } from 'node:stream';
 import { createGzip } from 'node:zlib';
 import type httpProxy from 'http-proxy';
-import { ctx } from './context.js';
-import { getVersions } from './versionCache.js';
-import { getAgentActivity } from '../processes/agent/activity.js';
-import { getSandboxBrowserState } from '../processes/tunnel/index.js';
-import { getProjectStatus } from '../projectStatus/ProjectStatusManager.js';
-import { sendPreviewPlaceholder } from './previewPlaceholder.js';
+import { ctx } from './context.ts';
+import { getVersions } from './versionCache.ts';
+import { getAgentActivity } from '../processes/agent/activity.ts';
+import { getSandboxBrowserState } from '../processes/tunnel/index.ts';
+import { getProjectStatus } from '../projectStatus/ProjectStatusManager.ts';
+import { sendPreviewPlaceholder } from './previewPlaceholder.ts';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',

@@ -3,7 +3,7 @@ import {
   setLogLevel,
   setStdoutLogLevel,
   type LogLevel,
-} from './logger.js';
+} from './logger.ts';
 
 const log = createLogger('config');
 

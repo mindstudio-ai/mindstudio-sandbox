@@ -108,7 +108,7 @@ if (allDeps.size > 0) {
 // ---------------------------------------------------------------------------
 
 // The admin CLI lives in its own package now. Plain global install, same as
-// the other boot-installed tools (remy, mindstudio-local, agent SDK) — their
+// the other boot-installed tools (remy, agent SDK) — their
 // bins are proven to be on the sandbox PATH. Always the latest published
 // version: the CLI on the image is the agent's tooling, deliberately
 // independent of anything the app repo pins. Boot self-heals if this step

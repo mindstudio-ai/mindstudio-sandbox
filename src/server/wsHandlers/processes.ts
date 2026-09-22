@@ -1,7 +1,7 @@
-import { ctx } from '../context.js';
-import { createLogger } from '../../logger.js';
-import { sendCommand as sendTunnelCommand } from '../../processes/tunnel/index.js';
-import type { ActionHandler } from './index.js';
+import { ctx } from '../context.ts';
+import { createLogger } from '../../logger.ts';
+import { sendCommand as sendTunnelCommand } from '../../processes/tunnel/index.ts';
+import type { ActionHandler } from './index.ts';
 
 const log = createLogger('handlers');
 

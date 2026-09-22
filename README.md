@@ -1,6 +1,14 @@
-# MindStudio Sandbox — C&C Server
+# Remy dev box runtime — C&C server and dev tunnel
 
-The command & control server that runs inside hosted MindStudio sandbox containers. Manages the dev environment, exposes a WebSocket API for the web editor, and reverse-proxies the live preview.
+The two processes that run inside a hosted Remy dev box, shipped as one package with two bins. The
+**C&C server** (`remy-sandbox`) manages the dev environment, exposes a WebSocket API for the web
+editor, and reverse-proxies the live preview. The **dev tunnel** (`remy-tunnel`) executes methods,
+syncs schemas and drives browser automation; it lives in [`src/devTunnel/`](src/devTunnel/README.md)
+and the C&C spawns it as a child process.
+
+This document is the **editor's** contract — the WebSocket actions and events a frontend can rely
+on. For the tunnel's own stdio protocol see [`src/devTunnel/README.md`](src/devTunnel/README.md) and
+the types in `src/devTunnel/protocol.ts`; for working in this repo see [`CLAUDE.md`](CLAUDE.md).
 
 ## Architecture
 
@@ -20,63 +28,85 @@ Internally, port 4388 runs the LSP HTTP sidecar for the remy agent.
 
 Inside the container, the C&C server manages:
 - **Dev server** (Vite / webpack / etc.) — frontend with HMR
-- **Dev tunnel** (`mindstudio-local --headless`) — method execution, platform sync, browser automation
-- **Remy agent** (`remy --headless`) — AI coding agent
+- **Dev tunnel** (`remy-tunnel`, this package's second bin) — method execution, platform sync,
+  browser automation. Spawned as a `node` child from `dist/devTunnel/cli.js`, resolved relative to
+  the C&C's own module rather than looked up on PATH, so a branch build gets a matched pair
+- **Remy agent** (`remy`) — AI coding agent, a separately published package
 - **File watcher** — broadcasts filesystem changes to connected clients
 - **TypeScript language server** — shared between Monaco editor and remy
 - **Snapshot manager** — periodic snapshots of the home directory to S3 for persistence across boxes
 
+Both children receive their platform credentials on the environment, never on argv — the process
+list is served to the editor, and `ProcessManager` logs every command line.
+
 ## Project Structure
+
+Two entry points, one package:
 
 ```
 src/
-  index.ts                          — entry point, bootstrap orchestration
-  config.ts                         — environment variable parsing
-  types.ts                          — shared types (WS protocol, filesystem, app config)
-  logger.ts                         — centralized logger with levels + elapsed time
-  state.ts                          — persistent state (survives hibernate/resume)
-  projectStatus.ts                  — onboarding state + project status tracking
-  bootstrap.ts                      — install/clone/build commands
-  projectStatus/HomeSnapshotManager.ts — home-directory snapshots (tar to S3 via youai-api)
+  index.ts              — C&C entry (bin: remy-sandbox), bootstrap orchestration
+  config.ts             — environment variable parsing
+  types.ts              — shared types (WS protocol, filesystem, app config)
+  logger.ts             — centralized logger, two levels (see its header)
+  state.ts              — persistent state (survives hibernate/resume)
+  bootProgress.ts       — boot phase reporting to the editor
+
+  bootstrap/            — install agent + LSP, clone the app, install deps, configure git
+  fileWatcher/          — chokidar watcher; broadcasts filesystem changes
+  projectStatus/        — onboarding state, home snapshots (tar to S3), fork detection,
+                          app brand, first-build email, legacy draft restore
+  utils/                — paths, file locking, global-package lookup, JSON config
 
   server/
-    index.ts                        — HTTP/WS server, upgrade routing, broadcast
-    context.ts                      — shared server context + init frame construction
-    handlers/
-      index.ts                      — action handler registry (routes WS actions)
-      filesystem.ts                 — file operations (readFile, writeFile, etc.)
-      shell.ts                      — shell command execution
-      pty.ts                        — PTY terminal sessions
-    states/
-      EditorStateManager.ts         — code editor tabs + expanded dirs
-      SpecEditorStateManager.ts     — spec editor tabs
-      FileTreeManager.ts            — code file tree (lazy, expandedDirs-gated)
-      SpecFileTreeManager.ts        — spec file tree (always fully expanded)
-    server/
-      BroadcastBatcher.ts           — batched WS event delivery (100ms flush)
-      HmrRelay.ts                   — HMR WebSocket relay with buffering
-
-  lsp/
-    client.ts                       — language server JSON-RPC multiplexer
-    sidecar.ts                      — language server HTTP API for remy
+    index.ts            — HTTP/WS server, upgrade routing, broadcast
+    context.ts          — shared server context + init frame construction
+    httpRoutes.ts       — /health, /status, and the preview reverse proxy
+    BroadcastBatcher.ts — batched WS event delivery (100ms flush)
+    HmrRelay.ts         — HMR WebSocket relay, buffered during agent turns
+    cncConnection.ts    — editor socket lifecycle;  cncHeartbeat.ts — liveness
+    versionCache.ts     — versions reported by /status
+    lspBridge.ts  previewPlaceholder.ts
+    wsHandlers/         — the action registry: filesystem, editor, specEditor, shell,
+                          pty, search, processes, workspaceEdit, misc
+    states/             — EditorStateManager, SpecEditorStateManager,
+                          FileTreeManager (lazy), SpecFileTreeManager (fully expanded)
 
   processes/
-    parseJsonEvent.ts               — shared NDJSON event parser
-    ProcessRegistry.ts              — unified process metadata + per-process logs
-    ProcessManager.ts               — long-lived child process lifecycle
-    ResourceMonitor.ts              — memory/CPU metrics collection
-    fileWatcher.ts                  — chokidar file watcher
-    agent/
-      index.ts                      — remy agent process management + IPC
-      events.ts                     — typed agent event union
-      history.ts                    — chat history transformation
-    tunnel/
-      index.ts                      — dev tunnel process management + IPC
-      events.ts                     — typed tunnel event union
-    devServer/index.ts              — dev server process management
+    ProcessManager.ts   — long-lived child process lifecycle, restart policy
+    ProcessRegistry.ts  — process metadata + per-process .logs/<name>.ndjson
+    ResourceMonitor.ts  — memory/CPU metrics;  lineSplitter.ts, parseJsonEvent.ts
+    agent/              — remy process + IPC, typed events, activity, history, actions
+    tunnel/             — dev tunnel process + IPC; imports devTunnel/protocol.ts
+    devServer/          — dev server process management
 
-  utils/
-    paths.ts                        — shared path utilities
+  agentTools/           — remy's external tools; most relay to a tunnel command
+  lsp/                  — client.ts (JSON-RPC multiplexer), sidecar.ts (HTTP API for remy)
+
+  devTunnel/            — the dev tunnel (bin: remy-tunnel). See its own README.
+    protocol.ts         — THE C&C↔tunnel wire protocol, imported by both sides
+    cli.ts  session.ts  config.ts  api.ts  utils.ts
+    execution/          — poll loop, transpiler, executor, the forked worker, jewels, mappers
+    proxy/              — the preview proxy, __MINDSTUDIO__ injection, WS clients
+    browser/            — headless Chrome supervisor, CDP screenshots, cookies, ffmpeg
+    stdin-commands/     — one file per action, plus the router
+    config/             — mindstudio.json reading and the file watchers
+    interfaces/         — per-interface config readers; schema/ derives JSON schemas
+    ipc/  logging/      — stdout protocol writers; stderr logger, request and browser logs
+
+  browserAgent/         — the in-page agent the tunnel's proxy injects into dev previews.
+                          BROWSER code: its own tsconfig.browser.json, bundled by esbuild to
+                          dist/browserAgent/index.js, excluded from the root program. See its
+                          own README.
+    index.ts            — entry, idempotency guard, window.__MINDSTUDIO_BROWSER_AGENT__
+    state.ts            — all mutable state on window.__ms, survives HMR
+    transport.ts  network-idle.ts  utils.ts  fonts.ts  iframe-bridge.ts  navigation.ts
+    capture/            — console, errors, fetch, XHR, click interactions
+    snapshot/           — the DOM walker, ARIA roles, accessible names
+    commands/           — WS client, step executor, actions, element resolution, style map
+    cursor/             — the animated agent cursor; mobile touch simulation
+    recording/  mirror/ — rrweb session recording; phone mirror streaming
+    auth-creds/         — dev-mode auth autofill widget
 ```
 
 ## IPC Protocol
@@ -92,6 +122,13 @@ Both the agent and tunnel use the same IPC pattern: newline-delimited JSON over 
 **Tunnel specifics:** Command responses are consumed by the resolver and returned as WS response data. System events are broadcast to the frontend.
 
 Both use `sendAgentCommand` / `sendCommand` (in their respective `index.ts` files) which returns a promise that resolves when the `completed`/response event arrives.
+
+**The tunnel's half of this is typed.** `src/devTunnel/protocol.ts` declares every event, action,
+param and result shape, and both sides import it — the tunnel is checked when it emits, the C&C when
+it reads, and `sendCommand` is generic over the action. Treat those types as the authority: the
+tables below are a reader's summary, and the previous hand-written copy of them drifted into
+declaring three fields that were never sent. The agent's half is still untyped across the boundary
+(`processes/agent/events.ts` is a mirror of remy's protocol, maintained by hand).
 
 ## Connecting from the Frontend
 
@@ -151,8 +188,7 @@ The first message on connect is an `init` event with everything needed to bootst
   "status": "ready",
   "previewAvailable": true,
   "app": { "appId": "...", "name": "...", "methods": [...], "tables": [...], "interfaces": [...], "roles": [...], "scenarios": [...] },
-  "tunnelSession": { "sessionId": "...", "releaseId": "...", "branch": "main", "proxyPort": 3835, "proxyUrl": "...", "webInterfaceUrl": "..." },
-  "activeImpersonation": ["ap"],
+  "tunnelSession": { "sessionId": "...", "releaseId": "...", "proxyPort": 3835, "proxyUrl": "..." },
   "fileTree": [...],
   "specFileTree": [...],
   "chatHistory": [...],
@@ -170,8 +206,7 @@ The first message on connect is an `init` event with everything needed to bootst
 | `status` | `"bootstrapping" \| "ready" \| "error"` | Server lifecycle status |
 | `previewAvailable` | `boolean` | Whether the preview proxy is ready |
 | `app` | `AppConfig` | Parsed `mindstudio.json` (includes roles, scenarios, methods, tables, interfaces) |
-| `tunnelSession` | `TunnelSessionState \| null` | Active tunnel session info, or null if not connected |
-| `activeImpersonation` | `string[] \| null` | Currently impersonated role IDs, or null |
+| `tunnelSession` | `TunnelSessionState \| null` | Active tunnel session, or null if not connected. `{ sessionId, releaseId, proxyPort, proxyUrl }`, the last two nullable |
 | `fileTree` | `TreeEntry[]` | Code file tree (based on expanded dirs) |
 | `specFileTree` | `TreeEntry[]` | Spec file tree (`src/` — always fully expanded) |
 | `chatHistory` | `Message[]` | Agent conversation history from remy. Assistant messages carry `model?` and `modelOverride?` — see [Model selection](#model-selection) |
@@ -304,16 +339,20 @@ All tunnel actions await the tunnel's response and return it as the WS response.
 
 | Action | Params | Description |
 |--------|--------|-------------|
-| `tunnelRunScenario` | `{ scenarioId }` | Run a scenario (truncate + seed + impersonate). Returns result |
-| `tunnelRunMethod` | `{ method, input? }` | Run a method directly. Returns output |
-| `tunnelBrowser` | `{ steps }` | Execute browser automation steps. Returns step results |
-| `tunnelScreenshot` | `{}` | Capture a full-page screenshot. Returns `{ url, width, height, duration }` |
-| `tunnelBrowserStatus` | `{}` | Check if a browser is connected. Returns `{ connected }` |
-| `tunnelResetBrowser` | `{}` | Reload all connected browser tabs |
-| `tunnelImpersonate` | `{ roles }` | Set role overrides for method execution |
-| `tunnelClearImpersonation` | `{}` | Clear role overrides |
+| `tunnelRunScenario` | `{ scenarioId, skipTruncate? }` | Run a scenario (truncate + seed + set roles). Returns the result |
+| `tunnelRunMethod` | `{ method, input?, roles?, userId? }` | Run a method directly. `roles`/`userId` scope the auth context to this one execution |
+| `tunnelBrowser` | `{ steps }` | Execute browser automation steps. Returns step results, a DOM snapshot, logs, and a `recording` reference when the batch was recorded |
+| `tunnelScreenshot` | `{ path? }` | Capture a full-page screenshot. Returns `{ url, width, height, styleMap?, duration }` |
+| `tunnelSetTestUserRoles` | `{ roles }` | Set the dev test user's roles. Returns the user and its roles |
+| `tunnelGetTestUser` | `{}` | Read the dev test user and its roles |
+| `listDatabases` | `{}` | The databases available to the session |
+| `tunnelExportRecording` | `{ recordingSessionId, startTs, endTs, stage?, store?, access? }` | Render a replay window to an mp4 on the box. Returns a `jobId`; progress arrives as `recording-export-progress` events |
+| `tunnelCancelExportRecording` | `{ jobId }` | Abort a running export; its result becomes `CANCELLED` |
 
-Schema sync is automatic (tunnel watches table files). Roles and scenarios come from `app` in the init frame.
+Schema sync is automatic (the tunnel watches table files). Roles and scenarios come from `app` in the init frame.
+
+Impersonation is not an action: role overrides are set by `tunnelRunScenario`, by
+`tunnelSetTestUserRoles`, or per-execution via `tunnelRunMethod`'s `roles`.
 
 ### Processes
 
@@ -393,33 +432,38 @@ System events from the tunnel are broadcast as `tunnelEvent`. Command responses 
 |-------|---------|-------------|
 | `tunnelEvent` | `{ event, ... }` | Tunnel system events forwarded as-is |
 
-Key tunnel system events:
+Every tunnel system event, from `TunnelEvent` in `src/devTunnel/protocol.ts` — which is the
+authority; check there before relying on a payload:
 
 | Tunnel Event | Payload | Description |
 |-------------|---------|-------------|
 | `session-starting` | `{ appId, name }` | Session initializing |
-| `session-started` | `{ sessionId, releaseId, branch, proxyPort, proxyUrl, webInterfaceUrl, roles, scenarios }` | Session active, proxy running |
+| `session-started` | `{ sessionId, releaseId, proxyPort, proxyUrl, roles, scenarios }` | Session active, proxy running. The two proxy fields are nullable — a backend-only app has no dev port |
 | `session-stopping` | | Graceful shutdown initiated |
 | `session-stopped` | | Session fully stopped |
-| `session-expired` | | Platform expired the session |
-| `platform-method-started` | `{ id, method }` | Platform-triggered method execution began |
-| `platform-method-completed` | `{ id, success, duration, error? }` | Platform-triggered method execution finished |
-| `scenario-started` | `{ id, name }` | Scenario being applied |
-| `scenario-completed` | `{ id, success, duration, roles, error? }` | Scenario finished |
+| `session-expired` | | The platform rejected the credential. Terminal — the tunnel exits 0 after this, and a restart cannot help |
+| `degraded-state` | `{ reason }` | Booted or restarted without a usable `mindstudio.json`; retrying on a 15s timer |
+| `degraded-state-resolved` | `{ appId? }` | Config appeared; the session started |
+| `platform-method-started` | `{ id, method? }` | Platform-triggered execution began. `method` is genuinely optional |
+| `platform-method-completed` | `{ id, success, duration, error? }` | …finished |
 | `schema-sync-started` | | Table file change detected, syncing |
 | `schema-sync-completed` | `{ created, altered, errors }` | Schema sync finished |
-| `impersonation-changed` | `{ roles }` | Role override set or cleared (`roles: null` when cleared) |
-| `connection-lost` | `{ message }` | Lost connection to platform, retrying |
+| `connection-lost` | `{ message }` | Lost connection to the platform, retrying |
 | `connection-restored` | | Reconnected after loss |
-| `config-changed` | | `mindstudio.json` modified, session restarting |
-| `config-error` | `{ message }` | Non-fatal config error |
-| `error` | `{ message }` | Fatal error |
+| `config-changed` | `{ path }` | A watched manifest or interface JSON changed; session restarting |
+| `config-error` | `{ message }` | Config could not be read or validated |
+| `sandbox-browser-state` | discriminated on `state` | The box's headless Chrome: `stopped`, `starting`, `running`, `crashed`, `restarting`, `degraded`. Each state carries different fields — see `SandboxBrowserStateEvent` |
+| `recording-export-progress` | `{ jobId, phase, percent }` | Replay export progress; `phase` is `loading`/`rendering`/`encoding`/`uploading` |
+
+Scenario application and role changes are **not** events — they are the results of
+`tunnelRunScenario` and `tunnelSetTestUserRoles`, returned to the caller. There is no fatal `error`
+event; a config failure is `config-error` and a dead credential is `session-expired`.
 
 ### Bootstrap
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `bootstrapProgress` | `{ step, message }` | Bootstrap status updates. Steps: `installTunnel`, `installAgent`, `installLsp`, `cloneApp`, `installDeps`, `devServer`, `tunnel`, `agent`, `ready`, `error` |
+| `bootstrapProgress` | `{ step, message }` | Bootstrap status updates. Steps: `installAgent`, `installAgentSdk`, `installLsp`, `cloneApp`, `installDeps`, `restore`, `devServer`, `tunnel`, `agent`, `ready`, `error`. There is no tunnel install step — it ships in this package |
 
 ### PTY
 
@@ -549,7 +593,7 @@ The tunnel's browser automation WebSocket (`/__mindstudio_dev__/ws`) is proxied 
 
 ## Scenarios & Roles
 
-**Roles** are string identifiers (e.g., `"admin"`, `"ap"`) checked at runtime via `auth.requireRole()`. During development, use `tunnelImpersonate` to set role overrides.
+**Roles** are string identifiers (e.g. `"admin"`, `"ap"`) checked at runtime via `auth.requireRole()`. In development, set them with `tunnelSetTestUserRoles`, or per-execution with `tunnelRunMethod`'s `roles`; a scenario sets them as part of seeding.
 
 **Scenarios** are seed scripts that set up the dev database. Running a scenario (`tunnelRunScenario`) truncates all tables, executes the seed function, and applies the scenario's roles. Scenarios are declared in `mindstudio.json` and listed in the `session-started` tunnel event.
 
@@ -582,15 +626,31 @@ All file paths are relative to the workspace root. Paths that escape the workspa
 | `API_BASE_URL` | Platform API URL | `https://api.mindstudio.ai` |
 | `PORT` | Server port | `4387` |
 | `SANDBOX_TOKEN` | WebSocket auth token | none (no auth) |
-| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` | `info` |
+| `MINDSTUDIO_SESSION_ID` | Platform sandbox-session id, sent with every snapshot write | required |
+| `DB_WS_URL` | App-database socket. Absence is meaningful — the method worker falls back to a fetch transport addressed at the API base URL | unset |
+| `LOG_LEVEL` | Verbosity of the log stream the editor reads | `debug` |
+| `STDOUT_LOG_LEVEL` | Verbosity of the scraped stdout sink. Deliberately quieter — one debug line per agent event was most of the platform's log volume | `info` |
+
+`MINDSTUDIO_API_KEY`, `API_BASE_URL` and `USER_ID` are passed down to both children on *their*
+environment, not on their command lines.
 
 ## Development
 
 ```bash
 npm install
-GIT_REPO_URL=test MINDSTUDIO_API_KEY=test USER_ID=test PORT=4387 npx tsx src/index.ts
-npx tsc --noEmit   # type-check
-npm run build       # compile
+npm run build       # REQUIRED before `npm run dev` — see below
+npm run typecheck
+npm run dev         # tsx src/index.ts, with .env
 ```
 
-The `example/` directory contains a sample MindStudio app for local testing.
+**`npm run build` first, every time the tunnel changes.** The C&C spawns the tunnel from
+`dist/devTunnel/cli.js`. Under `tsx` that file does not exist — only `cli.ts` does — and tsx's
+loader is not inherited by a `node <script>` child, so it could not run the source anyway. Startup
+fails with a message saying exactly this.
+
+`npm run build` is `tsc` plus `scripts/assert-worker-standalone.mjs`, which proves the forked method
+worker is still a single self-contained file. CI runs both `typecheck` and `build` for that reason.
+
+To exercise a change on a real box rather than locally, set `DEV_BRANCHES.sandbox` in
+`youai-api/src/sandboxOrchestrator/devBoxes/SandboxManager.ts` to your branch: the box clones and
+builds this repo from source, which gets you a matched C&C/tunnel pair with no publish.

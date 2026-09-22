@@ -10,13 +10,13 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { TreeEntry } from '../../types.js';
-import { createLogger } from '../../logger.js';
+import type { TreeEntry } from '../../types.ts';
+import { createLogger } from '../../logger.ts';
 import {
   TREE_COLLAPSED,
   TREE_HIDDEN,
   TREE_HIDDEN_WATCHED,
-} from '../../fileWatcher/index.js';
+} from '../../fileWatcher/index.ts';
 
 const log = createLogger('code-tree');
 

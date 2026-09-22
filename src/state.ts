@@ -15,16 +15,16 @@ import path from 'node:path';
 import type {
   ProcessRegistry,
   ProcessSnapshot,
-} from './processes/ProcessRegistry.js';
+} from './processes/ProcessRegistry.ts';
 import type {
   EditorStateManager,
   EditorState,
-} from './server/states/EditorStateManager.js';
+} from './server/states/EditorStateManager.ts';
 import type {
   SpecEditorStateManager,
   SpecEditorState,
-} from './server/states/SpecEditorStateManager.js';
-import { createLogger } from './logger.js';
+} from './server/states/SpecEditorStateManager.ts';
+import { createLogger } from './logger.ts';
 
 const log = createLogger('state');
 

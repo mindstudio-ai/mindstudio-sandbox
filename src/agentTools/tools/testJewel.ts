@@ -1,5 +1,6 @@
-import { createLogger } from '../../logger.js';
-import type { ExternalToolHandler } from '../types.js';
+import { createLogger } from '../../logger.ts';
+import type { ExternalToolHandler } from '../types.ts';
+import type { TunnelCommandParams } from '../../devTunnel/protocol.ts';
 
 const log = createLogger('tool:testJewel');
 
@@ -13,7 +14,10 @@ export const testJewelTool: ExternalToolHandler = {
       );
       return true;
     }
-    const params: Record<string, unknown> = { method };
+    // `humanInput` and `subject` stay `unknown` in the protocol — they are the
+    // jewel's own input shape, which only the app knows — so passing them
+    // through unnarrowed is correct here, unlike `run-method`'s `roles`.
+    const params: TunnelCommandParams['test-jewel'] = { method };
     if (input.humanInput !== undefined) {
       params.humanInput = input.humanInput;
     }

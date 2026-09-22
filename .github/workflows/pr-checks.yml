@@ -35,9 +35,28 @@ jobs:
       # --ignore-scripts, which also means node-pty is NOT compiled here. That is fine and is the
       # point: typechecking needs @types/node-pty's declarations, never the native binding, and
       # node-pty ships no linux prebuild so a real install would cost a node-gyp build on every PR.
+      #
+      # esbuild's postinstall is skipped too, and the `build` step below DOES run esbuild
+      # (scripts/build-browser-agent.mjs). That still works: the platform binary ships inside the
+      # `@esbuild/<platform>` optional dependency, which npm installs regardless of --ignore-scripts,
+      # and esbuild's `generateBinPath()` resolves it from there. The postinstall only matters when
+      # that optional package is missing.
       - run: npm ci --ignore-scripts
 
       - run: npm run typecheck
+
+      # `build`, not only `typecheck`, because the build carries two gates the compiler cannot:
+      #
+      #  - scripts/assert-worker-standalone.mjs proves the dev method worker is still a single
+      #    self-contained file. It is copied alone into the user's project and forked from there, so
+      #    a sibling import in it is valid TypeScript that fails only at runtime — in a container, on
+      #    the method-execution path.
+      #  - scripts/build-browser-agent.mjs proves the in-page agent still bundles. The proxy serves
+      #    that artifact from dist and refuses to construct without it, so a bundle that does not
+      #    build is a dev box with no automation and no recording.
+      #
+      # publish.yml runs the build too, but that is after the merge that has already shipped.
+      - run: npm run build
 
   version-bumped:
     name: Version bumped

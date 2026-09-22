@@ -30,14 +30,14 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { createLogger } from '../logger.js';
-import { makeCounterEmitter } from '../bootProgress.js';
+import { createLogger } from '../logger.ts';
+import { makeCounterEmitter } from '../bootProgress.ts';
 import {
   getOnboardingState,
   isProjectOnboardingState,
   isProjectStatusInitialized,
   type ProjectOnboardingState,
-} from './ProjectStatusManager.js';
+} from './ProjectStatusManager.ts';
 
 const log = createLogger('snapshot');
 

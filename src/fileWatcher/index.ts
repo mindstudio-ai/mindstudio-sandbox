@@ -1,31 +1,31 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Config } from '../config.js';
-import type { BroadcastBatcher } from '../server/BroadcastBatcher.js';
-import type { EditorStateManager } from '../server/states/EditorStateManager.js';
-import type { FileTreeManager } from '../server/states/FileTreeManager.js';
-import type { SpecFileTreeManager } from '../server/states/SpecFileTreeManager.js';
-import type { SpecEditorStateManager } from '../server/states/SpecEditorStateManager.js';
-import type { LspSidecar } from '../lsp/sidecar.js';
+import type { Config } from '../config.ts';
+import type { BroadcastBatcher } from '../server/BroadcastBatcher.ts';
+import type { EditorStateManager } from '../server/states/EditorStateManager.ts';
+import type { FileTreeManager } from '../server/states/FileTreeManager.ts';
+import type { SpecFileTreeManager } from '../server/states/SpecFileTreeManager.ts';
+import type { SpecEditorStateManager } from '../server/states/SpecEditorStateManager.ts';
+import type { LspSidecar } from '../lsp/sidecar.ts';
 // AppConfig type removed — setupFileWatcher reads from ctx.appConfig directly
-import { ctx } from '../server/context.js';
-import { broadcast } from '../server/index.js';
-import { readAppConfig } from '../bootstrap/index.js';
-import { startWatcher } from './watcher.js';
+import { ctx } from '../server/context.ts';
+import { broadcast } from '../server/index.ts';
+import { readAppConfig } from '../bootstrap/index.ts';
+import { startWatcher } from './watcher.ts';
 export {
   stopWatcher,
   suppressPath,
   TREE_HIDDEN,
   TREE_HIDDEN_WATCHED,
   TREE_COLLAPSED,
-} from './watcher.js';
+} from './watcher.ts';
 import {
   getProjectStatus,
   reloadProjectStatus,
-} from '../projectStatus/ProjectStatusManager.js';
-import { readAgentStats } from '../processes/agent/agentStats.js';
-import { readAppBrand } from '../projectStatus/appBrand.js';
-import { createLogger } from '../logger.js';
+} from '../projectStatus/ProjectStatusManager.ts';
+import { readAgentStats } from '../processes/agent/agentStats.ts';
+import { readAppBrand } from '../projectStatus/appBrand.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('fileWatcher');
 

@@ -11,7 +11,7 @@
  */
 
 import path from 'node:path';
-import type { AppConfig } from '../../types.js';
+import type { AppConfig } from '../../types.ts';
 
 export interface EditorTab {
   path: string;

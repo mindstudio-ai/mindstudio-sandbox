@@ -2,7 +2,7 @@
  * Centralized structured logger with level filtering and event hooks.
  *
  * Usage:
- *   import { createLogger } from './logger.js';
+ *   import { createLogger } from './logger.ts';
  *   const log = createLogger('my-module');
  *   log.info('Server started');
  *   log.info('Tool resolved', { requestId: 'ac-4', toolCallId: 'toolu_abc' });

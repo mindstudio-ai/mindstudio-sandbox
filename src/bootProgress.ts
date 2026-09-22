@@ -15,7 +15,7 @@
  * to work without this and simply get better with it.
  */
 
-import { createLogger } from './logger.js';
+import { createLogger } from './logger.ts';
 
 /** Phases the boot already has. Ordered; the overlay renders them in this order. */
 export type BootPhaseId =

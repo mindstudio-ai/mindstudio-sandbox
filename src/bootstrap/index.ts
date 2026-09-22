@@ -3,17 +3,17 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Config } from '../config.js';
-import type { AppConfig } from '../types.js';
-import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import { createLogger } from '../logger.js';
-import { bootPhase } from '../bootProgress.js';
-import { loadJsonConfigFile } from '../utils/jsonConfig.js';
+import type { Config } from '../config.ts';
+import type { AppConfig } from '../types.ts';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.ts';
+import { createLogger } from '../logger.ts';
+import { bootPhase } from '../bootProgress.ts';
+import { loadJsonConfigFile } from '../utils/jsonConfig.ts';
 import {
   findGlobalPackage,
   HOME_GLOBAL_NODE_MODULES,
   IMAGE_GLOBAL_NODE_MODULES,
-} from '../utils/globalPackages.js';
+} from '../utils/globalPackages.ts';
 import {
   run,
   runAsync,
@@ -22,7 +22,7 @@ import {
   globalTscMajor,
   installFromSource,
   setRegistry,
-} from './helpers.js';
+} from './helpers.ts';
 
 const log = createLogger('bootstrap');
 
@@ -46,40 +46,6 @@ export function setBootstrapRegistry(r: ProcessRegistry): void {
 // ---------------------------------------------------------------------------
 // Binary installers
 // ---------------------------------------------------------------------------
-
-export async function installTunnel(
-  progress: ProgressFn,
-): Promise<ToolingInstall> {
-  const devBranch = process.env['TUNNEL_DEV_BRANCH'];
-
-  if (!devBranch && isInstalled('mindstudio-local')) {
-    progress('installTunnel', 'Already installed, skipping');
-    log.info('mindstudio-local already installed, skipping');
-    return { fromImage: true };
-  }
-
-  if (devBranch) {
-    progress(
-      'installTunnel',
-      `Installing tunnel from source (${devBranch})...`,
-    );
-    installFromSource({
-      repoUrl:
-        'https://github.com/mindstudio-ai/mindstudio-local-model-tunnel.git',
-      branch: devBranch,
-      tmpDir: '/tmp/mindstudio-local-tunnel',
-      label: 'tunnel',
-    });
-  } else {
-    progress('installTunnel', 'Installing mindstudio-local tunnel...');
-    run('npm install -g @mindstudio-ai/local-model-tunnel', {
-      label: 'npm install -g @mindstudio-ai/local-model-tunnel',
-    });
-  }
-
-  verifyInstalled('mindstudio-local');
-  return { fromImage: false };
-}
 
 export async function installAgent(
   progress: ProgressFn,
@@ -218,36 +184,6 @@ export async function installLsp(
 // ---------------------------------------------------------------------------
 // Workspace setup
 // ---------------------------------------------------------------------------
-
-export async function writeTunnelConfig(config: Config): Promise<void> {
-  const configDir = path.join(os.homedir(), '.mindstudio-local-tunnel');
-  const configPath = path.join(configDir, 'config.json');
-  log.debug(`Writing tunnel config to ${configPath}`);
-
-  await fs.mkdir(configDir, { recursive: true });
-
-  const configData = {
-    environment: 'prod',
-    environments: {
-      prod: {
-        apiBaseUrl: config.apiBaseUrl,
-        apiKey: config.apiKey,
-        userId: config.userId,
-      },
-      local: {
-        apiBaseUrl: 'http://localhost:3129',
-      },
-    },
-    providerBaseUrls: {},
-    providerInstallPaths: {},
-    localInterfaces: {},
-  };
-
-  await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
-  log.info(
-    `Tunnel config written (apiBaseUrl=${config.apiBaseUrl}, userId=${config.userId})`,
-  );
-}
 
 /** Clone the app's repo into an empty workspace (an app with no snapshot yet). */
 export async function cloneAppRepo(

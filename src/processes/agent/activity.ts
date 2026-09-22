@@ -7,7 +7,7 @@
  * actions.ts (WS actions) can import freely.
  */
 
-import type { ModelOverride, QueuedMessage } from './events.js';
+import type { ModelOverride, QueuedMessage } from './events.ts';
 
 // ---------------------------------------------------------------------------
 // Types

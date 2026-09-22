@@ -13,14 +13,14 @@ import net from 'node:net';
 import { URL } from 'node:url';
 import httpProxy from 'http-proxy';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { WsEvent, ServerStatus } from '../types.js';
-import { ctx } from './context.js';
-import { HmrRelay, HmrRelayManager } from './HmrRelay.js';
-import { createHttpHandler } from './httpRoutes.js';
-import { createLspConnectionHandler } from './lspBridge.js';
-import { createCncConnectionHandler } from './cncConnection.js';
-import { startCncHeartbeat } from './cncHeartbeat.js';
-import { createLogger } from '../logger.js';
+import type { WsEvent, ServerStatus } from '../types.ts';
+import { ctx } from './context.ts';
+import { HmrRelay, HmrRelayManager } from './HmrRelay.ts';
+import { createHttpHandler } from './httpRoutes.ts';
+import { createLspConnectionHandler } from './lspBridge.ts';
+import { createCncConnectionHandler } from './cncConnection.ts';
+import { startCncHeartbeat } from './cncHeartbeat.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('ws-server');
 
@@ -65,11 +65,30 @@ export function closeLspClients(code: number, reason: string): void {
   }
 }
 
-/** Set the tunnel proxy port for reverse proxying preview/HMR traffic. */
+/**
+ * Set the tunnel proxy port for reverse proxying preview/HMR traffic.
+ *
+ * Called on every `session-started`, which is usually a RESTART rather than a
+ * new port: the tunnel reuses its `DevProxy` across restarts and keeps the same
+ * listener, so `port` is normally unchanged. Hence the early return — tearing
+ * down every HMR relay dropped the hot-reload socket in every open preview on
+ * each config change, for nothing. Rebuilding the `http-proxy` instance is also
+ * pointless when the target is identical.
+ */
 export function setProxyTarget(port: number): void {
+  if (proxy && proxyTarget === port) {
+    return;
+  }
   proxyTarget = port;
+  // Only on a real target change: these relays hold a socket to the OLD port,
+  // so they cannot survive it. Browsers reconnect.
   hmrRelayManager.destroyAll();
   if (proxy) {
+    // Note this does NOT close in-flight connections: http-proxy's close() only
+    // closes its own `_server`, which is null unless you called `.listen()` on
+    // it — and we never do, since we drive it per-request via `proxy.web()`.
+    // Requests already in flight keep this instance and the old target and
+    // finish against it.
     proxy.close();
   }
   proxy = httpProxy.createProxyServer({

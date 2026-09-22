@@ -22,9 +22,9 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { ProcessRegistry } from '../processes/ProcessRegistry.js';
-import { attachLineHandler } from '../processes/lineSplitter.js';
-import { createLogger } from '../logger.js';
+import type { ProcessRegistry } from '../processes/ProcessRegistry.ts';
+import { attachLineHandler } from '../processes/lineSplitter.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('lsp/client');
 

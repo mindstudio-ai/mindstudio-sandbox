@@ -7,10 +7,10 @@
  */
 
 import * as pty from 'node-pty';
-import type { ProcessRegistry } from '../../processes/ProcessRegistry.js';
-import type { BroadcastBatcher } from '../BroadcastBatcher.js';
-import { generateId } from '../../utils/paths.js';
-import { createLogger } from '../../logger.js';
+import type { ProcessRegistry } from '../../processes/ProcessRegistry.ts';
+import type { BroadcastBatcher } from '../BroadcastBatcher.ts';
+import { generateId } from '../../utils/paths.ts';
+import { createLogger } from '../../logger.ts';
 
 const log = createLogger('pty');
 

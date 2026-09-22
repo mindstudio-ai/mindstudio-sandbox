@@ -1,5 +1,5 @@
-import { createLogger } from '../../logger.js';
-import type { ExternalToolHandler } from '../types.js';
+import { createLogger } from '../../logger.ts';
+import type { ExternalToolHandler } from '../types.ts';
 
 const log = createLogger('tool:queryDatabase');
 

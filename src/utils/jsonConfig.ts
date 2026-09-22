@@ -24,12 +24,12 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createLogger } from '../logger.js';
+import { createLogger } from '../logger.ts';
 // Imported from the watcher leaf, NOT `fileWatcher/index.js`: that barrel
 // imports readAppConfig from bootstrap, and bootstrap imports this module.
-import { suppressPath } from '../fileWatcher/watcher.js';
-import { withFileLock } from './fileLock.js';
-import { msg, parseJsonConfig, type ParseResult } from './parseJsonConfig.js';
+import { suppressPath } from '../fileWatcher/watcher.ts';
+import { withFileLock } from './fileLock.ts';
+import { msg, parseJsonConfig, type ParseResult } from './parseJsonConfig.ts';
 
 // Re-exported so existing importers of this module keep working unchanged.
 export { parseJsonConfig, type ParseResult };

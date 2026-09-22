@@ -1,8 +1,8 @@
 import fsSync from 'node:fs';
 import path from 'node:path';
-import { createLogger } from '../../logger.js';
-import { parseJsonConfig } from '../../utils/jsonConfig.js';
-import type { ExternalToolHandler } from '../types.js';
+import { createLogger } from '../../logger.ts';
+import { parseJsonConfig } from '../../utils/jsonConfig.ts';
+import type { ExternalToolHandler } from '../types.ts';
 
 const log = createLogger('tool:setProjectMetadata');
 

@@ -1,25 +1,43 @@
 /**
- * Tunnel process — manages the mindstudio-local dev tunnel.
+ * Tunnel process — manages the dev tunnel child (`src/devTunnel/`, this
+ * package's second bin).
  *
  * Handles startup config, stdout event parsing, and WS action handlers.
  * Uses requestId-based correlation for all stdin commands.
  */
 
 import { randomBytes } from 'node:crypto';
-import type { ProcessManager } from '../ProcessManager.js';
-import { getAgentActivity } from '../agent/activity.js';
-import { parseTunnelMessage } from './events.js';
-import type { TunnelEvent } from './events.js';
-import { createLogger } from '../../logger.js';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { ProcessManager } from '../ProcessManager.ts';
+import { getAgentActivity } from '../agent/activity.ts';
+import { parseJsonEvent } from '../parseJsonEvent.ts';
+import { createLogger } from '../../logger.ts';
+// The tunnel owns the protocol it speaks; this side imports it rather than
+// keeping a copy. A hand-written mirror used to live in ./events.ts, and the
+// three fields it had wrong — `branch`, `platform-method-started.method`, and
+// the browser state's nullability — are why it does not any more.
+import type {
+  BrowserStep,
+  SandboxBrowserStateEvent,
+  TunnelAction,
+  TunnelCommandParams,
+  TunnelCommandResult,
+  TunnelEvent,
+  TunnelMessage,
+} from '../../devTunnel/protocol.ts';
 
 const log = createLogger('tunnel');
+
+/** Parse a stdout line as a tunnel message (system event or command response). */
+const parseTunnelMessage = (line: string) =>
+  parseJsonEvent<TunnelMessage>(line);
 
 type ActionHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
 export interface TunnelSessionState {
   sessionId: string;
   releaseId: string;
-  branch: string;
   proxyPort: number | null;
   proxyUrl: string | null;
 }
@@ -282,35 +300,82 @@ export interface TunnelCallbacks {
   broadcast: (event: string, data: Record<string, any>) => void;
 }
 
+/**
+ * The tunnel's built entry, resolved relative to THIS module rather than looked
+ * up on PATH.
+ *
+ * That is deliberate and load-bearing. The tunnel ships as a second bin of this
+ * same package (`remy-tunnel`), so PATH would find it — but `CNC_DEV_BRANCH`
+ * builds this server from a branch into /tmp and runs it from there, while
+ * /usr/local/bin/remy-tunnel is still the copy baked into the image. A PATH
+ * lookup would pair a branch C&C with a released tunnel and quietly test a
+ * combination nobody asked about. Resolving off `import.meta.url` means one
+ * branch name gets a matched pair, which the old two-package arrangement could
+ * not guarantee.
+ *
+ * `'../../devTunnel/cli.js'` is a RUNTIME PATH, not an import specifier: it
+ * names the emitted file, and must keep the `.js` even though every *import* in
+ * this repo now names its `.ts` source. It also means `npm run dev` (tsx) needs
+ * a `npm run build` first — see the check below.
+ */
+const TUNNEL_ENTRY = fileURLToPath(
+  new URL('../../devTunnel/cli.js', import.meta.url),
+);
+
 export function startTunnel(
   pm: ProcessManager,
-  config: { workspaceDir: string; devPort: number },
+  config: {
+    workspaceDir: string;
+    devPort: number;
+    apiKey: string;
+    apiBaseUrl: string;
+    userId: string;
+  },
   callbacks: TunnelCallbacks,
 ): void {
   broadcastFn = callbacks.broadcast;
+
+  if (!existsSync(TUNNEL_ENTRY)) {
+    // Almost always `npm run dev` without a prior build: tsx compiles THIS file
+    // on the fly, so import.meta.url points into src/ where only cli.ts exists.
+    // tsx's loader rides process.execArgv and is not inherited by a child
+    // spawned as `node <script>`, so pointing at the .ts would not help.
+    throw new Error(
+      `Dev tunnel entry not found at ${TUNNEL_ENTRY}. ` +
+        'Run `npm run build` once before `npm run dev` — the tunnel child is ' +
+        'spawned from dist/.',
+    );
+  }
+
   pm.start({
     name: 'tunnel',
-    command: 'mindstudio-local',
+    command: process.execPath,
     args: [
-      '--headless',
+      TUNNEL_ENTRY,
       '--port',
       String(config.devPort),
-      '--bind',
-      '0.0.0.0',
       // Opt in to sandbox-hosted headless Chrome. Tunnel supervises it,
       // prefers it over user-connected browsers for automation commands,
       // and falls through to the user-browser path if Chrome isn't
       // available in the container.
       '--sandbox-browser',
-      // Which of this person's two dev workspaces the platform files this session under: the box,
-      // not their laptop. Without it a developer with a local `mindstudio dev` running would share
-      // one dev release, one data plane and one poll queue with their box, and the two would race
-      // for every request. See `getDevRelease` in youai-api.
-      '--dev-origin',
-      'sandbox',
       '--log-level',
       'info',
     ],
+    // Credentials go on the environment, NOT argv. ProcessManager logs the full
+    // command line, stores it as ProcessInfo.command, and serves that to the
+    // editor in the process list — so an `--api-key` flag is a broadcast
+    // channel. The tunnel reads these in devTunnel/config.ts.
+    //
+    // DB_WS_URL is deliberately absent: the container already sets it when the
+    // platform has one, we inherit it, and the child inherits it from us.
+    // Naming it here with a fallback is how a box ends up pointing its database
+    // calls somewhere its auth token is not valid for.
+    env: {
+      MINDSTUDIO_API_KEY: config.apiKey,
+      MINDSTUDIO_BASE_URL: config.apiBaseUrl,
+      USER_ID: config.userId,
+    },
     cwd: config.workspaceDir,
     stdin: true,
     restartOnCrash: true,
@@ -329,29 +394,53 @@ let requestCounter = 0;
 const pending = new Map<
   string,
   {
-    resolve: (response: Record<string, unknown>) => void;
+    resolve: (response: TunnelCommandResult[TunnelAction]) => void;
     timer: ReturnType<typeof setTimeout>;
   }
 >();
 
-/** Send a command to the tunnel and wait for the correlated response. */
-export function sendCommand(
+/**
+ * Send a command to the tunnel and wait for the correlated response.
+ *
+ * Generic over the action, so the params and the resolved result are both the
+ * ones that action actually declares (`devTunnel/protocol.ts`). Every call site
+ * passes a literal action and none forwards one supplied by a client, so this
+ * is checked end to end rather than being a type that looks reassuring.
+ *
+ * The two local failure shapes below — a dead tunnel and a timeout — are
+ * `CommandFailure`, which is a member of every action's result union, so they
+ * need no cast.
+ */
+export function sendCommand<A extends TunnelAction>(
   pm: ProcessManager,
-  action: string,
-  params?: Record<string, unknown>,
+  action: A,
+  params?: TunnelCommandParams[A],
   timeoutMs = 30_000,
-): Promise<Record<string, unknown>> {
+): Promise<TunnelCommandResult[A]> {
+  // `CommandFailure` is a member of every action's result union, but TS cannot
+  // prove that of an indexed access on an unresolved `A`, so the two local
+  // failures below need this. One helper rather than two inline casts, so the
+  // reason is stated once.
+  const failure = (error: string): TunnelCommandResult[A] =>
+    ({ success: false, error }) as TunnelCommandResult[A];
+
   if (pm.getState('tunnel') !== 'running') {
-    return Promise.resolve({ success: false, error: 'tunnel not running' });
+    return Promise.resolve(failure('tunnel not running'));
   }
   const requestId = `tc-${++requestCounter}`;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(requestId);
-      resolve({ success: false, error: `timeout (${timeoutMs / 1000}s)` });
+      resolve(failure(`timeout (${timeoutMs / 1000}s)`));
     }, timeoutMs);
 
-    pending.set(requestId, { resolve, timer });
+    pending.set(requestId, {
+      // The pending map is keyed by requestId across every action, so it cannot
+      // be typed per-action. The response we hand back IS this action's result:
+      // the requestId that carries it was minted for this call.
+      resolve: resolve as (r: TunnelCommandResult[TunnelAction]) => void,
+      timer,
+    });
     pm.writeStdin('tunnel', JSON.stringify({ requestId, action, ...params }));
   });
 }
@@ -393,7 +482,10 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       }
       pending.delete(msg.requestId as string);
       clearTimeout(entry.timer);
-      entry.resolve(msg as Record<string, unknown>);
+      // The framing (`event`/`requestId`/`status`) is stripped by the cast:
+      // callers get the result the action declared, and the correlation fields
+      // were only ever for routing it here.
+      entry.resolve(msg as TunnelCommandResult[TunnelAction]);
     } else {
       log.debug(`No pending resolver for requestId=${msg.requestId}`, {
         requestId: msg.requestId as string,
@@ -422,15 +514,9 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       });
       break;
     case 'session-started': {
-      const { sessionId, releaseId, branch, proxyPort, proxyUrl } = tunnelEvent;
+      const { sessionId, releaseId, proxyPort, proxyUrl } = tunnelEvent;
       log.info('Session started', { proxyPort, sessionId });
-      cb.onSessionStarted({
-        sessionId,
-        releaseId,
-        branch,
-        proxyPort,
-        proxyUrl,
-      });
+      cb.onSessionStarted({ sessionId, releaseId, proxyPort, proxyUrl });
       break;
     }
     case 'session-stopping':
@@ -481,16 +567,27 @@ function handleStdout(line: string, cb: TunnelCallbacks): void {
       log.info('Connection restored');
       break;
     case 'config-changed':
-      log.info('Config changed — session restarting');
+      log.info('Config changed — session restarting', {
+        path: tunnelEvent.path,
+      });
       break;
     case 'config-error':
       log.warn('Config error', { message: tunnelEvent.message });
       break;
+    // The tunnel booted, or restarted, without a usable mindstudio.json and is
+    // retrying on a timer. Worth a log line: a degraded tunnel used to reach
+    // the editor only through the generic `tunnelEvent` broadcast, so the C&C's
+    // own log said nothing at all about why no session ever appeared.
+    case 'degraded-state':
+      log.warn('Tunnel degraded', { reason: tunnelEvent.reason });
+      break;
+    case 'degraded-state-resolved':
+      log.info('Tunnel recovered from degraded state', {
+        appId: tunnelEvent.appId,
+      });
+      break;
     case 'sandbox-browser-state':
       handleSandboxBrowserState(tunnelEvent, cb);
-      break;
-    case 'error':
-      log.error('Tunnel error', { message: tunnelEvent.message });
       break;
   }
 }
@@ -553,7 +650,11 @@ function handleSandboxBrowserState(
       next.state = 'degraded';
       next.pid = null;
       next.degradedReason = event.reason;
-      if (typeof event.consecutiveFailures === 'number') {
+      // Narrowed on `reason`, not on `typeof event.consecutiveFailures`: only
+      // the repeated-crashes variant carries a count, and saying so through the
+      // discriminant means the compiler proves the field is there instead of
+      // the code testing whether it turned up.
+      if (event.reason === 'repeated-crashes') {
         next.consecutiveFailures = event.consecutiveFailures;
       }
       cb.onSandboxBrowserPid(null);
@@ -624,7 +725,11 @@ export function createTunnelActions(
       );
     },
     tunnelBrowser: async (p) => {
-      const { steps } = p as { steps: unknown[] };
+      // The editor supplies these over WS, so they are unknown until checked.
+      // `BrowserStep` keeps an index signature for exactly this: the tunnel
+      // validates each step's `command` itself, and this side must not have to
+      // grow a case per browser verb to pass one through.
+      const { steps } = p as { steps?: BrowserStep[] };
       if (!steps) {
         throw new Error('Missing "steps" parameter');
       }

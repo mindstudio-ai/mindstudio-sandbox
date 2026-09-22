@@ -4,8 +4,8 @@
 
 import { createRequire } from 'node:module';
 
-import { createLogger } from '../logger.js';
-import { findGlobalPackage } from '../utils/globalPackages.js';
+import { createLogger } from '../logger.ts';
+import { findGlobalPackage } from '../utils/globalPackages.ts';
 
 const log = createLogger('versions');
 
@@ -23,11 +23,17 @@ interface BinaryInfo {
   devBranch: string | null;
 }
 
+/**
+ * No entry for the dev tunnel: it is part of this package now, so `sandbox`
+ * above IS its version. It used to be `mindstudioLocal`, a separately published
+ * `@mindstudio-ai/local-model-tunnel` looked up in the global node_modules —
+ * reporting it separately now would either duplicate `sandbox` or, worse, go on
+ * reading a stale globally-installed copy that nothing runs.
+ */
 interface Versions {
   node: string;
   sandbox: string;
   remy: BinaryInfo;
-  mindstudioLocal: BinaryInfo;
   agentSdk: BinaryInfo;
   typescriptLanguageServer: BinaryInfo;
 }
@@ -38,10 +44,6 @@ const cached: Versions = {
   remy: {
     version: 'unknown',
     devBranch: process.env['AGENT_DEV_BRANCH'] ?? null,
-  },
-  mindstudioLocal: {
-    version: 'unknown',
-    devBranch: process.env['TUNNEL_DEV_BRANCH'] ?? null,
   },
   agentSdk: {
     version: 'unknown',
@@ -64,9 +66,6 @@ const versionOf = (pkg: string): string =>
  */
 export async function cacheVersions(): Promise<void> {
   cached.remy.version = versionOf('@mindstudio-ai/remy');
-  cached.mindstudioLocal.version = versionOf(
-    '@mindstudio-ai/local-model-tunnel',
-  );
   cached.agentSdk.version = versionOf('@mindstudio-ai/agent');
   cached.typescriptLanguageServer.version = versionOf(
     'typescript-language-server',

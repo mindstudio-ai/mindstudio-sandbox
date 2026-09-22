@@ -8,9 +8,43 @@
     "strict": true,
     "esModuleInterop": true,
     "types": ["node"],
-    "declaration": true,
     "sourceMap": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+
+    // Relative imports name the file that actually exists — './foo.ts', not
+    // './foo.js' — and tsc rewrites the specifier to '.js' on emit. The older
+    // NodeNext convention of writing an extension for a file that isn't there
+    // is what this replaces; `allowImportingTsExtensions` is what permits it
+    // and is only legal alongside the rewrite (diagnostic 5096).
+    //
+    // NO `declaration`: it is deliberately off. The rewrite above does NOT
+    // apply to declaration emit — a '.d.ts' would ship `from './foo.ts'`,
+    // pointing at a file `files: ["dist"]` doesn't publish. This package is
+    // bin-only (no `main`, no `types`, no `exports`, no library consumers), so
+    // declarations were dead weight anyway. Anything that needs types from here
+    // should import the source.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    // Forces `import type` to be written explicitly. Load-bearing for
+    // devTunnel/execution/worker.ts, which is copied into the user's project as
+    // a single standalone file: a value import of a sibling would break it at
+    // fork time, and this makes such an import visible in the diff rather than
+    // silently erased-or-not by the compiler.
+    "verbatimModuleSyntax": true
+
+    // `erasableSyntaxOnly` is deliberately NOT set. It would mean rewriting the
+    // ~13 constructor parameter properties under devTunnel/, and the only thing
+    // it buys is running these sources under `node --experimental-strip-types`
+    // — which `tsx` already covers for the dev loop, and which a box never
+    // needs (it always runs built output). Revisit if `tsx` ever goes.
   },
-  "include": ["src"]
+  "include": ["src"],
+
+  // `src/browserAgent` is a separate program — see `tsconfig.browser.json`. It is
+  // browser code, bundled by esbuild rather than emitted by tsc, and its imports
+  // are extensionless (legal under `moduleResolution: "bundler"`, an error under
+  // the NodeNext resolution above). Excluding it is what lets the two coexist.
+  // `npm run typecheck` runs both.
+  "exclude": ["src/browserAgent"]
 }

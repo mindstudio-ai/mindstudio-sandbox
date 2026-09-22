@@ -6,10 +6,10 @@
  * activity.ts; WS action handlers live in actions.ts.
  */
 
-import type { ProcessManager } from '../ProcessManager.js';
-import { parseAgentMessage } from './events.js';
-import type { QueuedMessage } from './events.js';
-import { transformHistory } from './history.js';
+import type { ProcessManager } from '../ProcessManager.ts';
+import { parseAgentMessage } from './events.ts';
+import type { QueuedMessage } from './events.ts';
+import { transformHistory } from './history.ts';
 import {
   broadcastActivity,
   getQueuedMessages,
@@ -30,18 +30,18 @@ import {
   addServerHandledToolId,
   isServerHandledToolId,
   deleteServerHandledToolId,
-} from './activity.js';
-import { createLogger } from '../../logger.js';
+} from './activity.ts';
+import { createLogger } from '../../logger.ts';
 
 const log = createLogger('agent');
 
 // Re-export types and functions used by external consumers
-export { getAgentActivity } from './activity.js';
+export { getAgentActivity } from './activity.ts';
 export type {
   AgentActivity,
   AgentFileOp,
   AgentFileAction,
-} from './activity.js';
+} from './activity.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -207,16 +207,16 @@ export function startAgent(
     // Sep 2026, so the flag stopped meaning anything. remy still tolerates it
     // (unrecognized args are ignored), which is what let this drop land
     // without pinning the devbox image to a remy version.
-    args: [
-      '--api-key',
-      config.apiKey,
-      '--base-url',
-      config.apiBaseUrl,
-      '--lsp-url',
-      'http://localhost:4388',
-      '--log-level',
-      'debug',
-    ],
+    args: ['--lsp-url', 'http://localhost:4388', '--log-level', 'debug'],
+    // Credentials on the environment, not argv — remy's own config resolution
+    // reads both of these (flags → env → default), so this needs nothing on its
+    // side. They were `--api-key`/`--base-url`, and ProcessManager logs the full
+    // command line, keeps it as ProcessInfo.command, and serves that to the
+    // editor's process list, which put a live API key in three places at once.
+    env: {
+      MINDSTUDIO_API_KEY: config.apiKey,
+      MINDSTUDIO_BASE_URL: config.apiBaseUrl,
+    },
     cwd: config.workspaceDir,
     stdin: true,
     restartOnCrash: false,

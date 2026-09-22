@@ -1,0 +1,42 @@
+{
+  // The browser-agent subtree is a SECOND, separate TypeScript program. It is not
+  // part of the root `tsconfig.json` (which excludes `src/browserAgent`), and the
+  // two configs disagree on purpose:
+  //
+  //  - `moduleResolution: "bundler"` — these sources are never emitted by tsc.
+  //    `scripts/build-browser-agent.mjs` bundles them with esbuild into one IIFE,
+  //    so a specifier only has to resolve at BUILD time, not at runtime. That is
+  //    why the ~80 relative imports here are extensionless while every import
+  //    under `src/` names a `.ts` file: the root program emits real Node ESM and
+  //    needs `rewriteRelativeImportExtensions`, and this one has nothing to emit.
+  //
+  //  - `types: []` — the isolation that matters. Without it, tsc auto-includes
+  //    `@types/node` and this browser code could reference `process`, `Buffer` or
+  //    `__dirname` and typecheck clean, only to fail in a page. With it, those are
+  //    errors. The subtree is Node-free today (no `node:` imports, no `require`)
+  //    and this is what keeps it that way. `rrweb` and `@zumer/snapdom` are
+  //    unaffected — they ship their own types, resolved through their imports.
+  //
+  //  - `lib` is explicit rather than inherited. The root program's ES2022 target
+  //    resolves to `es2022.full`, which happens to include DOM; relying on that
+  //    would mean browser code's DOM access depended on a Node program's target.
+  //
+  //  - No `verbatimModuleSyntax`. It is load-bearing in the root program for the
+  //    forked method worker (see `scripts/assert-worker-standalone.mjs`) and means
+  //    nothing here, where everything is bundled.
+  //
+  // `noEmit` because esbuild owns the output. This config exists to TYPECHECK;
+  // `npm run typecheck` runs both programs.
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/browserAgent"]
+}

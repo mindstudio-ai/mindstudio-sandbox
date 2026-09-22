@@ -1,12 +1,12 @@
 import { WebSocket } from 'ws';
-import type { WsRequest, WsResponse } from '../types.js';
-import { buildInitFrame, buildFallbackInitFrame } from './context.js';
-import { handlers } from './wsHandlers/index.js';
+import type { WsRequest, WsResponse } from '../types.ts';
+import { buildInitFrame, buildFallbackInitFrame } from './context.ts';
+import { handlers } from './wsHandlers/index.ts';
 import {
   getActiveTurnId,
   getActiveTurnModel,
-} from '../processes/agent/activity.js';
-import { createLogger } from '../logger.js';
+} from '../processes/agent/activity.ts';
+import { createLogger } from '../logger.ts';
 
 const log = createLogger('ws-server');
 

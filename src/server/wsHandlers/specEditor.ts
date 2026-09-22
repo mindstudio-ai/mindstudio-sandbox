@@ -1,5 +1,5 @@
-import { ctx } from '../context.js';
-import type { ActionHandler } from './index.js';
+import { ctx } from '../context.ts';
+import type { ActionHandler } from './index.ts';
 
 export const specEditorHandlers: Record<string, ActionHandler> = {
   specOpenFile: async (p) => {

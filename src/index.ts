@@ -5,13 +5,11 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, type Config } from './config.ts';
 import {
-  installTunnel,
   installAgent,
   installAgentSdk,
   installLsp,
-  writeTunnelConfig,
   cloneAppRepo,
   refreshGitRemote,
   configureGit,
@@ -20,24 +18,24 @@ import {
   installDependencies,
   ensureProdCli,
   setBootstrapRegistry,
-} from './bootstrap/index.js';
-import { ProcessRegistry } from './processes/ProcessRegistry.js';
-import { ProcessManager } from './processes/ProcessManager.js';
+} from './bootstrap/index.ts';
+import { ProcessRegistry } from './processes/ProcessRegistry.ts';
+import { ProcessManager } from './processes/ProcessManager.ts';
 import {
   startTunnel,
   createTunnelActions,
   failPendingCommands,
   sendCommand as sendTunnelCommand,
-} from './processes/tunnel/index.js';
+} from './processes/tunnel/index.ts';
 import {
   startAgent,
   sendAgentCommand,
   sendToolResult,
-} from './processes/agent/index.js';
-import { createAgentActions, quiesceAgent } from './processes/agent/actions.js';
-import { startDevServer } from './processes/devServer/index.js';
-import { ResourceMonitor } from './processes/ResourceMonitor.js';
-import { BroadcastBatcher } from './server/BroadcastBatcher.js';
+} from './processes/agent/index.ts';
+import { createAgentActions, quiesceAgent } from './processes/agent/actions.ts';
+import { startDevServer } from './processes/devServer/index.ts';
+import { ResourceMonitor } from './processes/ResourceMonitor.ts';
+import { BroadcastBatcher } from './server/BroadcastBatcher.ts';
 import {
   startServer,
   broadcast,
@@ -46,45 +44,45 @@ import {
   setProxyTarget,
   flushHmr,
   closeLspClients,
-} from './server/index.js';
-import { ctx } from './server/context.js';
-import { handlers } from './server/wsHandlers/index.js';
-import { EditorStateManager } from './server/states/EditorStateManager.js';
-import { FileTreeManager } from './server/states/FileTreeManager.js';
-import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.js';
-import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.js';
-import { LspClient } from './lsp/client.js';
-import { LspSidecar } from './lsp/sidecar.js';
-import { initFilesystem } from './server/wsHandlers/filesystem.js';
-import { initShell } from './server/wsHandlers/shell.js';
-import { initSearch, probeRipgrep } from './server/wsHandlers/search.js';
-import { initWorkspaceEdit } from './server/wsHandlers/workspaceEdit.js';
-import { initPty, closeAllPty } from './server/wsHandlers/pty.js';
-import { stopWatcher } from './fileWatcher/index.js';
+} from './server/index.ts';
+import { ctx } from './server/context.ts';
+import { handlers } from './server/wsHandlers/index.ts';
+import { EditorStateManager } from './server/states/EditorStateManager.ts';
+import { FileTreeManager } from './server/states/FileTreeManager.ts';
+import { SpecFileTreeManager } from './server/states/SpecFileTreeManager.ts';
+import { SpecEditorStateManager } from './server/states/SpecEditorStateManager.ts';
+import { LspClient } from './lsp/client.ts';
+import { LspSidecar } from './lsp/sidecar.ts';
+import { initFilesystem } from './server/wsHandlers/filesystem.ts';
+import { initShell } from './server/wsHandlers/shell.ts';
+import { initSearch, probeRipgrep } from './server/wsHandlers/search.ts';
+import { initWorkspaceEdit } from './server/wsHandlers/workspaceEdit.ts';
+import { initPty, closeAllPty } from './server/wsHandlers/pty.ts';
+import { stopWatcher } from './fileWatcher/index.ts';
 import {
   initState,
   restoreState,
   saveState,
   stopAutoSave,
   markDirty,
-} from './state.js';
-import { createLogger, onLog } from './logger.js';
-import { bootPhase } from './bootProgress.js';
-import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.js';
-import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.js';
-import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.js';
+} from './state.ts';
+import { createLogger, onLog } from './logger.ts';
+import { bootPhase } from './bootProgress.ts';
+import { HomeSnapshotManager } from './projectStatus/HomeSnapshotManager.ts';
+import { restoreFromLegacyDraft } from './projectStatus/legacyDraftRestore.ts';
+import { sendInitialBuildCompleteEmail } from './projectStatus/initialBuildEmail.ts';
 import {
   initProjectStatus,
   getProjectStatus,
   getOnboardingState,
   setOnboardingState,
   setOnboardingChangeListener,
-} from './projectStatus/ProjectStatusManager.js';
-import { readForkSource } from './projectStatus/forkDetection.js';
-import type { AppConfig } from './types.js';
-import { toolRegistry } from './agentTools/index.js';
-import { setupFileWatcher } from './fileWatcher/index.js';
-import { cacheVersions } from './server/versionCache.js';
+} from './projectStatus/ProjectStatusManager.ts';
+import { readForkSource } from './projectStatus/forkDetection.ts';
+import type { AppConfig } from './types.ts';
+import { toolRegistry } from './agentTools/index.ts';
+import { setupFileWatcher } from './fileWatcher/index.ts';
+import { cacheVersions } from './server/versionCache.ts';
 
 const log = createLogger('controller');
 
@@ -313,7 +311,13 @@ async function startServices(
   progress('tunnel', 'Starting dev tunnel...');
   startTunnel(
     processManager,
-    { workspaceDir: config.workspaceDir, devPort },
+    {
+      workspaceDir: config.workspaceDir,
+      devPort,
+      apiKey: config.apiKey,
+      apiBaseUrl: config.apiBaseUrl,
+      userId: config.userId,
+    },
     {
       onSessionStarted: (session) => {
         if (session.proxyPort != null) {
@@ -337,7 +341,7 @@ async function startServices(
 
   // Agent
   progress('agent', 'Starting coding agent...');
-  const toolContext: import('./agentTools/types.js').ToolContext = {
+  const toolContext: import('./agentTools/types.ts').ToolContext = {
     sendToolResult: (id, result) => sendToolResult(processManager, id, result),
     broadcast,
     getProjectStatus,
@@ -565,12 +569,13 @@ async function main(): Promise<void> {
     // against the home directory, so it has to run on the home directory the box ends up with.
     bootPhase('Preparing tooling', { phase: 'tooling', state: 'active' });
     const toolingStart = Date.now();
+    // No tunnel install: it is this package's own second bin now, so it is
+    // present whenever this file is.
     const tooling = await Promise.all([
-      installTunnel(progress),
       installAgent(progress),
       installLsp(progress),
     ]);
-    // `cached` only when every one of the three came from the image. Any install that actually ran
+    // `cached` only when every one of the two came from the image. Any install that actually ran
     // is a slower boot for a reason worth showing, so it must not be reported as free.
     const toolingFromImage = tooling.every((t) => t?.fromImage !== false);
     bootPhase(
@@ -582,7 +587,7 @@ async function main(): Promise<void> {
         state: 'done',
         cached: toolingFromImage,
         detail: toolingFromImage
-          ? '3 of 3 from the image'
+          ? '2 of 2 from the image'
           : `Installed in ${Date.now() - toolingStart}ms`,
       },
     );
@@ -630,7 +635,6 @@ async function main(): Promise<void> {
       // credential, which the platform has since revoked.
       refreshGitRemote(config);
     }
-    await writeTunnelConfig(config);
     configureGit(config.workspaceDir);
     ensureProdCli();
     fsSync.mkdirSync(managers.logsDir, { recursive: true });
