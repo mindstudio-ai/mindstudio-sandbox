@@ -23,6 +23,7 @@ import type { Socket } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createLogger } from '../logging/logger.ts';
 import { appendBrowserLogEntries } from '../logging/browser-log.ts';
+import { relayUpgrade } from '../../utils/httpRelay.ts';
 import type {
   BrowserStep,
   CommandResult,
@@ -447,14 +448,15 @@ export class DevProxy {
       this.handleWsConnection(ws, req as http.IncomingMessage),
     );
 
-    // Route upgrade requests: our WS path vs upstream HMR
+    // Route upgrade requests: our WS path vs upstream HMR, which is spliced
+    // through to the dev server (it checks `Host`; the relay rewrites it).
     server.on('upgrade', (req, socket, head) => {
       if (req.url === '/__mindstudio_dev__/ws') {
         this.wss!.handleUpgrade(req, socket as Socket, head, (ws) => {
           this.wss!.emit('connection', ws, req);
         });
       } else {
-        this.handleUpstreamUpgrade(req, socket as Socket, head);
+        relayUpgrade(req, socket as Socket, head, this.upstreamPort);
       }
     });
 
@@ -1945,59 +1947,5 @@ export class DevProxy {
       return html.replace('</head>', `${injection}\n</head>`);
     }
     return injection + '\n' + html;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Upstream WebSocket forwarding (HMR etc.)
-  // ---------------------------------------------------------------------------
-
-  private handleUpstreamUpgrade(
-    clientReq: http.IncomingMessage,
-    clientSocket: Socket,
-    head: Buffer,
-  ): void {
-    const options: http.RequestOptions = {
-      hostname: '127.0.0.1',
-      port: this.upstreamPort,
-      path: clientReq.url,
-      method: clientReq.method,
-      headers: { ...clientReq.headers, host: `localhost:${this.upstreamPort}` },
-    };
-
-    const upstreamReq = http.request(options);
-
-    upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upgradeHead) => {
-      // Send the 101 response back to the client
-      let responseHead = `HTTP/${upstreamRes.httpVersion} ${upstreamRes.statusCode} ${upstreamRes.statusMessage}\r\n`;
-      for (let i = 0; i < upstreamRes.rawHeaders.length; i += 2) {
-        responseHead += `${upstreamRes.rawHeaders[i]}: ${upstreamRes.rawHeaders[i + 1]}\r\n`;
-      }
-      responseHead += '\r\n';
-
-      clientSocket.write(responseHead);
-
-      if (upgradeHead.length > 0) {
-        clientSocket.write(upgradeHead);
-      }
-      if (head.length > 0) {
-        upstreamSocket.write(head);
-      }
-
-      // Pipe both directions
-      upstreamSocket.pipe(clientSocket);
-      clientSocket.pipe(upstreamSocket);
-
-      // Clean up on close
-      clientSocket.on('close', () => upstreamSocket.destroy());
-      upstreamSocket.on('close', () => clientSocket.destroy());
-      clientSocket.on('error', () => upstreamSocket.destroy());
-      upstreamSocket.on('error', () => clientSocket.destroy());
-    });
-
-    upstreamReq.on('error', () => {
-      clientSocket.destroy();
-    });
-
-    upstreamReq.end();
   }
 }

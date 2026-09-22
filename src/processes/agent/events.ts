@@ -1,4 +1,5 @@
 import { parseJsonEvent } from '../parseJsonEvent.ts';
+import type { RecordingChunkRef } from '../../devTunnel/protocol.ts';
 
 // ---------------------------------------------------------------------------
 // Agent stdout event types
@@ -234,6 +235,13 @@ export type AgentStreamEvent =
       isError?: boolean;
       requestId?: string;
       parentToolId?: string;
+      /**
+       * A browser-test replay chunk. This shape ORIGINATES here — the tunnel's
+       * `browser` result attaches it, remy lifts it off the result string so
+       * the history cap cannot lose it, and the editor renders it. Declared so
+       * the loop closes on a type rather than on the spread that carries it.
+       */
+      recording?: RecordingChunkRef;
     }
   | {
       event: 'tool_stopped';
@@ -333,8 +341,12 @@ export interface AgentCompletedEvent {
   requestId?: string;
   success: boolean;
   error?: string;
+  /** Wall-clock length of a successful turn. The editor shows it. */
+  durationMs?: number;
   /** True for a merged-away requestId's synthetic terminal (see above). */
   absorbed?: boolean;
+  /** True on the immediate ack of a message that queued behind a running turn. */
+  queued?: boolean;
   /**
    * On a `cancel` command's completed, the background follow-ups dropped by the
    * stop (they were context for the turn being killed). Typed for completeness;
@@ -355,28 +367,15 @@ export interface AgentCompletedEvent {
    * decide whether to drop the project out of onboarding.
    */
   pausedPipeline?: boolean;
+  /** On a `cancel` command's completed: the stop also cancelled a compaction in flight. */
+  cancelledCompaction?: boolean;
   /**
    * On a `cancelQueued` command's completed, the pending user messages removed
    * (the matched items; [] if nothing matched).
    */
   cancelledQueued?: QueuedMessage[];
-  /**
-   * The model that actually served the request. Useful for confirming a
-   * changeModels pick took effect and for a "running on X" debug banner.
-   */
-  modelId?: string;
-  /**
-   * Per-turn usage stats from the provider. Schema is provider-agnostic
-   * for the fields we surface; cacheReadTokens now available on both
-   * Anthropic and OpenAI. Pass-through — frontend owns rendering.
-   */
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-    [key: string]: unknown;
-  };
+  // No `modelId` or `usage`: remy never puts turn stats on the wire — they go
+  // to `.remy-stats.json`. Both were declared here for years and never arrived.
 }
 
 export type AgentEvent =

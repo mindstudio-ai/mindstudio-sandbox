@@ -35,7 +35,6 @@
     "@typescript/typescript6": "^6.0.2",
     "chokidar": "^5.0.0",
     "esbuild": "^0.28.0",
-    "http-proxy": "^1.18.1",
     "json5": "^2.2.3",
     "node-pty": "^1.1.0",
     "puppeteer-core": "^24.42.0",
@@ -45,7 +44,6 @@
   "//browser-agent deps": "`rrweb` and `@zumer/snapdom` are the browser agent's only external imports, and they are devDependencies ON PURPOSE: scripts/build-browser-agent.mjs inlines them into dist/browserAgent/index.js, so they are build-time inputs rather than runtime ones and the published package's dependency tree does not carry them. A box installs neither.",
   "//rrweb pin": "EXACT versions, no caret, and rrweb especially. The old browser-agent repo asked for `^2.0.0-alpha.4` and was held at alpha.4 only by its lockfile; installing that same range fresh here resolved rrweb 2.1.6, because a caret on a prerelease still admits the whole 2.x stable line. That would have swapped the recording engine underneath replay as a side effect of moving files. The event format is a cross-repo contract — the editor's rrweb player and youai-api's common/Recordings/stitch.ts both read these events — so an rrweb upgrade needs to be its own deliberate, tested change. Pinning makes the bundle reproducible and byte-comparable to what unpkg serves.",
   "devDependencies": {
-    "@types/http-proxy": "^1.17.17",
     "@types/node": "^25.0.0",
     "@types/ws": "^8.5.0",
     "@zumer/snapdom": "2.24.10",

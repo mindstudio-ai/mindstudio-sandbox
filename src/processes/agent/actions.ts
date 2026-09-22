@@ -33,7 +33,7 @@ export function createAgentActions(
   return {
     // User sends a message to the agent
     agentMessage: async (p) => {
-      const { text, attachments, viewContext, buildModel } = p as {
+      const { text, attachments, buildModel } = p as {
         text: string;
         attachments?: Array<{
           url: string;
@@ -43,7 +43,6 @@ export function createAgentActions(
           durationMs?: number;
           isVoice?: boolean;
         }>;
-        viewContext?: Record<string, unknown>;
         /**
          * Optional model to execute an approved plan on ("Build with X").
          * Forwarded verbatim — remy scopes it (honored only on the
@@ -101,7 +100,6 @@ export function createAgentActions(
         text,
         onboardingState: getOnboardingState(),
         ...(attachments?.length ? { attachments } : {}),
-        ...(!isAutomated && viewContext ? { viewContext } : {}),
         // Omitted entirely when absent, so the default-model payload stays
         // byte-identical to what we sent before this existed.
         ...(buildModel ? { buildModel } : {}),

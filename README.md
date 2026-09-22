@@ -18,9 +18,9 @@ Single port (4387) serves everything:
 Browser
   ├── wss://host/ws?token=...            → C&C WebSocket (editor control)
   ├── wss://host/lsp                     → TypeScript language server (LSP over JSON-RPC)
-  ├── wss://host/__mindstudio_dev__/ws   → tunnel browser automation (direct proxy)
+  ├── wss://host/__mindstudio_dev__/ws   → tunnel browser automation (spliced through, unbuffered)
   ├── https://host/health                → health check (public)
-  ├── https://host/*                     → reverse proxy → dev server (preview)
+  ├── https://host/*                     → relayed to the tunnel's proxy → dev server (preview)
   └── wss://host/*                       → HMR relay → dev server (buffered during agent turns)
 ```
 
@@ -263,7 +263,7 @@ All agent actions await the agent's `completed` event and return it as the WS re
 
 | Action | Params | Description |
 |--------|--------|-------------|
-| `agentMessage` | `{ text, attachments?, viewContext?, buildModel? }` | Send a message to the agent. If the agent is idle, returns on `completed`; if a turn is running, returns immediately with `{ queued: true, requestId }` and the message's own `completed` arrives when it eventually runs (possibly merged into one turn with other queued messages). `buildModel` picks the model that executes an approved plan — see [Model selection](#model-selection) |
+| `agentMessage` | `{ text, attachments?, buildModel? }` | Send a message to the agent. If the agent is idle, returns on `completed`; if a turn is running, returns immediately with `{ queued: true, requestId }` and the message's own `completed` arrives when it eventually runs (possibly merged into one turn with other queued messages). `buildModel` picks the model that executes an approved plan — see [Model selection](#model-selection) |
 | `agentCancel` | `{}` | Cancel current agent turn. Returns when cancel is confirmed; the reply carries `cancelledMessages` (queued chain/background items flushed by the cancel — queued user messages are preserved and run next) |
 | `agentCancelQueued` | `{ id? }` | Remove pending queued user messages without touching the in-flight turn. Omit `id` for all, or pass a queued message's `requestId`. Replies with `cancelledQueued`; the queue snapshot updates via `agentQueueChanged` |
 | `agentSetQueuedDelivery` | `{ id, delivery }` | Promote a queued user message to `"asap"` (remy injects it into the running turn at its next tool boundary) or demote back to `"afterTurn"`. Only plain user messages qualify — remy replies `success:false` for automated/chain/background items or an already-consumed id. Snapshot updates via `agentQueueChanged` |
@@ -411,8 +411,8 @@ Streaming events are broadcast in real-time while a message command is in flight
 | `agentText` | `{ text, requestId?, parentToolId? }` | Visible response text (streaming chunks) |
 | `agentToolStart` | `{ id, name, input, partial?, requestId?, parentToolId? }` | Tool execution started. For streaming tools (promptUser, presentSyncPlan, etc.), multiple events with `partial: true` arrive before the final one |
 | `agentToolInputDelta` | `{ id, name, result, requestId?, parentToolId? }` | Streaming tool input content (progressive updates) |
-| `agentToolDone` | `{ id, name, result?, isError?, requestId?, parentToolId? }` | Tool execution completed |
-| `agentCompleted` | `{ requestId, success, error?, absorbed? }` | Command finished. Also returned as the WS response for the originating action. `absorbed: true` marks the synthetic terminal of a requestId that was merged into another turn — it resolves that command but carries no turn lifecycle (the primary requestId's completed, which arrives first, drives busy/turn-done) |
+| `agentToolDone` | `{ id, name, result?, isError?, requestId?, parentToolId?, recording? }` | Tool execution completed. `recording` is a browser-test replay chunk (the tunnel's `RecordingChunkRef`) |
+| `agentCompleted` | `{ requestId, success, error?, durationMs?, absorbed?, queued? }` | Command finished. Also returned as the WS response for the originating action. `absorbed: true` marks the synthetic terminal of a requestId that was merged into another turn — it resolves that command but carries no turn lifecycle (the primary requestId's completed, which arrives first, drives busy/turn-done) |
 | `agentUserMessage` | `{ text, requestId?, attachments?, queued?, hidden? }` | A user message entering a turn, echoed by remy. Queue-delivered messages (including ASAP-promoted ones injected mid-turn) carry `queued: true` and their own original `requestId`; a merged turn emits one per absorbed message. `hidden: true` marks internal entries (passive background results) — do not render |
 | `agentQueueChanged` | `{ queuedMessages }` | Remy's pending-message queue changed. Full authoritative snapshot (empty array when drained); items carry `delivery: "asap"` when promoted. The initial snapshot rides on the init frame and `agentGetHistory` |
 | `agentStatus` | `{ message, requestId? }` | Contextual status label (e.g., "Writing files...") |
@@ -595,9 +595,9 @@ npm install monaco-languageclient vscode-ws-jsonrpc
 <iframe src={`https://${cncDomain}/`} />
 ```
 
-Reverse-proxied to the dev server. Available once `tunnelEvent` with `session-started` arrives. Before that, returns 503. Supports HMR — the HMR WebSocket is relayed with buffering during agent file edits to prevent broken intermediate states.
+Relayed, byte for byte, to the tunnel's proxy — which fronts the dev server and does the injection (`src/utils/httpRelay.ts`; no proxy library). Available once `tunnelEvent` with `session-started` arrives; before that, a 503 placeholder. Supports HMR — the HMR WebSocket is relayed with buffering during agent file edits to prevent broken intermediate states. That buffering is deliberately human-only: the box's own Chrome talks to the tunnel's proxy directly and sees live HMR, so the agent's mid-turn screenshots show its edits.
 
-The tunnel's browser automation WebSocket (`/__mindstudio_dev__/ws`) is proxied directly without buffering.
+The tunnel's browser automation WebSocket (`/__mindstudio_dev__/ws`) is spliced through without buffering.
 
 ## Scenarios & Roles
 
