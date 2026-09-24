@@ -1,6 +1,6 @@
 {
   "name": "@madewithremy/sandbox",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Command-and-control server for Remy dev sandboxes",
   "license": "MIT",
   "repository": {
